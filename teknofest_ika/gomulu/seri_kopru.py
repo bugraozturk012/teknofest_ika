@@ -1,20 +1,28 @@
 #!/usr/bin/env python3
 """
-seri_kopru.py  —  Arduino Mega ↔ Jetson Orin Nano Seri Köprü Node'u
-=====================================================================
+seri_kopru.py  —  MCU ↔ Jetson Binary Seri Köprü Node'u
+=========================================================
+v2.0 — Binary protokol (ika_iletisim.h ile uyumlu)
 
-PROTOKOL (115200 baud, LF terminatör):
-  Jetson → Mega : CMD:<hiz_mps>:<direksiyon_deg>\n
-  Mega → Jetson : ENC:<sol_adc>:<sag_adc>\n
-                  IMU:<yaw>:<pitch>:<roll>\n   (Nano'dan forward, derece)
+PROTOKOL (115200 baud, 8N1 — ASCII YOK, saf binary):
+  Paket boyutu : 8 byte sabit
+  Format       : [0xAA][CMD][D0][D1][D2][D3][CRC][0x55]
+  CRC          : XOR(CMD ^ D0 ^ D1 ^ D2 ^ D3)
+  Byte order   : Big-endian (MSB önce)
 
-  Örnek:
-    Gönderilen : CMD:0.500:12.50\n
-    Alınan     : ENC:512:515\n
-                 IMU:45.12:-1.03:0.87\n
+  Jetson → MCU:
+    PKT_SURUCU (0x01): int16 hiz_mms [mm/s], int16 yaw_cd [1/100°]
+    PKT_DUR    (0x02): dur komutu
+    PKT_LAZER  (0x03): int16 0/1 (kapat/aç)
+    PKT_HB     (0x04): heartbeat
+
+  MCU → Jetson:
+    PKT_ENC   (0x10): uint16 sol_enc, uint16 sag_enc (0-1023 ADC)
+    PKT_IMU_YP(0x11): int16 yaw_dd [1/10°], int16 pitch_dd [1/10°]
+    PKT_IMU_R (0x12): int16 roll_dd [1/10°]
 
 ENKODER:
-  AS5600 analog çıkış → Arduino analogRead() → 10-bit (0–1023)
+  AS5600 analog → MCU ADC → 10-bit (0–1023)
   TICKS_PER_REV = 1024
 
 KİNEMATİK:
@@ -23,25 +31,95 @@ KİNEMATİK:
 """
 
 import math
+import struct
 import threading
 import time
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-from geometry_msgs.msg import Twist, TransformStamped
+from geometry_msgs.msg import TransformStamped
+from ackermann_msgs.msg import AckermannDriveStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
+from std_msgs.msg import Int16
 from tf2_ros import TransformBroadcaster
 import serial
 
 
+# ─── Binary Protokol Tanımları (ika_iletisim.h ile eşleşmeli) ─────────────
+PKT_BOYUT   = 8
+PKT_BASLA   = 0xAA
+PKT_BITIS   = 0x55
+
+# Komutlar
+PKT_SURUCU    = 0x01   # Jetson→MEGA: hız + direksiyon
+PKT_DUR       = 0x02   # Jetson→MEGA: acil dur
+PKT_LAZER     = 0x03   # Jetson→MEGA: lazer aç/kapa → NANO'ya iletilir
+PKT_HB        = 0x04   # Jetson→MEGA: heartbeat
+PKT_SERVO_PAN = 0x05   # Jetson→MEGA: pan açısı [0-180°] → NANO'ya iletilir
+PKT_SERVO_TLT = 0x06   # Jetson→MEGA: tilt açısı [0-180°] → NANO'ya iletilir
+
+PKT_ENC       = 0x10   # MEGA→Jetson: enkoder sol + sağ
+PKT_IMU_YP    = 0x11   # MEGA→Jetson: yaw + pitch (1/10 derece)
+PKT_IMU_R     = 0x12   # MEGA→Jetson: roll (1/10 derece)
+PKT_AKIM      = 0x13   # MEGA→Jetson: motor akımı [mA] + batarya [mV]
+
+
+def _crc(komut: int, veri: bytes) -> int:
+    """CRC = XOR(komut ^ veri[0] ^ veri[1] ^ veri[2] ^ veri[3])"""
+    return komut ^ veri[0] ^ veri[1] ^ veri[2] ^ veri[3]
+
+
+def _paket_olustur(komut: int, v0: int, v1: int) -> bytes:
+    """
+    8 byte binary paket oluşturur.
+    v0, v1: int16 değerler (-32768 .. 32767), big-endian yerleştirilir.
+    """
+    v0 = max(-32768, min(32767, v0))
+    v1 = max(-32768, min(32767, v1))
+    # '>' = big-endian, 'hh' = iki adet int16
+    veri = struct.pack('>hh', v0, v1)
+    crc  = _crc(komut, veri)
+    return struct.pack('BB4sBB', PKT_BASLA, komut, veri, crc, PKT_BITIS)
+
+
+def _paket_dogrula(ham: bytes) -> bool:
+    """Başlangıç, bitiş ve CRC kontrolü."""
+    if len(ham) != PKT_BOYUT:
+        return False
+    if ham[0] != PKT_BASLA or ham[7] != PKT_BITIS:
+        return False
+    beklenen_crc = _crc(ham[1], ham[2:6])
+    return ham[6] == beklenen_crc
+
+
+def _v0_oku(ham: bytes) -> int:
+    """Paketten ilk int16 değeri okur (big-endian)."""
+    return struct.unpack('>h', ham[2:4])[0]
+
+
+def _v1_oku(ham: bytes) -> int:
+    """Paketten ikinci int16 değeri okur (big-endian)."""
+    return struct.unpack('>h', ham[4:6])[0]
+
+
 # ─── Araç Sabitleri ────────────────────────────────────────────────────────
-DINGIL_ARASI      = 0.55    # Wheelbase [m]
-TEKERLEK_ARALIGI  = 0.670   # Track width [m]
-TEKERLEK_YARICI   = 0.180   # Tekerlek yarıçapı [m]
-TICKS_PER_REV     = 1024    # analogRead 10-bit: 0–1023
-MAX_DIREKSIYON    = 30.0    # [derece]
+# ⚠️  GERÇEK ARAÇ ÖLÇÜLERİNE GÖRE GÜNCELLE — gömülü ekibiyle doğrula
+#
+# NOT: Kinematik sabitler (dingil arası, max direksiyon açısı) artık
+#      ackermann_converter.py'de yönetilir. Burası yalnızca odometri
+#      hesabı için gereken mekanik sabitleri içerir.
+#
+# TEKERLEK_ARALIGI : Sol-sağ tekerlek merkez mesafesi [m]
+# TEKERLEK_YARICI  : Tekerlek (veya palet tahrik dişlisi) yarıçapı [m]
+# TICKS_PER_REV    : AS5600 10-bit ADC → 0–1023 (1024 tick/tur)
+# MAX_DIREKSIYON   : Donanım güvenlik kısıtı [derece] — servo fiziksel limiti
+#                    ackermann_converter zaten kırpar; bu son savunma hattıdır.
+TEKERLEK_ARALIGI  = 0.670   # [m] — ölçüp güncelle
+TEKERLEK_YARICI   = 0.180   # [m] — NEMA23 + dişli kutusu çıkış yarıçapı
+TICKS_PER_REV     = 1024    # AS5600 10-bit (sabit, değiştirme)
+MAX_DIREKSIYON    = 30.0    # [derece] — donanım güvenlik limiti
 
 METRE_PER_TICK = (2.0 * math.pi * TEKERLEK_YARICI) / TICKS_PER_REV
 
@@ -88,74 +166,141 @@ class SeriKopru(Node):
         qos_cmd = QoSProfile(depth=10,
                              reliability=ReliabilityPolicy.RELIABLE,
                              durability=DurabilityPolicy.VOLATILE)
+        # /odom ve /imu/data RELIABLE yayınlanır.
+        # robot_localization (EKF) BEST_EFFORT abone olur — uyumlu.
+        # RELIABLE→BEST_EFFORT her zaman çalışır; ters durumda uyarı verir.
         qos_odom = QoSProfile(depth=10,
-                              reliability=ReliabilityPolicy.BEST_EFFORT,
+                              reliability=ReliabilityPolicy.RELIABLE,
                               durability=DurabilityPolicy.VOLATILE)
 
         # ROS
-        self.create_subscription(Twist, '/cmd_vel', self._cmd_cb, qos_cmd)
+        # /ackermann_cmd: ackermann_converter'dan gelir
+        # (kinematik dönüşüm orada yapılır, burada doğrudan kullanılır)
+        self.create_subscription(AckermannDriveStamped, '/ackermann_cmd',
+                                 self._cmd_cb, qos_cmd)
+        self._shoot_conf_pub = self.create_publisher(Bool, '/shoot/result', 10)  # topics.py: SHOOT_RESULT_TOPIC
+
+        # Servo komutları — misyon_fsm ShootApproachState'ten gelir
+        self.create_subscription(Int16, '/taret/pan',   # topics.py: TARET_PAN_TOPIC
+                                 lambda m: self._paket_gonder(PKT_SERVO_PAN, m.data, 0), 10)
+        self.create_subscription(Int16, '/taret/tilt',  # topics.py: TARET_TILT_TOPIC
+                                 lambda m: self._paket_gonder(PKT_SERVO_TLT, m.data, 0), 10)
         self._pub      = self.create_publisher(Odometry, '/odom', qos_odom)
         self._imu_pub  = self.create_publisher(Imu, '/imu/data', qos_odom)
         self._tf       = TransformBroadcaster(self)
+
+        # IMU parçalı veri biriktirici
+        self._imu_yaw   = 0.0
+        self._imu_pitch = 0.0
 
         # Okuma thread
         self._calisıyor = True
         if not self._sim_mode:
             threading.Thread(target=self._okuma_dongusu, daemon=True).start()
 
+        # Heartbeat — 400 ms'de bir PKT_HB gönder (watchdog 2s sınırı için güvenli)
+        self.create_timer(0.4, self._hb_gonder)
         self.create_timer(0.1, self._guvenlik_kontrol)
-        self.get_logger().info('SeriKopru başlatıldı.')
+        self.get_logger().info('SeriKopru v2.0 binary mod başlatıldı.')
 
-    # ── /cmd_vel → Ackermann → Seri ────────────────────────────────────────
-    def _cmd_cb(self, msg: Twist):
+    # ── /ackermann_cmd → Binary Paket ──────────────────────────────────────
+    # Kinematik dönüşüm ackermann_converter.py tarafından yapılmıştır.
+    # Bu callback yalnızca değerleri ölçekleyip binary pakete dönüştürür.
+    def _cmd_cb(self, msg: AckermannDriveStamped):
         self._son_cmd = self.get_clock().now()
-        v = msg.linear.x
-        w = msg.angular.z
 
-        # Ackermann direksiyon açısı
-        # v ≈ 0 → yerinde dönüş Ackermann'da fiziksel olarak mümkün değil
-        delta_deg = 0.0
-        if abs(v) > 0.01:
-            delta_rad = math.atan2(DINGIL_ARASI * w, v)
-            delta_deg = math.degrees(delta_rad)
-            delta_deg = max(-MAX_DIREKSIYON, min(MAX_DIREKSIYON, delta_deg))
+        v         = msg.drive.speed           # m/s
+        delta_deg = math.degrees(msg.drive.steering_angle)  # rad → derece
 
-        self._seri_yaz(f'CMD:{v:.3f}:{delta_deg:.2f}\n')
+        # Donanım güvenlik kısıtı — ackermann_converter zaten kırpar,
+        # bu son savunma hattıdır (servo mekanik limit).
+        delta_deg = max(-MAX_DIREKSIYON, min(MAX_DIREKSIYON, delta_deg))
 
-    # ── Seri okuma (thread) ─────────────────────────────────────────────────
+        # Ölçekleme:
+        #   hiz_mms : m/s × 1000 → mm/s  (int16: −32.768 … +32.767 m/s)
+        #   yaw_cd  : derece × 100 → 1/100°  (int16: −327.68 … +327.67°)
+        hiz_mms = int(v * 1000.0)
+        yaw_cd  = int(delta_deg * 100.0)
+
+        self._paket_gonder(PKT_SURUCU, hiz_mms, yaw_cd)
+
+    # ── Seri okuma — binary state machine (thread) ──────────────────────────
     def _okuma_dongusu(self):
+        """
+        MCU'dan gelen 8-byte binary paketleri senkronize eder.
+        Strateji: 0xAA başlangıç byte'ını bekle, sonra 7 byte daha oku.
+        Bu yaklaşım kablo gürültüsüne karşı dayanıklıdır.
+        """
         while self._calisıyor:
             try:
-                satir = self._ser.readline().decode('utf-8', errors='ignore').strip()
-                if not satir:
+                # Başlangıç byte'ını bekle
+                byte = self._ser.read(1)
+                if not byte or byte[0] != PKT_BASLA:
                     continue
 
-                now = self.get_clock().now()
+                # Geri kalan 7 byte'ı oku
+                kalan = self._ser.read(PKT_BOYUT - 1)
+                if len(kalan) != PKT_BOYUT - 1:
+                    continue
 
-                if satir.startswith('ENC:'):
-                    parcalar = satir[4:].split(':')
-                    if len(parcalar) == 2:
-                        sol = int(parcalar[0])
-                        sag = int(parcalar[1])
-                        self._odometri(sol, sag)
+                ham = bytes([PKT_BASLA]) + kalan
 
-                elif satir.startswith('IMU:'):
-                    parcalar = satir[4:].split(':')
-                    if len(parcalar) == 3:
-                        yaw   = float(parcalar[0])
-                        pitch = float(parcalar[1])
-                        roll  = float(parcalar[2])
-                        self._imu_yayinla(now, yaw, pitch, roll)
+                if not _paket_dogrula(ham):
+                    self.get_logger().warn(
+                        f'CRC hatası: {ham.hex()}',
+                        throttle_duration_sec=5.0
+                    )
+                    continue
 
-                elif satir.startswith('LOG:'):
-                    self.get_logger().debug(f'[Arduino] {satir[4:]}')
+                self._paket_isle(ham)
 
             except (serial.SerialException, OSError) as e:
                 self.get_logger().error(str(e), throttle_duration_sec=5.0)
                 time.sleep(0.2)
-            except ValueError:
-                self.get_logger().warn(f'Parse hatası: {satir}',
-                                       throttle_duration_sec=5.0)
+
+    # ── Gelen Paket İşleyici ────────────────────────────────────────────────
+    def _paket_isle(self, ham: bytes):
+        komut = ham[1]
+        now   = self.get_clock().now()
+
+        if komut == PKT_ENC:
+            # uint16 olarak yorumla (negatif değer yok)
+            sol = struct.unpack('>H', ham[2:4])[0]
+            sag = struct.unpack('>H', ham[4:6])[0]
+            self._odometri(sol, sag)
+
+        elif komut == PKT_IMU_YP:
+            # 1/10 derece → derece
+            self._imu_yaw   = _v0_oku(ham) / 10.0
+            self._imu_pitch = _v1_oku(ham) / 10.0
+            # roll gelince birlikte yayınla
+
+        elif komut == PKT_IMU_R:
+            roll_deg = _v0_oku(ham) / 10.0
+            self._imu_yayinla(now,
+                              self._imu_yaw,
+                              self._imu_pitch,
+                              roll_deg)
+
+        elif komut == PKT_LAZER:
+            # MEGA/NANO lazer kapandığını echo ile bildiriyorsa onay ver
+            # v0=0 → lazer kapandı → atış tamamlandı
+            if _v0_oku(ham) == 0:
+                self._shoot_conf_pub.publish(Bool(data=True))
+
+        elif komut == PKT_AKIM:
+            # INA219'dan gelen motor akımı ve batarya voltajı
+            motor_ma   = _v0_oku(ham)          # mA
+            batarya_mv = _v1_oku(ham)          # mV
+            self.get_logger().info(
+                f'Akım: {motor_ma} mA  |  Batarya: {batarya_mv / 1000.0:.2f} V',
+                throttle_duration_sec=5.0
+            )
+            if batarya_mv < 21000:             # 21V altı → düşük batarya uyarısı
+                self.get_logger().warn(
+                    f'DÜŞÜK BATARYA: {batarya_mv / 1000.0:.2f} V !',
+                    throttle_duration_sec=10.0
+                )
 
     # ── Odometri (10-bit analog AS5600, overflow korumalı) ──────────────────
     def _odometri(self, sol: int, sag: int):
@@ -195,7 +340,7 @@ class SeriKopru(Node):
         tf = TransformStamped()
         tf.header.stamp          = t
         tf.header.frame_id       = 'odom'
-        tf.child_frame_id        = 'base_link'
+        tf.child_frame_id        = 'base_footprint'   # ekf_params.yaml ile eşleşmeli
         tf.transform.translation.x = self._x
         tf.transform.translation.y = self._y
         tf.transform.rotation.z    = qz
@@ -205,7 +350,7 @@ class SeriKopru(Node):
         odom = Odometry()
         odom.header.stamp            = t
         odom.header.frame_id         = 'odom'
-        odom.child_frame_id          = 'base_link'
+        odom.child_frame_id          = 'base_footprint'
         odom.pose.pose.position.x    = self._x
         odom.pose.pose.position.y    = self._y
         odom.pose.pose.orientation.z = qz
@@ -263,17 +408,30 @@ class SeriKopru(Node):
 
         self._imu_pub.publish(msg)
 
-    # ── Güvenlik: timeout → dur ──────────────────────────────────────────────
+    # ── Heartbeat ────────────────────────────────────────────────────────────
+    def _hb_gonder(self):
+        self._paket_gonder(PKT_HB, 0, 0)
+
+    # ── Güvenlik: /ackermann_cmd timeout → PKT_DUR ───────────────────────────
     def _guvenlik_kontrol(self):
         dt = (self.get_clock().now() - self._son_cmd).nanoseconds * 1e-9
         if dt > self._cmd_timeout:
-            self._seri_yaz('CMD:0.000:0.00\n')
+            self._paket_gonder(PKT_DUR, 0, 0)
 
-    def _seri_yaz(self, s: str):
+    # ── Binary Paket Gönderici ───────────────────────────────────────────────
+    def _paket_gonder(self, komut: int, v0: int, v1: int):
+        """
+        Binary paket oluşturur ve seri porta yazar.
+        sim_mode'da işlem yapmaz (log'a basar).
+        """
+        pkt = _paket_olustur(komut, v0, v1)
         if self._sim_mode or self._ser is None:
+            self.get_logger().debug(
+                f'[SIM] PKT 0x{komut:02X} v0={v0} v1={v1} → {pkt.hex()}'
+            )
             return
         try:
-            self._ser.write(s.encode())
+            self._ser.write(pkt)
         except serial.SerialException as e:
             self.get_logger().warn(str(e), throttle_duration_sec=5.0)
 
@@ -281,7 +439,7 @@ class SeriKopru(Node):
         self._calisıyor = False
         if self._ser and self._ser.is_open:
             try:
-                self._ser.write(b'CMD:0.000:0.00\n')
+                self._ser.write(_paket_olustur(PKT_DUR, 0, 0))
                 self._ser.close()
             except Exception:
                 pass
