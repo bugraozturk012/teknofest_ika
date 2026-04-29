@@ -42,7 +42,7 @@ from geometry_msgs.msg import TransformStamped
 from ackermann_msgs.msg import AckermannDriveStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
-from std_msgs.msg import Int16
+from std_msgs.msg import Bool, Int16
 from tf2_ros import TransformBroadcaster
 import serial
 

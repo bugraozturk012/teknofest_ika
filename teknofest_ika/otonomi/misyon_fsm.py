@@ -86,6 +86,7 @@ class DetectionsStore:
         'bariyer_sol_m': 1.5,
         'bariyer_sag_m': 1.5,
         'fps':           0.0,
+        'e_stop':        False,
     }
 
     def __init__(self):
@@ -252,6 +253,10 @@ class NavigateState(smach.State):
         self.det_store = det_store
 
     def execute(self, userdata):
+        if self.det_store.get_field('e_stop', False):
+            self.node.get_logger().error('[NAVIGATE] E-STOP aktif — navigasyon iptal.')
+            return 'failed'
+
         waypoints = userdata.waypoints
         idx       = userdata.wp_index
 
@@ -301,6 +306,9 @@ class NavigateState(smach.State):
             )
             deadline = time.time() + 10.0
             while time.time() < deadline:
+                if self.det_store.get_field('e_stop', False):
+                    self.node.get_logger().error('[NAVIGATE] E-STOP — KAYAR_ENGEL bekleme iptal.')
+                    return 'failed'
                 yon = self.det_store.get_field('kayar_yon', 'bilinmiyor')
                 if yon != 'bilinmiyor':
                     self.node.get_logger().info(
@@ -347,9 +355,9 @@ class ShootApproachState(smach.State):
     HEDEF_TOLERANS_PX = 5.0   # Protokol Madde 3.3 — ±5 piksel
     TIMEOUT_S         = 15.0
 
-    # Servo PID katsayısı: hata_px → açı değişimi
-    # Deneysel: 1 piksel hata ≈ 0.3° servo hareketi
-    KP_SERVO = 0.3
+    KP_SERVO = 0.30    # Proportional — 1 piksel hata ≈ 0.3° servo hareketi
+    KI_SERVO = 0.001   # Integral     — sabit ofset hatalarını giderir
+    KD_SERVO = 0.05    # Derivative   — salınımı söndürür
 
     def __init__(self, node: Node, det_store: DetectionsStore):
         smach.State.__init__(
@@ -361,12 +369,19 @@ class ShootApproachState(smach.State):
         self.det_store = det_store
 
         # Servo komut publisher'ları — seri_kopru.py dinler
-        self._pan_pub  = node.create_publisher(Int16, '/servo/pan',  10)
-        self._tilt_pub = node.create_publisher(Int16, '/servo/tilt', 10)
+        self._pan_pub  = node.create_publisher(Int16, '/taret/pan',  10)
+        self._tilt_pub = node.create_publisher(Int16, '/taret/tilt', 10)
 
         # Mevcut servo açıları (başlangıç: merkez)
         self._pan_aci  = 90
         self._tilt_aci = 90
+
+        # PID durum değişkenleri
+        self._pan_integral    = 0.0
+        self._tilt_integral   = 0.0
+        self._pan_prev_error  = 0.0
+        self._tilt_prev_error = 0.0
+        self._last_pid_time   = 0.0
 
     def _servo_gonder(self):
         self._pan_pub.publish(Int16(data=self._pan_aci))
@@ -374,6 +389,13 @@ class ShootApproachState(smach.State):
 
     def execute(self, userdata):
         self.node.get_logger().info('[SHOOT_APPROACH] Servo nişan başlıyor...')
+
+        # PID sıfırla
+        self._pan_integral    = 0.0
+        self._tilt_integral   = 0.0
+        self._pan_prev_error  = 0.0
+        self._tilt_prev_error = 0.0
+        self._last_pid_time   = time.time()
 
         # Başlangıçta merkeze al
         self._pan_aci  = 90
@@ -388,11 +410,25 @@ class ShootApproachState(smach.State):
                 hata_x = det.get('hedef_hata_x', 0.0)
                 hata_y = det.get('hedef_hata_y', 0.0)
 
-                # Proportional servo düzeltme
-                # hata_x > 0 → hedef sağda → pan artır
-                # hata_y > 0 → hedef aşağıda → tilt azalt
-                self._pan_aci  += int(hata_x * self.KP_SERVO)
-                self._tilt_aci -= int(hata_y * self.KP_SERVO)
+                # Tam PID servo kontrolü
+                now = time.time()
+                dt  = max(now - self._last_pid_time, 1e-3)
+                self._last_pid_time = now
+
+                self._pan_integral  += hata_x * dt
+                self._tilt_integral -= hata_y * dt
+
+                pan_d  = (hata_x - self._pan_prev_error)  / dt
+                tilt_d = (hata_y - self._tilt_prev_error) / dt
+                self._pan_prev_error  = hata_x
+                self._tilt_prev_error = hata_y
+
+                self._pan_aci  += int(self.KP_SERVO * hata_x
+                                    + self.KI_SERVO * self._pan_integral
+                                    + self.KD_SERVO * pan_d)
+                self._tilt_aci -= int(self.KP_SERVO * hata_y
+                                    + self.KI_SERVO * self._tilt_integral
+                                    + self.KD_SERVO * tilt_d)
 
                 # Sınır kontrolü [0-180°]
                 self._pan_aci  = max(0, min(180, self._pan_aci))
@@ -454,7 +490,7 @@ class ShootState(smach.State):
 
         self._shoot_pub = node.create_publisher(Bool, '/shoot_command', 10)
         node.create_subscription(
-            Bool, '/shoot_confirmed', self._on_confirmed, 10
+            Bool, '/shoot/result', self._on_confirmed, 10
         )
 
     def _on_confirmed(self, msg: Bool):
@@ -635,6 +671,13 @@ def main():
             pass
 
     node.create_subscription(String, '/ika/detections', _on_detections, 10)
+
+    def _on_e_stop(msg: Bool):
+        det_store.update({'e_stop': msg.data})
+        if msg.data:
+            node.get_logger().error('!!! E-STOP ALINDI — TÜM NAVIGASYON DURDURULUYOR !!!')
+
+    node.create_subscription(Bool, '/e_stop', _on_e_stop, 10)
 
     # ── Nav2 Client ───────────────────────────────────────────────────
     nav = Nav2Client(node)

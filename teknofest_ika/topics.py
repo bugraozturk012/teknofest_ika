@@ -291,3 +291,8 @@ LASER_FIRE_DURATION = 0.5
 
 # Dik eğim bekleme süresi — §6.10 (saniye)
 RAMP_STOP_DURATION = 2.0
+
+# YOLO integer class_id topic (terrain_adapter icin)
+YOLO_CLASS_ID_TOPIC = "/yolo/class_id"  # std_msgs/UInt8
+
+ACKERMANN_CMD_TOPIC = "/ackermann_cmd"  # AckermannDriveStamped

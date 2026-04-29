@@ -42,7 +42,7 @@ ekf_filter_node:
     # ── Frame tanımları ───────────────────────────────────────────────────
     map_frame:       map
     odom_frame:      odom
-    base_link_frame: base_link
+    base_link_frame: base_footprint
     world_frame:     odom       # Lokal EKF: odom referans alır (map değil)
 
     # ── 2D mod (yer aracı — z/roll/pitch yok) ────────────────────────────
