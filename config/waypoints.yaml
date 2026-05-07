@@ -21,86 +21,95 @@
 
 asamalar:
 
-  - isim: SU_GECISI
-    yolo_sinifi: su_gecisi
-    waypoint:
-      x: 3.0
-      y: 0.0
-      yaw: 0.0
-    pas_gecilir: false
-    aciklama: "Su geçidi aşaması — yavaş geç, eğim kontrolü aktif"
-
   - isim: TASLI_YOL
     yolo_sinifi: tasli_yol
     waypoint:
-      x: 7.0
-      y: 1.5
-      yaw: 0.3
+      x: -7.651504
+      y: -0.425678
+      yaw: -0.022833
     pas_gecilir: false
     aciklama: "Taşlı yol — hız sınırı aktif, titreşim tolere edilir"
 
   - isim: YAN_EGIM
     yolo_sinifi: yan_egim
     waypoint:
-      x: 11.0
-      y: 0.0
-      yaw: 0.0
+      x: -15.761204
+      y: 0.796639
+      yaw: 0.025334
     pas_gecilir: false
     aciklama: "Yan eğim — roll açısı izlenir, hız kısılır"
 
-  - isim: DIK_ENGEL
-    yolo_sinifi: dik_engel
+  - isim: HIZLANMA
+    yolo_sinifi: hizlanma
     waypoint:
-      x: 15.0
-      y: -1.0
-      yaw: -0.2
-    pas_gecilir: true
-    aciklama: "Dik engel — Nav2 engel kaçınması devreye girer"
-
-  - isim: TRAFIK_KON
-    yolo_sinifi: trafik_koni
-    waypoint:
-      x: 20.0
-      y: 2.0
-      yaw: 0.5
+      x: -11.0644526
+      y: 9.418053
+      yaw: 0.0
     pas_gecilir: false
-    aciklama: "Trafik konisi slalom — dar geçiş, hız düşürülür"
+    aciklama: "Hızlanma bölgesi — maksimum hız, düz zemin"
 
   - isim: KAYAR_ENGEL
     yolo_sinifi: kayar_engel
     waypoint:
-      x: 25.0
-      y: 0.0
-      yaw: 0.0
+      x: -0.021220
+      y: 9.628621
+      yaw: 0.021660
     pas_gecilir: true
     aciklama: "Kayar engel — engel pozisyonu değişkendir, dinamik planlama"
+
+  - isim: SU_GECISI
+    yolo_sinifi: su_gecisi
+    waypoint:
+      x: -4.524592
+      y: 19.298165
+      yaw: 0.021660
+    pas_gecilir: false
+    aciklama: "Su geçidi aşaması — yavaş geç, eğim kontrolü aktif"
+
+  - isim: TRAFIK_KON
+    yolo_sinifi: trafik_koni
+    waypoint:
+      x: -14.677923
+      y: 19.585150
+      yaw: 0.021660
+    pas_gecilir: false
+    aciklama: "Trafik konisi slalom — dar geçiş, hız düşürülür"
+
+  - isim: DIK_ENGEL
+    yolo_sinifi: dik_engel
+    waypoint:
+      x: -19.712500
+      y: 29.612490
+      yaw: 0.021660
+    pas_gecilir: true
+    aciklama: "Dik engel — Nav2 engel kaçınması devreye girer"
+
+  - isim: ENGEBELI_ARAZI
+    yolo_sinifi: engebeli_arazi
+    waypoint:
+      x: -15.970702
+      y: 29.679144
+      yaw: 0.021660
+    pas_gecilir: true
+    aciklama: "Engebeli arazi — koordinatlar haritadan alındı"
 
   - isim: DIK_EGIM
     yolo_sinifi: dik_egim
     waypoint:
-      x: 30.0
-      y: -2.0
-      yaw: -0.3
+      x: -9.178841
+      y: 29.590205
+      yaw: -3.141591
     pas_gecilir: false
     aciklama: "Dik eğim — tork artışı, anti-rollback aktif"
 
   - isim: ATIS
     yolo_sinifi: atis
     waypoint:
-      x: 35.0
-      y: 1.0
-      yaw: 0.2
-    pas_gecilir: false
-    aciklama: "Atış pozisyonu — araç durur, lazer/top mekanizması tetiklenir"
-
-  - isim: HIZLANMA
-    yolo_sinifi: hizlanma
-    waypoint:
-      x: 45.0
-      y: 0.0
+      x: 1.443568
+      y: 29.447639
       yaw: 0.0
     pas_gecilir: false
-    aciklama: "Hızlanma bölgesi — maksimum hız, düz zemin"
+    aciklama: "Atış pozisyonu — araç durur, lazer/top mekanizması tetiklenir"
 
 # Genel parametreler
 parametreler:

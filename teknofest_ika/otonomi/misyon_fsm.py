@@ -56,7 +56,7 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 
-from std_msgs.msg import Bool, String, Int16
+from std_msgs.msg import Bool, String, Int16, UInt8
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import NavigateToPose
 
@@ -87,6 +87,7 @@ class DetectionsStore:
         'bariyer_sag_m': 1.5,
         'fps':           0.0,
         'e_stop':        False,
+        'manual_mod':    False,   # mod_yoneticisi MANUAL/SEMI → navigasyon dur
     }
 
     def __init__(self):
@@ -96,6 +97,10 @@ class DetectionsStore:
     def update(self, data: dict):
         with self._lock:
             self._data = {**self._DEFAULT, **data}
+
+    def update_field(self, key: str, value):
+        with self._lock:
+            self._data[key] = value
 
     def get(self) -> dict:
         with self._lock:
@@ -144,17 +149,30 @@ class Nav2Client:
         )
 
         future = self._client.send_goal_async(goal)
-        rclpy.spin_until_future_complete(self.node, future)
-        goal_handle = future.result()
+        # spin thread zaten çalışıyor — spin_until_future_complete yerine bekle
+        while not future.done():
+            time.sleep(0.05)
+
+        try:
+            goal_handle = future.result()
+        except Exception as e:
+            self.node.get_logger().error(f'Nav2 hedef gönderilemedi: {e}')
+            return False
 
         if not goal_handle.accepted:
             self.node.get_logger().warn('Nav2 hedefi reddetti.')
             return False
 
         result_future = goal_handle.get_result_async()
-        rclpy.spin_until_future_complete(self.node, result_future)
+        while not result_future.done():
+            time.sleep(0.05)
 
-        result = result_future.result()
+        try:
+            result = result_future.result()
+        except Exception as e:
+            self.node.get_logger().error(f'Nav2 sonuç alınamadı: {e}')
+            return False
+
         success = (result.status == 4)  # GoalStatus.STATUS_SUCCEEDED = 4
 
         if success:
@@ -208,11 +226,12 @@ class IdleState(smach.State):
 
     def execute(self, userdata):
         self._start_received = False
+        if hasattr(self.node, '_fsm_state_pub'):
+            self.node._fsm_state_pub.publish(String(data='IDLE'))
         rate = self.node.create_rate(10)
         while rclpy.ok() and not self._start_received:
             rate.sleep()
         self.node.get_logger().info('[IDLE] Görev başlıyor.')
-        # Veri kaydını başlat
         self._misyon_pub.publish(Bool(data=True))
         return 'started'
 
@@ -253,12 +272,24 @@ class NavigateState(smach.State):
         self.det_store = det_store
 
     def execute(self, userdata):
+        if hasattr(self.node, '_fsm_state_pub'):
+            self.node._fsm_state_pub.publish(String(data='NAVIGATE'))
+
         if self.det_store.get_field('e_stop', False):
             self.node.get_logger().error('[NAVIGATE] E-STOP aktif — navigasyon iptal.')
             return 'failed'
 
         waypoints = userdata.waypoints
         idx       = userdata.wp_index
+
+        if self.det_store.get_field('manual_mod', False):
+            self.node.get_logger().warn('[NAVIGATE] Manuel mod aktif — navigasyon bekleniyor.')
+            while rclpy.ok() and self.det_store.get_field('manual_mod', False):
+                if self.det_store.get_field('e_stop', False):
+                    self.node.get_logger().error('[NAVIGATE] E-STOP — manuel mod bekleme iptal.')
+                    return 'failed'
+                time.sleep(0.2)
+            self.node.get_logger().info('[NAVIGATE] Tam otonom moda geri dönüldü.')
 
         if idx >= len(waypoints):
             self.node.get_logger().info('[NAVIGATE] Tüm waypointler tamamlandı.')
@@ -358,11 +389,12 @@ class ShootApproachState(smach.State):
     KP_SERVO = 0.30    # Proportional — 1 piksel hata ≈ 0.3° servo hareketi
     KI_SERVO = 0.001   # Integral     — sabit ofset hatalarını giderir
     KD_SERVO = 0.05    # Derivative   — salınımı söndürür
+    INTEGRAL_MAX = 30.0  # Windup koruması — servo 0-180° sınırlı olsa da integral serbest kalmamalı
 
     def __init__(self, node: Node, det_store: DetectionsStore):
         smach.State.__init__(
             self,
-            outcomes=['in_position', 'failed'],
+            outcomes=['in_position'],
             input_keys=['current_wp']
         )
         self.node      = node
@@ -388,6 +420,8 @@ class ShootApproachState(smach.State):
         self._tilt_pub.publish(Int16(data=self._tilt_aci))
 
     def execute(self, userdata):
+        if hasattr(self.node, '_fsm_state_pub'):
+            self.node._fsm_state_pub.publish(String(data='SHOOT_APPROACH'))
         self.node.get_logger().info('[SHOOT_APPROACH] Servo nişan başlıyor...')
 
         # PID sıfırla
@@ -415,8 +449,10 @@ class ShootApproachState(smach.State):
                 dt  = max(now - self._last_pid_time, 1e-3)
                 self._last_pid_time = now
 
-                self._pan_integral  += hata_x * dt
-                self._tilt_integral -= hata_y * dt
+                self._pan_integral  = max(-self.INTEGRAL_MAX,
+                                        min(self.INTEGRAL_MAX, self._pan_integral + hata_x * dt))
+                self._tilt_integral = max(-self.INTEGRAL_MAX,
+                                        min(self.INTEGRAL_MAX, self._tilt_integral - hata_y * dt))
 
                 pan_d  = (hata_x - self._pan_prev_error)  / dt
                 tilt_d = (hata_y - self._tilt_prev_error) / dt
@@ -484,7 +520,7 @@ class ShootState(smach.State):
     TIMEOUT_S  = 8.0     # Her deneme için max bekleme
 
     def __init__(self, node: Node):
-        smach.State.__init__(self, outcomes=['shot_fired', 'failed'])
+        smach.State.__init__(self, outcomes=['shot_fired'])
         self.node       = node
         self._confirmed = False
 
@@ -498,6 +534,8 @@ class ShootState(smach.State):
             self._confirmed = True
 
     def execute(self, userdata):
+        if hasattr(self.node, '_fsm_state_pub'):
+            self.node._fsm_state_pub.publish(String(data='SHOOT'))
         basarili_deneme = 0
 
         for deneme in range(1, self.MAX_DENEME + 1):
@@ -558,6 +596,8 @@ class MissionCompleteState(smach.State):
         self._misyon_pub = node.create_publisher(Bool, '/misyon/aktif', 10)
 
     def execute(self, userdata):
+        if hasattr(self.node, '_fsm_state_pub'):
+            self.node._fsm_state_pub.publish(String(data='MISSION_COMPLETE'))
         self.node.get_logger().info('═══ GÖREV TAMAMLANDI ═══')
         self._status_pub.publish(String(data='COMPLETE'))
         # Veri kaydını durdur
@@ -591,6 +631,8 @@ class ErrorRecoveryState(smach.State):
         self._retry_count = 0
 
     def execute(self, userdata):
+        if hasattr(self.node, '_fsm_state_pub'):
+            self.node._fsm_state_pub.publish(String(data='ERROR_RECOVERY'))
         self._retry_count += 1
         self.node.get_logger().warn(
             f'[ERROR_RECOVERY] Deneme {self._retry_count}/{self.MAX_RETRIES}'
@@ -608,7 +650,6 @@ class ErrorRecoveryState(smach.State):
             userdata.wp_index -= 1
 
         time.sleep(2.0)
-        self._retry_count = 0
         return 'recovered'
 
 
@@ -663,21 +704,45 @@ def main():
     # ── Detections Store ──────────────────────────────────────────────
     det_store = DetectionsStore()
 
+    # /yolo/class_id köprüsü: görüntü ekibinin tabela integer'ı terrain_adapter'a iletilir
+    class_id_pub = node.create_publisher(UInt8, '/yolo/class_id', 10)
+    # FSM durum yayını: tüm ekiplerin izleyebileceği string durum
+    fsm_state_pub = node.create_publisher(String, '/fsm_state', 10)
+    # node üzerinden state'lerin erişmesi için referans
+    node._fsm_state_pub = fsm_state_pub
+
     def _on_detections(msg: String):
         try:
             data = json.loads(msg.data)
             det_store.update(data)
-        except json.JSONDecodeError:
+            # tabela alanını UInt8 olarak terrain_adapter'a ilet
+            # Görüntü ekibi 0-8 arası integer yayınlar; 255 = tespit yok
+            tabela_id = int(data.get('tabela', 255))
+            class_id_pub.publish(UInt8(data=tabela_id))
+        except (json.JSONDecodeError, ValueError):
             pass
 
     node.create_subscription(String, '/ika/detections', _on_detections, 10)
 
+    def _on_obs_direction(msg: String):
+        det_store.update_field('kayar_yon', msg.data)
+
+    node.create_subscription(String, '/moving_obs/direction', _on_obs_direction, 10)
+
     def _on_e_stop(msg: Bool):
-        det_store.update({'e_stop': msg.data})
+        det_store.update_field('e_stop', msg.data)
         if msg.data:
             node.get_logger().error('!!! E-STOP ALINDI — TÜM NAVIGASYON DURDURULUYOR !!!')
 
     node.create_subscription(Bool, '/e_stop', _on_e_stop, 10)
+
+    def _on_mod(msg: UInt8):
+        # 0=MANUAL → FSM navigasyonu bekletir (RC kumanda sürüyor)
+        # 1=SEMI_AUTO → FSM çalışmaya devam eder, mod_yoneticisi RC override yapar
+        # 2=FULL_AUTO → tam otonom
+        det_store.update_field('manual_mod', msg.data == 0)
+
+    node.create_subscription(UInt8, '/mod/aktif', _on_mod, 10)
 
     # ── Nav2 Client ───────────────────────────────────────────────────
     nav = Nav2Client(node)
@@ -689,9 +754,7 @@ def main():
         pkg_share = get_package_share_directory('teknofest_ika')
         wp_path   = os.path.join(pkg_share, 'config', 'waypoints.yaml')
     except Exception:
-        wp_path = os.path.expanduser(
-            '~/ika_ws/src/teknofest_ika/config/waypoints.yaml'
-        )
+        wp_path = os.path.expanduser('~/ika_ws/config/waypoints.yaml')
 
     waypoints = load_waypoints(wp_path)
 
@@ -725,7 +788,6 @@ def main():
             ShootApproachState(node, det_store),
             transitions={
                 'in_position': 'SHOOT',
-                'failed':      'ERROR_RECOVERY',
             }
         )
 
@@ -734,7 +796,6 @@ def main():
             ShootState(node),
             transitions={
                 'shot_fired': 'NAVIGATE',
-                'failed':     'ERROR_RECOVERY',
             }
         )
 

@@ -62,7 +62,7 @@ TEST (görüntü ekibi olmadan):
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-from std_msgs.msg import UInt8
+from std_msgs.msg import UInt8, Float32
 from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
 from rcl_interfaces.srv import SetParameters
 
@@ -230,7 +230,8 @@ class TerrainAdapter(Node):
 
         self._current_terrain  = 'normal'
         self._last_class_id    = NO_DETECTION
-        self._consecutive      = 0          # ardışık aynı class sayacı
+        self._consecutive      = 0
+        self._speed_limit      = float('inf')   # imu_guvenlik'ten gelir
 
         # ── QoS: görüntü ekibi BEST_EFFORT yayınlar (kamera pipeline) ────────
         qos = QoSProfile(
@@ -242,6 +243,10 @@ class TerrainAdapter(Node):
         # ── /yolo/class_id — UInt8, integer class index ───────────────────────
         self.create_subscription(UInt8, YOLO_CLASS_ID_TOPIC,
                                  self._on_class_id, qos)
+
+        # ── /speed_limit — imu_guvenlik'ten hız sınırı ───────────────────────
+        self.create_subscription(Float32, '/speed_limit',
+                                 self._on_speed_limit, 10)
 
         # ── Nav2 set_parameters servis client'ları ────────────────────────────
         # Her profilde hangi Nav2 node'ları hedef alınıyorsa client aç
@@ -262,6 +267,10 @@ class TerrainAdapter(Node):
             f'topic={YOLO_CLASS_ID_TOPIC} (UInt8) | '
             f'filtre={CONSECUTIVE_FRAMES} ardışık frame'
         )
+
+    def _on_speed_limit(self, msg: Float32) -> None:
+        """imu_guvenlik'ten gelen hız sınırını saklar; profil uygulamada kullanılır."""
+        self._speed_limit = float(msg.data)
 
     # ── Callback: YOLO class_id geldi ────────────────────────────────────────
     def _on_class_id(self, msg: UInt8) -> None:
@@ -317,14 +326,18 @@ class TerrainAdapter(Node):
             if client is None:
                 continue
 
-            if not client.wait_for_service(timeout_sec=1.0):
-                self.get_logger().error(
-                    f'/{node_name}/set_parameters yok — Nav2 çalışıyor mu?'
+            if not client.wait_for_service(timeout_sec=0.05):
+                self.get_logger().warn(
+                    f'/{node_name}/set_parameters yok — Nav2 çalışıyor mu?',
+                    throttle_duration_sec=5.0,
                 )
                 continue
 
             req = SetParameters.Request()
             for param_name, value in params.items():
+                # desired_linear_vel imu_guvenlik hız sınırıyla kırpılır
+                if param_name.endswith('desired_linear_vel'):
+                    value = min(float(value), self._speed_limit)
                 pv = ParameterValue(
                     type=ParameterType.PARAMETER_DOUBLE,
                     double_value=float(value),

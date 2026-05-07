@@ -41,8 +41,8 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from geometry_msgs.msg import TransformStamped
 from ackermann_msgs.msg import AckermannDriveStamped
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import Imu
-from std_msgs.msg import Bool, Int16
+from sensor_msgs.msg import Imu, BatteryState
+from std_msgs.msg import Bool, Int16, Float32MultiArray
 from tf2_ros import TransformBroadcaster
 import serial
 
@@ -59,11 +59,19 @@ PKT_LAZER     = 0x03   # Jetson→MEGA: lazer aç/kapa → NANO'ya iletilir
 PKT_HB        = 0x04   # Jetson→MEGA: heartbeat
 PKT_SERVO_PAN = 0x05   # Jetson→MEGA: pan açısı [0-180°] → NANO'ya iletilir
 PKT_SERVO_TLT = 0x06   # Jetson→MEGA: tilt açısı [0-180°] → NANO'ya iletilir
+PKT_ESTOP_OUT = 0x07   # Jetson→MEGA: acil durdurma bildirimi (Arduino motor/servo kes)
 
 PKT_ENC       = 0x10   # MEGA→Jetson: enkoder sol + sağ
 PKT_IMU_YP    = 0x11   # MEGA→Jetson: yaw + pitch (1/10 derece)
 PKT_IMU_R     = 0x12   # MEGA→Jetson: roll (1/10 derece)
 PKT_AKIM      = 0x13   # MEGA→Jetson: motor akımı [mA] + batarya [mV]
+# RC kanalları — Flysky FS-i6X alıcısından MEGA'ya gelen PWM değerleri
+# MEGA firmware bu kanalları okuyup binary paket olarak iletir.
+# PKT_RC : ch1=throttle [µs], ch2=steering [µs]
+# PKT_RC2: ch5=mode_switch [µs], ch3=aux1 [µs]
+PKT_RC        = 0x20   # MEGA→Jetson: RC ch1 + ch2 (throttle + steering, µs)
+PKT_RC2       = 0x21   # MEGA→Jetson: RC ch5 + ch3 (mode switch + aux, µs)
+PKT_ESTOP_IN  = 0x22   # MEGA→Jetson: Arduino E-STOP butonu algıladı
 
 
 def _crc(komut: int, veri: bytes) -> int:
@@ -154,13 +162,14 @@ class SeriKopru(Node):
             self.get_logger().warn('Simülasyon modu aktif.')
 
         # Odometri
-        self._x       = 0.0
-        self._y       = 0.0
-        self._theta   = 0.0
-        self._prev_sol = None
-        self._prev_sag = None
-        self._lock     = threading.Lock()
-        self._son_cmd  = self.get_clock().now()
+        self._x        = 0.0
+        self._y        = 0.0
+        self._theta    = 0.0
+        self._prev_sol  = None
+        self._prev_sag  = None
+        self._prev_enc_time = None   # dt tabanlı hız için
+        self._lock      = threading.Lock()
+        self._son_cmd   = self.get_clock().now()
 
         # QoS
         qos_cmd = QoSProfile(depth=10,
@@ -189,6 +198,40 @@ class SeriKopru(Node):
         self._imu_pub  = self.create_publisher(Imu, '/imu/data', qos_odom)
         self._tf       = TransformBroadcaster(self)
 
+        # Batarya durumu yayıncısı — INA219 → PKT_AKIM → /battery/status
+        # 4S LiPo: 16.8V tam, 14.0V boş (4.2V / 3.5V per hücre)
+        self._battery_pub = self.create_publisher(BatteryState, '/battery/status', 10)
+        self._BATARYA_V_MAX = 16.8
+        self._BATARYA_V_MIN = 14.0
+        self._BATARYA_UYARI = 14.8   # 3.7V/hücre × 4 → nominal = uyarı eşiği
+
+        # RC kanal yayıncısı — mod_yoneticisi dinler
+        # Format: [ch1_throttle_us, ch2_steering_us, ch5_mode_us, ch3_aux_us]
+        self._rc_pub   = self.create_publisher(Float32MultiArray, '/rc_input', 10)
+
+        # RC kanalları biriktirici (PKT_RC + PKT_RC2 ayrı gelir)
+        self._rc_ch1   = 1500.0
+        self._rc_ch2   = 1500.0
+        self._rc_ch5   = 1500.0   # Varsayılan: MANUAL (güvenli başlangıç)
+        self._rc_ch3   = 1000.0   # ch3 aux — lazer tetikleyici
+
+        # Önceden tahsis edilmiş mesajlar — hot path'de GC baskısını azaltır
+        self._rc_msg   = Float32MultiArray()
+        self._rc_msg.data = [0.0, 0.0, 0.0, 0.0]
+
+        # Lazer aktifken hareketi kilitle (şartname: atışta -10 ceza)
+        self._lazer_aktif = False
+
+        # E-STOP durumu — True iken tüm hareket komutları yoksayılır,
+        # _guvenlik_kontrol her 100ms'de PKT_ESTOP_OUT + PKT_DUR gönderir
+        self._e_stop_aktif = False
+        # Arduino'dan PKT_ESTOP_IN gelince /e_stop/force'a yaz (e_stop_node toplar)
+        self._e_stop_force_pub = self.create_publisher(Bool, '/e_stop/force', 10)
+        self.create_subscription(Bool, '/e_stop', self._e_stop_cb, 10)
+
+        # /shoot_command → PKT_LAZER
+        self.create_subscription(Bool, '/shoot_command', self._shoot_cb, 10)
+
         # IMU parçalı veri biriktirici
         self._imu_yaw   = 0.0
         self._imu_pitch = 0.0
@@ -209,6 +252,15 @@ class SeriKopru(Node):
     def _cmd_cb(self, msg: AckermannDriveStamped):
         self._son_cmd = self.get_clock().now()
 
+        # E-STOP aktifken hareket komutunu yoksay
+        if self._e_stop_aktif:
+            return
+
+        # Lazer aktifken hareket komutunu yoksay (şartname: atışta -10 ceza)
+        if self._lazer_aktif:
+            self._paket_gonder(PKT_DUR, 0, 0)
+            return
+
         v         = msg.drive.speed           # m/s
         delta_deg = math.degrees(msg.drive.steering_angle)  # rad → derece
 
@@ -223,6 +275,26 @@ class SeriKopru(Node):
         yaw_cd  = int(delta_deg * 100.0)
 
         self._paket_gonder(PKT_SURUCU, hiz_mms, yaw_cd)
+
+    def _shoot_cb(self, msg: Bool):
+        self._lazer_aktif = msg.data
+        self._paket_gonder(PKT_LAZER, 1 if msg.data else 0, 0)
+        if msg.data:
+            self.get_logger().info('Lazer AÇIK — hareket kilitlendi.')
+        else:
+            self.get_logger().info('Lazer KAPALI — hareket serbest.')
+
+    def _e_stop_cb(self, msg: Bool):
+        onceki = self._e_stop_aktif
+        self._e_stop_aktif = msg.data
+        if msg.data and not onceki:
+            # İlk aktifleşmede Arduino'ya hemen bildir
+            self._paket_gonder(PKT_ESTOP_OUT, 1, 0)
+            self._paket_gonder(PKT_DUR, 0, 0)
+            self.get_logger().error('!!! E-STOP — Tüm hareket durduruldu !!!')
+        elif not msg.data and onceki:
+            self._paket_gonder(PKT_ESTOP_OUT, 0, 0)
+            self.get_logger().warn('[E-STOP] Kaldırıldı — hareket izni verildi.')
 
     # ── Seri okuma — binary state machine (thread) ──────────────────────────
     def _okuma_dongusu(self):
@@ -264,23 +336,20 @@ class SeriKopru(Node):
         now   = self.get_clock().now()
 
         if komut == PKT_ENC:
-            # uint16 olarak yorumla (negatif değer yok)
-            sol = struct.unpack('>H', ham[2:4])[0]
-            sag = struct.unpack('>H', ham[4:6])[0]
+            sol, sag = struct.unpack('>HH', ham[2:6])
             self._odometri(sol, sag)
 
         elif komut == PKT_IMU_YP:
             # 1/10 derece → derece
-            self._imu_yaw   = _v0_oku(ham) / 10.0
-            self._imu_pitch = _v1_oku(ham) / 10.0
-            # roll gelince birlikte yayınla
+            with self._lock:
+                self._imu_yaw   = _v0_oku(ham) / 10.0
+                self._imu_pitch = _v1_oku(ham) / 10.0
 
         elif komut == PKT_IMU_R:
             roll_deg = _v0_oku(ham) / 10.0
-            self._imu_yayinla(now,
-                              self._imu_yaw,
-                              self._imu_pitch,
-                              roll_deg)
+            with self._lock:
+                yaw, pitch = self._imu_yaw, self._imu_pitch
+            self._imu_yayinla(now, yaw, pitch, roll_deg)
 
         elif komut == PKT_LAZER:
             # MEGA/NANO lazer kapandığını echo ile bildiriyorsa onay ver
@@ -288,46 +357,104 @@ class SeriKopru(Node):
             if _v0_oku(ham) == 0:
                 self._shoot_conf_pub.publish(Bool(data=True))
 
+        elif komut == PKT_RC:
+            # RC ch1=throttle, ch2=steering (µs)
+            self._rc_ch1 = float(_v0_oku(ham))
+            self._rc_ch2 = float(_v1_oku(ham))
+            self._rc_yayinla()
+
+        elif komut == PKT_RC2:
+            # RC ch5=mode_switch (µs), ch3=aux/lazer (µs)
+            self._rc_ch5 = float(_v0_oku(ham))
+            self._rc_ch3 = float(_v1_oku(ham))
+            self._rc_yayinla()
+
+        elif komut == PKT_ESTOP_IN:
+            # Arduino E-STOP butonunu algıladı → /e_stop/force'a yaz (e_stop_node toplar)
+            aktif = (_v0_oku(ham) != 0)
+            self._e_stop_force_pub.publish(Bool(data=aktif))
+            if aktif:
+                self.get_logger().error('!!! E-STOP (Arduino) — Buton basıldı !!!')
+            else:
+                self.get_logger().warn('[E-STOP] Arduino: buton bırakıldı.')
+
         elif komut == PKT_AKIM:
-            # INA219'dan gelen motor akımı ve batarya voltajı
-            motor_ma   = _v0_oku(ham)          # mA
-            batarya_mv = _v1_oku(ham)          # mV
+            motor_ma   = _v0_oku(ham)            # mA
+            batarya_mv = _v1_oku(ham)            # mV
+            voltaj     = batarya_mv / 1000.0     # V
+            akim       = motor_ma   / 1000.0     # A
+
+            yuzdesi = max(0.0, min(1.0,
+                (voltaj - self._BATARYA_V_MIN) /
+                (self._BATARYA_V_MAX - self._BATARYA_V_MIN)
+            ))
+
+            bat = BatteryState()
+            bat.header.stamp    = now.to_msg()
+            bat.voltage         = voltaj
+            bat.current         = akim
+            bat.percentage      = yuzdesi
+            bat.present         = True
+            bat.power_supply_status = BatteryState.POWER_SUPPLY_STATUS_DISCHARGING
+            bat.power_supply_health = (
+                BatteryState.POWER_SUPPLY_HEALTH_GOOD
+                if voltaj >= self._BATARYA_UYARI
+                else BatteryState.POWER_SUPPLY_HEALTH_DEAD
+            )
+            self._battery_pub.publish(bat)
+
             self.get_logger().info(
-                f'Akım: {motor_ma} mA  |  Batarya: {batarya_mv / 1000.0:.2f} V',
+                f'Batarya: {voltaj:.2f} V  {yuzdesi*100:.0f}%  |  Akım: {akim:.2f} A',
                 throttle_duration_sec=5.0
             )
-            if batarya_mv < 21000:             # 21V altı → düşük batarya uyarısı
+            if voltaj < self._BATARYA_UYARI:
                 self.get_logger().warn(
-                    f'DÜŞÜK BATARYA: {batarya_mv / 1000.0:.2f} V !',
+                    f'DÜŞÜK BATARYA: {voltaj:.2f} V ({yuzdesi*100:.0f}%) !!!',
                     throttle_duration_sec=10.0
                 )
 
+    # ── RC Yayını ────────────────────────────────────────────────────────────
+    def _rc_yayinla(self):
+        self._rc_msg.data[0] = self._rc_ch1
+        self._rc_msg.data[1] = self._rc_ch2
+        self._rc_msg.data[2] = self._rc_ch5
+        self._rc_msg.data[3] = self._rc_ch3
+        self._rc_pub.publish(self._rc_msg)
+
     # ── Odometri (10-bit analog AS5600, overflow korumalı) ──────────────────
     def _odometri(self, sol: int, sag: int):
-        now = self.get_clock().now()
+        now     = self.get_clock().now()
+        now_sec = now.nanoseconds * 1e-9
+
         with self._lock:
             if self._prev_sol is None:
                 self._prev_sol, self._prev_sag = sol, sag
+                self._prev_enc_time = now_sec
                 return
 
-            # 10-bit overflow: 0–1023 döngüsü
             d_sol = _delta(sol, self._prev_sol, TICKS_PER_REV)
             d_sag = _delta(sag, self._prev_sag, TICKS_PER_REV)
             self._prev_sol, self._prev_sag = sol, sag
+
+            dt = now_sec - self._prev_enc_time
+            self._prev_enc_time = now_sec
 
         ds = d_sol * METRE_PER_TICK
         dd = d_sag * METRE_PER_TICK
         d_merkez = (ds + dd) / 2.0
         d_theta  = (dd - ds) / TEKERLEK_ARALIGI
 
-        # Pose güncelle — 2. derece R-K
         self._x     += d_merkez * math.cos(self._theta + d_theta / 2.0)
         self._y     += d_merkez * math.sin(self._theta + d_theta / 2.0)
         self._theta  = _normalize(self._theta + d_theta)
 
-        # Hız tahmini (50 Hz döngü varsayımı)
-        vx  = d_merkez * 50.0
-        vth = d_theta  * 50.0
+        # Gerçek dt ile hız hesabı — 0 < dt < 1s dışındaki değerler atılır
+        # (NTP jump, suspend/resume gibi clock anomalileri karşı koruma)
+        if 0.0 < dt < 1.0:
+            vx  = d_merkez / dt
+            vth = d_theta  / dt
+        else:
+            vx, vth = 0.0, 0.0
 
         self._yayinla(now, vx, vth)
 
@@ -414,6 +541,10 @@ class SeriKopru(Node):
 
     # ── Güvenlik: /ackermann_cmd timeout → PKT_DUR ───────────────────────────
     def _guvenlik_kontrol(self):
+        # E-STOP aktifken Arduino'ya sürekli dur komutu yağdır (10 Hz)
+        if self._e_stop_aktif:
+            self._paket_gonder(PKT_DUR, 0, 0)
+            return
         dt = (self.get_clock().now() - self._son_cmd).nanoseconds * 1e-9
         if dt > self._cmd_timeout:
             self._paket_gonder(PKT_DUR, 0, 0)
@@ -456,9 +587,7 @@ def _delta(yeni: int, eski: int, maks: int = 1024) -> int:
     return d
 
 def _normalize(a: float) -> float:
-    while a >  math.pi: a -= 2.0 * math.pi
-    while a < -math.pi: a += 2.0 * math.pi
-    return a
+    return math.remainder(a, 2.0 * math.pi)
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────

@@ -18,7 +18,8 @@ slam_toolbox:
 
     # ── Harita çözünürlüğü ────────────────────────────────────────────────────
     resolution:                 0.05        # [m/pixel] — 5 cm
-    max_laser_range:            20.0        # [m] — YDLidar Tmini Pro max menzil
+    minimum_laser_range:        0.1         # [m] — YDLidar Tmini Pro min menzil
+    max_laser_range:            8.0         # [m] — YDLidar Tmini Pro gerçek max menzil
     minimum_travel_distance:    0.3         # [m] — yeni scan için min hareket
     minimum_travel_heading:     0.3         # [rad] — yeni scan için min dönüş
 

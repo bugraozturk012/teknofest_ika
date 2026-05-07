@@ -27,15 +27,13 @@ bt_navigator:
   ros__parameters:
     use_sim_time: false
     global_frame: map
-    robot_base_frame: base_link
+    robot_base_frame: base_footprint
     odom_topic: /odometry/filtered    # EKF çıkışı
     bt_loop_duration: 10
     default_server_timeout: 20
-    navigators: ['navigate_to_pose', 'navigate_through_poses']
+    navigators: ['navigate_to_pose']
     navigate_to_pose:
       plugin: "nav2_bt_navigator/NavigateToPoseNavigator"
-    navigate_through_poses:
-      plugin: "nav2_bt_navigator/NavigateThroughPosesNavigator"
     plugin_lib_names:
       - nav2_compute_path_to_pose_action_bt_node
       - nav2_compute_path_through_poses_action_bt_node
@@ -81,7 +79,7 @@ controller_server:
     use_sim_time: false
     controller_frequency: 20.0     # Hz — RPP güncelleme frekansı
     min_x_velocity_threshold: 0.001
-    min_y_velocity_threshold: 0.5
+    min_y_velocity_threshold: 0.001
     min_theta_velocity_threshold: 0.001
     failure_tolerance: 0.3
     progress_checker_plugin: "progress_checker"
@@ -90,8 +88,8 @@ controller_server:
 
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.5
-      movement_time_allowance: 10.0
+      required_movement_radius: 0.3
+      movement_time_allowance: 20.0
 
     general_goal_checker:
       stateful: true
@@ -111,7 +109,8 @@ controller_server:
       max_lookahead_dist: 3.0           # [m] — maksimum lookahead
       lookahead_time: 1.5               # [s] — hızla ölçeklenen lookahead
 
-      rotate_to_heading_angular_vel: 0.8   # Başlangıç yönlenmesi için [rad/s]
+      use_rotate_to_heading: false          # Ackermann yerinde dönemez — kapalı
+      rotate_to_heading_angular_vel: 0.8
       transform_tolerance: 0.2
 
       # Hız düzenleme
@@ -125,9 +124,10 @@ controller_server:
       regulated_linear_scaling_min_radius: 1.0   # [m] — bu yarıçapın altında yavaşla
       regulated_linear_scaling_min_speed: 0.25   # [m/s] — minimum hız
 
-      # Engel durma
+      # Engel durma — taşlı yolda sert dur yerine yavaşla
+      use_collision_detection: false
       use_cost_regulated_linear_velocity_scaling: true
-      cost_scaling_dist: 0.5
+      cost_scaling_dist: 0.6
       cost_scaling_gain: 1.0
       inflation_cost_scaling_factor: 3.0
 
@@ -156,7 +156,7 @@ planner_server:
       max_iterations: 1000000
       max_on_approach_iterations: 1000
       max_planning_time: 5.0
-      motion_model_for_search: "REEDS_SHEPP"   # Ackermann uyumlu
+      motion_model_for_search: "DUBIN"          # Sadece ileri — geri manevra yok
       angle_quantization_bins: 72              # 5° çözünürlük
       analytic_expansion_ratio: 3.5
       analytic_expansion_max_length: 3.0
@@ -190,7 +190,9 @@ behavior_server:
     costmap_topic: local_costmap/costmap_raw
     footprint_topic: local_costmap/published_footprint
     cycle_frequency: 10.0
-    behavior_plugins: ["backup", "drive_on_heading", "wait"]
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
+    spin:
+      plugin: "nav2_behaviors/Spin"
     backup:
       plugin: "nav2_behaviors/BackUp"
     drive_on_heading:
@@ -198,7 +200,7 @@ behavior_server:
     wait:
       plugin: "nav2_behaviors/Wait"
     global_frame: odom
-    robot_base_frame: base_link
+    robot_base_frame: base_footprint
     transform_tolerance: 0.2
     simulate_ahead_time: 2.0
     max_rotational_vel: 1.0
@@ -214,9 +216,12 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_footprint
-      robot_radius: 0.40          # Yarıçap [m] — footprint yerine basit daire
+      robot_radius: 0.40
 
       resolution: 0.05            # [m/piksel] — 5 cm çözünürlük
+      rolling_window: true
+      width: 60                   # [m] — tüm parkur sığacak kadar geniş
+      height: 60                  # [m]
       track_unknown_space: true
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
 
@@ -227,7 +232,7 @@ global_costmap:
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
-        observation_sources: scan
+        observation_sources: scan cone_cloud moving_obs_cloud os30a_cloud
         scan:
           topic: /scan
           max_obstacle_height: 2.0
@@ -236,13 +241,45 @@ global_costmap:
           data_type: "LaserScan"
           raytrace_max_range: 8.0
           raytrace_min_range: 0.0
-          obstacle_max_range: 7.5
+          obstacle_max_range: 4.0
+          obstacle_min_range: 0.50
+        cone_cloud:
+          topic: /cone_cloud
+          max_obstacle_height: 2.0
+          clearing: false
+          marking: true
+          data_type: "PointCloud2"
+          raytrace_max_range: 8.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 8.0
           obstacle_min_range: 0.0
+        moving_obs_cloud:
+          topic: /moving_obs_cloud
+          max_obstacle_height: 2.0
+          clearing: true
+          marking: true
+          data_type: "PointCloud2"
+          raytrace_max_range: 5.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 4.0
+          obstacle_min_range: 0.0
+          observation_persistence: 0.5
+        os30a_cloud:
+          topic: /apc/points/data_raw
+          min_obstacle_height: 0.05
+          max_obstacle_height: 1.50
+          clearing: true
+          marking: true
+          data_type: "PointCloud2"
+          raytrace_max_range: 6.0
+          raytrace_min_range: 0.1
+          obstacle_max_range: 5.0
+          obstacle_min_range: 0.1
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.55    # [m] — robot_radius + güvenlik payı
+        cost_scaling_factor: 2.0
+        inflation_radius: 0.45
 
       always_send_full_costmap: true
 
@@ -255,7 +292,7 @@ local_costmap:
       publish_frequency: 2.0
       global_frame: odom
       robot_base_frame: base_footprint
-      robot_radius: 0.40
+      robot_radius: 0.40          # global_costmap ile tutarlı
       rolling_window: true
       width: 8                    # [m] — lokal harita genişliği
       height: 8                   # [m] — lokal harita yüksekliği
@@ -266,7 +303,7 @@ local_costmap:
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
-        observation_sources: scan
+        observation_sources: scan cone_cloud moving_obs_cloud os30a_cloud
         scan:
           topic: /scan
           max_obstacle_height: 2.0
@@ -275,13 +312,45 @@ local_costmap:
           data_type: "LaserScan"
           raytrace_max_range: 5.0
           raytrace_min_range: 0.0
-          obstacle_max_range: 4.5
+          obstacle_max_range: 1.5
+          obstacle_min_range: 0.50
+        cone_cloud:
+          topic: /cone_cloud
+          max_obstacle_height: 2.0
+          clearing: false
+          marking: true
+          data_type: "PointCloud2"
+          raytrace_max_range: 5.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 5.0
           obstacle_min_range: 0.0
+        moving_obs_cloud:
+          topic: /moving_obs_cloud
+          max_obstacle_height: 2.0
+          clearing: true
+          marking: true
+          data_type: "PointCloud2"
+          raytrace_max_range: 5.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 4.0
+          obstacle_min_range: 0.0
+          observation_persistence: 0.5
+        os30a_cloud:
+          topic: /apc/points/data_raw
+          min_obstacle_height: 0.05
+          max_obstacle_height: 1.50
+          clearing: true
+          marking: true
+          data_type: "PointCloud2"
+          raytrace_max_range: 5.0
+          raytrace_min_range: 0.1
+          obstacle_max_range: 4.0
+          obstacle_min_range: 0.1
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.55
+        cost_scaling_factor: 2.0
+        inflation_radius: 0.45
 
       always_send_full_costmap: true
 
@@ -295,7 +364,7 @@ amcl:
     alpha3: 0.2
     alpha4: 0.2
     alpha5: 0.2
-    base_frame_id: base_link
+    base_frame_id: base_footprint
     beam_skip_distance: 0.5
     beam_skip_error_threshold: 0.9
     beam_skip_threshold: 0.3
@@ -315,7 +384,7 @@ amcl:
     recovery_alpha_fast: 0.0
     recovery_alpha_slow: 0.0
     resample_interval: 1
-    robot_model_type: nav2_amcl::OmniMotionModel  # Ackermann ≈ Omni (diff de kullanılabilir)
+    robot_model_type: nav2_amcl::DifferentialMotionModel
     save_pose_rate: 0.5
     sigma_hit: 0.2
     tf_broadcast: true
@@ -349,8 +418,6 @@ lifecycle_manager:
     use_sim_time: false
     autostart: true
     node_names:
-      - map_server
-      - amcl
       - controller_server
       - smoother_server
       - planner_server

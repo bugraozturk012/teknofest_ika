@@ -45,12 +45,12 @@ except ImportError:
     CV_OK = False
 
 # ─── Ayarlanabilir Sabitler ─────────────────────────────────────────────────
-TOPIC_ILERI = '/ileri_kamera/image_raw'   # İleri sürüş kamerası (URDF: ileri_kamera_joint)
-TOPIC_GERI  = '/geri_kamera/image_raw'    # Geri sürüş kamerası  (URDF: geri_kamera_joint)
-TOPIC_NISAN = '/nisan_kamera/image_raw'   # Nişan kamerası       (URDF: nisan_kamera_joint)
+TOPIC_ILERI = '/camera/image_raw'          # URDF: kamera_link → libgazebo_ros_camera.so
+TOPIC_GERI  = '/camera/rear/image_raw'    # Gerçek araç: arka kamera (simülasyonda yok)
+TOPIC_NISAN = '/camera/taret/image_raw'   # Gerçek araç: taret kamerası (simülasyonda yok)
 
 KAYIT_DIZIN = os.path.expanduser('~/ika_kayitlar')  # Kayıt ana dizini
-VIDEO_FPS   = 15                                     # Hedef FPS (yazma)
+VIDEO_FPS   = 30                                     # Kamera topic frekansıyla eşleşmeli
 VIDEO_CODEC = 'mp4v'                                 # MP4 codec
 HEDEF_GENISLIK  = 640                                # Çıkış genişliği (px)
 HEDEF_YUKSEKLIK = 480                                # Çıkış yüksekliği (px)
@@ -205,8 +205,10 @@ class VeriPaketi(Node):
             self._ileri.baslat(os.path.join(dizin, 'ileri.mp4'))
             self._geri.baslat(os.path.join(dizin, 'geri.mp4'))
             self._nisan.baslat(os.path.join(dizin, 'nisan.mp4'))
-
-        self._kayit_aktif = True
+            self._kayit_aktif = True
+        else:
+            self.get_logger().error('OpenCV yok — kayıt başlatılamadı.')
+            return
         self.get_logger().info(f'KAYIT BAŞLADI → {dizin}')
 
     def _kayit_durdur(self):
@@ -252,7 +254,7 @@ class VeriPaketi(Node):
             f.write(f'geri.mp4    : {self._geri.kare_say} kare\n')
             f.write(f'nisan.mp4   : {self._nisan.kare_say} kare\n')
             f.write(f'\n--- Dosyalar ---\n')
-            for dosya in ['ileri.mp4', 'geri.mp4', 'nisan.mp4', 'meta.txt']:
+            for dosya in ['ileri.mp4', 'geri.mp4', 'nisan.mp4']:
                 yol = os.path.join(self._kayit_dizin, dosya)
                 boyut = os.path.getsize(yol) if os.path.exists(yol) else 0
                 f.write(f'{dosya}: {boyut / 1024:.1f} KB\n')

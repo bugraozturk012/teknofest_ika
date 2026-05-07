@@ -217,7 +217,7 @@ SERIAL_BAUD    = 115200
 FRAME_MAP        = "map"
 FRAME_ODOM       = "odom"
 FRAME_BASE_LINK  = "base_link"
-FRAME_LASER      = "laser_frame"
+FRAME_LASER      = "lidar_link"
 FRAME_CAMERA     = "camera_link"
 FRAME_IMU        = "imu_link"
 

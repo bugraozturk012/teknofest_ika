@@ -22,16 +22,22 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
-from sensor_msgs.msg import Imu
-from std_msgs.msg import Float32
+from sensor_msgs.msg import Imu, BatteryState
+from std_msgs.msg import Float32, Bool
 
-IMU_ROLL_WARN_THRESHOLD  =  8.0    # derece
-IMU_ROLL_STOP_THRESHOLD  = 15.0   # derece
-IMU_PITCH_DOWN_THRESHOLD = 15.0   # derece (yokuş aşağı)
+IMU_ROLL_WARN_THRESHOLD  =  8.0   # derece — hız azalmaya başlar
+IMU_ROLL_STOP_THRESHOLD  = 15.0   # derece — hız sıfır
+IMU_ROLL_ESTOP_THRESHOLD = 20.0   # derece — E-STOP yayınla (devrilme tehlikesi)
+IMU_PITCH_DOWN_THRESHOLD = 15.0   # derece — yokuş aşağı fren
 
-NORMAL_MAX_HIZ    = 2.0   # [m/s] — terrain_adapter normal profiliyle eşleşmeli
-FRENLEME_HIZ      = 0.4   # [m/s] — yokuş aşağı güvenli hız
+NORMAL_MAX_HIZ    = 2.0   # [m/s]
+FRENLEME_HIZ      = 0.4   # [m/s]
 YAYINLAMA_HZ      = 10.0
+
+# Batarya eşikleri (4S LiPo)
+BATARYA_DUSUK_YUZDE   = 30   # %30 altı → hız 1.0 m/s ile kısıtlanır
+BATARYA_KRITIK_YUZDE  = 10   # %10 altı → hız 0.0 m/s (dur)
+BATARYA_DUSUK_HIZ     = 1.0  # [m/s]
 
 
 class ImuGuvenlik(Node):
@@ -39,19 +45,28 @@ class ImuGuvenlik(Node):
     def __init__(self):
         super().__init__('imu_guvenlik')
 
-        self._roll  = 0.0
-        self._pitch = 0.0
+        self._roll         = 0.0
+        self._pitch        = 0.0
+        self._batarya_yuzde = 100   # %100 varsayılan (veri gelene kadar)
 
         qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
         self.create_subscription(Imu, '/imu/data', self._imu_cb, qos)
-        self._pub = self.create_publisher(Float32, '/speed_limit', 10)
+        self.create_subscription(BatteryState, '/battery/status', self._bat_cb, 10)
+
+        self._pub       = self.create_publisher(Float32, '/speed_limit',  10)
+        # /e_stop/force → e_stop_node toplar, tek /e_stop yayıncısı o olur
+        self._estop_pub = self.create_publisher(Bool,    '/e_stop/force', 10)
 
         self.create_timer(1.0 / YAYINLAMA_HZ, self._yayinla)
         self.get_logger().info(
             f'ImuGuvenlik hazır | '
             f'roll_uyari={IMU_ROLL_WARN_THRESHOLD}° | '
-            f'roll_dur={IMU_ROLL_STOP_THRESHOLD}°'
+            f'roll_dur={IMU_ROLL_STOP_THRESHOLD}° | '
+            f'roll_estop={IMU_ROLL_ESTOP_THRESHOLD}°'
         )
+
+    def _bat_cb(self, msg: BatteryState):
+        self._batarya_yuzde = int(msg.percentage * 100)
 
     def _imu_cb(self, msg: Imu):
         q = msg.orientation
@@ -67,16 +82,27 @@ class ImuGuvenlik(Node):
         self._pitch = math.degrees(math.asin(sinp))
 
     def _yayinla(self):
-        roll_abs = abs(self._roll)
+        roll_abs    = abs(self._roll)
+        devrilme    = roll_abs >= IMU_ROLL_ESTOP_THRESHOLD
 
-        if roll_abs >= IMU_ROLL_STOP_THRESHOLD:
+        # ── E-STOP (tek yayın noktası: e_stop_node toplar) ─────────────────
+        self._estop_pub.publish(Bool(data=devrilme))
+        if devrilme:
+            self.get_logger().error(
+                f'[ImuGuvenlik] DEVRİLME! roll={self._roll:.1f}° → /e_stop/force True',
+                throttle_duration_sec=1.0,
+            )
+
+        # ── Hız sınırı hesabı ───────────────────────────────────────────────
+        if devrilme:
+            hiz = 0.0
+        elif roll_abs >= IMU_ROLL_STOP_THRESHOLD:
             hiz = 0.0
             self.get_logger().warn(
                 f'[ImuGuvenlik] DUR — roll={self._roll:.1f}°',
                 throttle_duration_sec=1.0,
             )
         elif roll_abs >= IMU_ROLL_WARN_THRESHOLD:
-            # 8°→%50 hız, 15°→0 hız (doğrusal interpolasyon)
             oran = 1.0 - (roll_abs - IMU_ROLL_WARN_THRESHOLD) / (
                 IMU_ROLL_STOP_THRESHOLD - IMU_ROLL_WARN_THRESHOLD)
             hiz = NORMAL_MAX_HIZ * 0.5 * max(0.0, oran)
@@ -93,9 +119,21 @@ class ImuGuvenlik(Node):
         else:
             hiz = NORMAL_MAX_HIZ
 
-        msg = Float32()
-        msg.data = float(hiz)
-        self._pub.publish(msg)
+        # ── Batarya hız kısıtı ──────────────────────────────────────────────
+        if self._batarya_yuzde < BATARYA_KRITIK_YUZDE:
+            hiz = min(hiz, 0.0)
+            self.get_logger().error(
+                f'[ImuGuvenlik] KRİTİK BATARYA %{self._batarya_yuzde} → dur',
+                throttle_duration_sec=5.0,
+            )
+        elif self._batarya_yuzde < BATARYA_DUSUK_YUZDE:
+            hiz = min(hiz, BATARYA_DUSUK_HIZ)
+            self.get_logger().warn(
+                f'[ImuGuvenlik] Düşük batarya %{self._batarya_yuzde} → max {BATARYA_DUSUK_HIZ} m/s',
+                throttle_duration_sec=10.0,
+            )
+
+        self._pub.publish(Float32(data=float(hiz)))
 
 
 def main(args=None):

@@ -130,6 +130,14 @@ class AckermannConverter(Node):
             durability=DurabilityPolicy.VOLATILE,
         )
 
+        # ── E-STOP durumu ────────────────────────────────────────────────────
+        # E-stop aktifken anti_rollback dahil TÜM komutlar yoksayılır.
+        self._e_stop_aktif = False
+
+        # ── Override state (anti_rollback) ───────────────────────────────────
+        self._override_active = False
+        self._override_twist  = Twist()
+
         # ── Subscriber: /cmd_vel ──────────────────────────────────────────────
         self._sub = self.create_subscription(
             Twist,
@@ -138,25 +146,60 @@ class AckermannConverter(Node):
             qos_reliable,
         )
 
+        # ── Subscriber: anti_rollback override ───────────────────────────────
+        from std_msgs.msg import Bool as BoolMsg
+        self._override_sub = self.create_subscription(
+            BoolMsg, '/anti_rollback/aktif',
+            self._override_aktif_cb, 10
+        )
+        self._override_cmd_sub = self.create_subscription(
+            Twist, '/anti_rollback/cmd',
+            self._override_cmd_cb, qos_reliable
+        )
+        self.create_subscription(
+            BoolMsg, '/e_stop', self._e_stop_cb, 10
+        )
+
         # ── Publisher: /ackermann_cmd ─────────────────────────────────────────
-        # seri_kopru.py bu topic'e abone olacak
         self._pub = self.create_publisher(
             AckermannDriveStamped,
             '/ackermann_cmd',
             qos_reliable,
         )
 
+        # Önceden tahsis edilmiş mesajlar — hot path'de GC baskısını azaltır
+        self._ackermann_msg = AckermannDriveStamped()
+        self._ackermann_msg.header.frame_id = 'base_footprint'
+        self._stop_msg = AckermannDriveStamped()
+        self._stop_msg.header.frame_id = 'base_footprint'
+
         # ── Güvenlik: timeout watchdog ────────────────────────────────────────
-        # Nav2 durduğunda veya bağlantı kesildiğinde aracı frenlemek için.
-        # _timeout süresinde /cmd_vel gelmezse sıfır komut yayınlanır.
         self._last_cmd_time = self.get_clock().now()
         self._watchdog_timer = self.create_timer(
-            self._timeout / 2.0,       # timeout'un yarısı kadar sıklıkta kontrol
+            self._timeout / 2.0,
             self._watchdog_callback,
         )
 
+    def _override_aktif_cb(self, msg) -> None:
+        self._override_active = msg.data
+
+    def _override_cmd_cb(self, twist: Twist) -> None:
+        self._override_twist = twist
+
+    def _e_stop_cb(self, msg) -> None:
+        self._e_stop_aktif = msg.data
+
     # ── Ana dönüşüm callback'i ────────────────────────────────────────────────
     def _cmd_vel_callback(self, twist: Twist) -> None:
+        # E-STOP: anti_rollback dahil TÜM komutları yoksay
+        if self._e_stop_aktif:
+            self._stop_msg.header.stamp = self.get_clock().now().to_msg()
+            self._pub.publish(self._stop_msg)
+            return
+
+        # anti_rollback aktifse Nav2 komutunu yoksay
+        if self._override_active:
+            twist = self._override_twist
         """
         Gelen Twist mesajını bisiklet modeli kinematik dönüşümüyle
         AckermannDriveStamped mesajına çevirir.
@@ -182,8 +225,10 @@ class AckermannConverter(Node):
             # Direksiyon açısı korunur (son değer), hız sıfırlanır
             steering = math.copysign(self._delta_max, ω) if abs(ω) > 1e-4 else 0.0
         else:
-            # Bisiklet modeli formülü
-            steering = math.atan2(self._L * ω, v)
+            # Bisiklet modeli formülü: δ = arctan(L × ω / v)
+            # atan2 yerine atan kullanılır — atan2(L*w, v) geri gidişte (v<0, w=0)
+            # 180° hesaplar. atan(L*w/v) her yönde doğru sonuç verir.
+            steering = math.atan(self._L * ω / v)
 
         # ── Fiziksel sınırlama (servo mekanik limiti) ─────────────────────────
         steering = max(-self._delta_max, min(self._delta_max, steering))
@@ -191,18 +236,12 @@ class AckermannConverter(Node):
         # ── Hız sınırlaması (VESC akım limiti) ───────────────────────────────
         speed = max(-self._v_max, min(self._v_max, v))
 
-        # ── Mesaj oluştur ve yayınla ──────────────────────────────────────────
-        msg = AckermannDriveStamped()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = 'base_footprint'
-        msg.drive.speed          = float(speed)
-        msg.drive.steering_angle = float(steering)
-        # steering_angle_velocity: 0.0 → servo hızını kontrolcü belirler
-        msg.drive.steering_angle_velocity = 0.0
-        # acceleration: 0.0 → VESC'in kendi rampa kontrolcüsüne bırakılır
-        msg.drive.acceleration = 0.0
+        # ── Mesaj güncelle ve yayınla ─────────────────────────────────────────
+        self._ackermann_msg.header.stamp     = self.get_clock().now().to_msg()
+        self._ackermann_msg.drive.speed          = float(speed)
+        self._ackermann_msg.drive.steering_angle = float(steering)
 
-        self._pub.publish(msg)
+        self._pub.publish(self._ackermann_msg)
 
         self.get_logger().debug(
             f'v={v:.3f} m/s | ω={ω:.3f} rad/s → '
@@ -221,13 +260,8 @@ class AckermannConverter(Node):
         elapsed = (self.get_clock().now() - self._last_cmd_time).nanoseconds / 1e9
 
         if elapsed > self._timeout:
-            # Durdurma komutu
-            stop_msg = AckermannDriveStamped()
-            stop_msg.header.stamp = self.get_clock().now().to_msg()
-            stop_msg.header.frame_id = 'base_footprint'
-            stop_msg.drive.speed          = 0.0
-            stop_msg.drive.steering_angle = 0.0
-            self._pub.publish(stop_msg)
+            self._stop_msg.header.stamp = self.get_clock().now().to_msg()
+            self._pub.publish(self._stop_msg)
 
             self.get_logger().warn(
                 f'[WATCHDOG] /cmd_vel {elapsed:.2f}s süredir gelmiyor → araç durduruldu.',

@@ -1,20 +1,13 @@
 #!/usr/bin/env python3
 """
 anti_rollback.py — Geri Kayma Önleme Kontrolcüsü
-==================================================
-Dik eğimde (yokuş yukarı) aracın geri kaymasını tespit eder ve önler.
 
-Tespit koşulu (ikisi birlikte):
-  IMU pitch > RAMP_PITCH_THRESHOLD  → rampadayız
-  Odom hız  < -ROLLBACK_VEL_THRESHOLD → geri gidiyoruz
+Dik eğimde aracın geri kaymasını tespit eder ve önler.
+Tespit: IMU pitch > 10° VE odom hız < -0.05 m/s
 
-Müdahale:
-  /ackermann_cmd üzerine RECOVERY_SPEED ileri hız yayınlanır.
-  Bu komut seri_kopru.py tarafından MCU'ya iletilir.
-  /anti_rollback/aktif (Bool) durum topic'i yayınlanır.
-
-NOT: Bu node, Nav2'den gelen /ackermann_cmd'yi geçici olarak ezer.
-     Nav2 yeni komut üretince normal sürüş devam eder.
+Komut mimarisi (race condition yoktur):
+  /anti_rollback/cmd   (Twist) → ackermann_converter okur, aktifken override yapar
+  /anti_rollback/aktif (Bool)  → ackermann_converter bu flag'e göre karar verir
 """
 
 import math
@@ -25,12 +18,12 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 from sensor_msgs.msg import Imu
 from nav_msgs.msg import Odometry
-from ackermann_msgs.msg import AckermannDriveStamped
+from geometry_msgs.msg import Twist
 from std_msgs.msg import Bool
 
-RAMP_PITCH_THRESHOLD   = math.radians(10.0)  # 10° → rampada sayılır
-ROLLBACK_VEL_THRESHOLD = 0.05                # [m/s] → geri hareket eşiği
-RECOVERY_SPEED         = 0.3                 # [m/s] → geri kaymayı durduracak min hız
+RAMP_PITCH_THRESHOLD   = math.radians(10.0)
+ROLLBACK_VEL_THRESHOLD = 0.05
+RECOVERY_SPEED         = 0.3
 KONTROL_HZ             = 20.0
 
 
@@ -49,8 +42,9 @@ class AntiRollback(Node):
         self.create_subscription(Imu,      '/imu/data', self._imu_cb,  qos_be)
         self.create_subscription(Odometry, '/odom',     self._odom_cb, qos_be)
 
-        self._cmd_pub   = self.create_publisher(AckermannDriveStamped, '/ackermann_cmd', qos_rel)
-        self._durum_pub = self.create_publisher(Bool, '/anti_rollback/aktif', 10)
+        # Twist komutu → ackermann_converter override eder (tek yazıcı garantisi)
+        self._cmd_pub   = self.create_publisher(Twist, '/anti_rollback/cmd', qos_rel)
+        self._durum_pub = self.create_publisher(Bool,  '/anti_rollback/aktif', 10)
 
         self.create_timer(1.0 / KONTROL_HZ, self._kontrol)
         self.get_logger().info(
@@ -77,7 +71,7 @@ class AntiRollback(Node):
             self.get_logger().warn(
                 f'[AntiRollback] GERİ KAYMA! '
                 f'pitch={math.degrees(self._pitch):.1f}° '
-                f'vel={self._velocity:.3f} m/s → {RECOVERY_SPEED} m/s uygulanıyor'
+                f'vel={self._velocity:.3f} m/s → {RECOVERY_SPEED} m/s override'
             )
         elif not rollback and self._aktif:
             self.get_logger().info('[AntiRollback] Geri kayma sona erdi.')
@@ -86,11 +80,9 @@ class AntiRollback(Node):
         self._durum_pub.publish(Bool(data=self._aktif))
 
         if self._aktif:
-            cmd = AckermannDriveStamped()
-            cmd.header.stamp         = self.get_clock().now().to_msg()
-            cmd.header.frame_id      = 'base_footprint'
-            cmd.drive.speed          = RECOVERY_SPEED
-            cmd.drive.steering_angle = 0.0
+            cmd = Twist()
+            cmd.linear.x  = RECOVERY_SPEED
+            cmd.angular.z = 0.0
             self._cmd_pub.publish(cmd)
 
 

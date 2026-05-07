@@ -25,6 +25,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Point
+from std_msgs.msg import String
 
 SCAN_TOPIC   = '/scan'
 OUTPUT_TOPIC = '/moving_obs/prediction'
@@ -52,12 +53,17 @@ class KayarEngelKalman(Node):
         # Ölçüm matrisi (sadece konum gözlemlenir)
         self._H = np.array([[1.0, 0.0]])
 
-        self._initialized = False
-        self._last_time   = 0.0
+        self._initialized  = False
+        self._last_time    = 0.0
+        self._last_meas_t  = 0.0   # son ölçüm zamanı (timeout için)
+        TIMEOUT_RESET_S    = 5.0   # bu kadar ölçüm yoksa filtre sıfırlanır
+
+        self._TIMEOUT_RESET = TIMEOUT_RESET_S
 
         qos = QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT)
         self.create_subscription(LaserScan, SCAN_TOPIC, self._scan_cb, qos)
-        self._pub = self.create_publisher(Point, OUTPUT_TOPIC, 10)
+        self._pub     = self.create_publisher(Point,  OUTPUT_TOPIC,            10)
+        self._dir_pub = self.create_publisher(String, '/moving_obs/direction', 10)
 
         self.get_logger().info(
             f'KayarEngelKalman hazır | '
@@ -69,8 +75,15 @@ class KayarEngelKalman(Node):
         now = self.get_clock().now().nanoseconds / 1e9
 
         olcum = self._engel_bul(msg)
+
+        # Timeout: belirli süre ölçüm yoksa filtreyi sıfırla
         if olcum is None:
+            if self._initialized and (now - self._last_meas_t) > self._TIMEOUT_RESET:
+                self._initialized = False
+                self.get_logger().debug('Kalman filtresi sıfırlandı (timeout).')
             return
+
+        self._last_meas_t = now
 
         if not self._initialized:
             self._x[:] = [olcum, 0.0]
@@ -105,6 +118,11 @@ class KayarEngelKalman(Node):
         out.z = 0.0
         self._pub.publish(out)
 
+        # Yön string'i — misyon_fsm KAYAR_ENGEL state'i bu topic'i kullanır
+        # y > 0 → engel solda (araç sağdan geçer), y < 0 → sağda (soldan geçer)
+        yon = 'sol' if self._x[0] > 0.1 else ('sag' if self._x[0] < -0.1 else 'bilinmiyor')
+        self._dir_pub.publish(String(data=yon))
+
         self.get_logger().debug(
             f'konum={self._x[0]:.3f} m  hız={self._x[1]:.3f} m/s',
             throttle_duration_sec=0.5,
@@ -112,22 +130,24 @@ class KayarEngelKalman(Node):
 
     def _engel_bul(self, msg: LaserScan):
         """Arama penceresindeki en yakın noktanın lateral konumunu döndürür."""
-        en_yakin_r = float('inf')
-        en_yakin_y = None
+        ranges = np.asarray(msg.ranges, dtype=np.float32)
+        acılar = msg.angle_min + np.arange(len(ranges), dtype=np.float32) * msg.angle_increment
 
-        for i, r in enumerate(msg.ranges):
-            if not math.isfinite(r):
-                continue
-            if r < ENGEL_MIN_MESAFE or r > ENGEL_MAX_MESAFE:
-                continue
-            aci = msg.angle_min + i * msg.angle_increment
-            if aci < ENGEL_ACI_MIN or aci > ENGEL_ACI_MAX:
-                continue
-            if r < en_yakin_r:
-                en_yakin_r = r
-                en_yakin_y = r * math.sin(aci)
+        maske = (
+            np.isfinite(ranges) &
+            (ranges >= ENGEL_MIN_MESAFE) &
+            (ranges <= ENGEL_MAX_MESAFE) &
+            (acılar >= ENGEL_ACI_MIN) &
+            (acılar <= ENGEL_ACI_MAX)
+        )
 
-        return en_yakin_y
+        if not np.any(maske):
+            return None
+
+        idx = np.argmin(ranges[maske])
+        r   = ranges[maske][idx]
+        aci = acılar[maske][idx]
+        return float(r * math.sin(aci))
 
 
 def main(args=None):
