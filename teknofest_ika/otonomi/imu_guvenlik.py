@@ -11,9 +11,7 @@ Kurallar:
   pitch < -15° → yokuş aşağı fren modu (0.4 m/s)
   diğer        → normal hız (NORMAL_MAX_HIZ)
 
-Eşikler topics.py ile eşleşmeli:
-  IMU_ROLL_WARN_THRESHOLD  = 8.0°
-  IMU_ROLL_STOP_THRESHOLD  = 15.0°
+Eşikler topics.IMU_ROLL_WARN/STOP/ESTOP_THRESHOLD ile tanımlı.
 """
 
 import math
@@ -25,10 +23,11 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Imu, BatteryState
 from std_msgs.msg import Float32, Bool
 
-IMU_ROLL_WARN_THRESHOLD  =  8.0   # derece — hız azalmaya başlar
-IMU_ROLL_STOP_THRESHOLD  = 15.0   # derece — hız sıfır
-IMU_ROLL_ESTOP_THRESHOLD = 20.0   # derece — E-STOP yayınla (devrilme tehlikesi)
-IMU_PITCH_DOWN_THRESHOLD = 15.0   # derece — yokuş aşağı fren
+from teknofest_ika.otonomi.topics import (
+    IMU_TOPIC, BATTERY_TOPIC, SPEED_LIMIT_TOPIC, E_STOP_FORCE_TOPIC,
+    IMU_ROLL_WARN_THRESHOLD, IMU_ROLL_STOP_THRESHOLD,
+    IMU_ROLL_ESTOP_THRESHOLD, IMU_PITCH_DOWN_THRESHOLD,
+)
 
 NORMAL_MAX_HIZ    = 2.0   # [m/s]
 FRENLEME_HIZ      = 0.4   # [m/s]
@@ -50,12 +49,12 @@ class ImuGuvenlik(Node):
         self._batarya_yuzde = 100   # %100 varsayılan (veri gelene kadar)
 
         qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
-        self.create_subscription(Imu, '/imu/data', self._imu_cb, qos)
-        self.create_subscription(BatteryState, '/battery/status', self._bat_cb, 10)
+        self.create_subscription(Imu, IMU_TOPIC, self._imu_cb, qos)
+        self.create_subscription(BatteryState, BATTERY_TOPIC, self._bat_cb, 10)
 
-        self._pub       = self.create_publisher(Float32, '/speed_limit',  10)
+        self._pub       = self.create_publisher(Float32, SPEED_LIMIT_TOPIC,  10)
         # /e_stop/force → e_stop_node toplar, tek /e_stop yayıncısı o olur
-        self._estop_pub = self.create_publisher(Bool,    '/e_stop/force', 10)
+        self._estop_pub = self.create_publisher(Bool,    E_STOP_FORCE_TOPIC, 10)
 
         self.create_timer(1.0 / YAYINLAMA_HZ, self._yayinla)
         self.get_logger().info(

@@ -44,6 +44,11 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_msgs.msg import UInt8, Bool, Float32MultiArray
 from geometry_msgs.msg import Twist
 
+from teknofest_ika.otonomi.topics import (
+    RC_INPUT_TOPIC, MOD_KOMUT_TOPIC, CMD_VEL_TOPIC, E_STOP_TOPIC,
+    MOD_AKTIF_TOPIC, MUX_CMD_VEL_TOPIC, MISSION_START_TOPIC, SHOOT_CMD_TOPIC,
+)
+
 # ─── Mod Sabitleri ─────────────────────────────────────────────────────────
 MOD_MANUAL    = 0
 MOD_SEMI_AUTO = 1
@@ -103,18 +108,18 @@ class ModYoneticisi(Node):
         qos_be  = QoSProfile(depth=5,  reliability=ReliabilityPolicy.BEST_EFFORT)
 
         self.create_subscription(
-            Float32MultiArray, '/rc_input', self._rc_cb, qos_be)
+            Float32MultiArray, RC_INPUT_TOPIC, self._rc_cb, qos_be)
         self.create_subscription(
-            UInt8, '/mod/komut', self._komut_cb, 10)
+            UInt8, MOD_KOMUT_TOPIC, self._komut_cb, 10)
         self.create_subscription(
-            Twist, '/cmd_vel', self._nav2_cb, qos_rel)
+            Twist, CMD_VEL_TOPIC, self._nav2_cb, qos_rel)
         self.create_subscription(
-            Bool, '/e_stop', self._e_stop_cb, 10)
+            Bool, E_STOP_TOPIC, self._e_stop_cb, 10)
 
-        self._mod_pub   = self.create_publisher(UInt8,  '/mod/aktif',     10)
-        self._mux_pub   = self.create_publisher(Twist,  '/mux/cmd_vel',   qos_rel)
-        self._start_pub = self.create_publisher(Bool,   '/mission_start', 10)
-        self._shoot_pub = self.create_publisher(Bool,   '/shoot_command', 10)
+        self._mod_pub   = self.create_publisher(UInt8,  MOD_AKTIF_TOPIC,     10)
+        self._mux_pub   = self.create_publisher(Twist,  MUX_CMD_VEL_TOPIC,   qos_rel)
+        self._start_pub = self.create_publisher(Bool,   MISSION_START_TOPIC, 10)
+        self._shoot_pub = self.create_publisher(Bool,   SHOOT_CMD_TOPIC,     10)
 
         self.create_timer(0.05, self._mux_dongusu)   # 20 Hz
         self.create_timer(1.0,  self._mod_yayinla)   # 1 Hz
@@ -181,7 +186,10 @@ class ModYoneticisi(Node):
         self.get_logger().info(
             f'[MOD] {_MOD_ISIMLER[onceki]} → {_MOD_ISIMLER[yeni]}'
         )
-        # FULL_AUTO'ya ilk geçişte FSM'i tetikle
+        # FULL_AUTO'dan çıkınca bayrağı sıfırla — tekrar girilebilsin
+        if onceki == MOD_FULL_AUTO and yeni != MOD_FULL_AUTO:
+            self._fsm_tetiklendi = False
+        # FULL_AUTO'ya geçişte FSM'i tetikle
         if yeni == MOD_FULL_AUTO and not self._fsm_tetiklendi:
             self._fsm_tetiklendi = True
             self._start_pub.publish(Bool(data=True))

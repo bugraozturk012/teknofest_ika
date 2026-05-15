@@ -27,8 +27,9 @@ from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Point
 from std_msgs.msg import String
 
-SCAN_TOPIC   = '/scan'
-OUTPUT_TOPIC = '/moving_obs/prediction'
+from teknofest_ika.otonomi.topics import (
+    SCAN_FILTERED_TOPIC, MOVING_OBS_TOPIC as OUTPUT_TOPIC, MOVING_OBS_DIR_TOPIC,
+)
 
 # Engel arama penceresi (araç önünde, ±60°, 0.5–4 m arası)
 ENGEL_MIN_MESAFE = 0.5
@@ -61,9 +62,9 @@ class KayarEngelKalman(Node):
         self._TIMEOUT_RESET = TIMEOUT_RESET_S
 
         qos = QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT)
-        self.create_subscription(LaserScan, SCAN_TOPIC, self._scan_cb, qos)
-        self._pub     = self.create_publisher(Point,  OUTPUT_TOPIC,            10)
-        self._dir_pub = self.create_publisher(String, '/moving_obs/direction', 10)
+        self.create_subscription(LaserScan, SCAN_FILTERED_TOPIC, self._scan_cb, qos)
+        self._pub     = self.create_publisher(Point,  OUTPUT_TOPIC,          10)
+        self._dir_pub = self.create_publisher(String, MOVING_OBS_DIR_TOPIC,  10)
 
         self.get_logger().info(
             f'KayarEngelKalman hazır | '

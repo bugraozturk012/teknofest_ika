@@ -1,121 +1,145 @@
-# waypoints.yaml — LYDİA Parkur Waypoint Tanımları
-# =====================================================
+# waypoints.yaml — LYDİA Gerçek Parkur Waypoint Tanımları
+# =========================================================
 #
-# Her aşama için bir waypoint tanımlıdır.
-# x, y : SLAM haritasında metrik koordinat [m]
-# yaw  : Hedefe varışta aracın yönü [radyan]
-#        0.0  = Doğu (+x yönü)
-#        1.57 = Kuzey (+y yönü)
-#       -1.57 = Güney (-y yönü)
-#        3.14 = Batı (-x yönü)
+# ⚠️  TÜM KOORDİNATLAR PLACEHOLDER (0.0) — SLAM haritasından güncelle!
+#     Harita alındıktan sonra rviz2 ile 2D Nav Goal ile konumları ölç:
+#     ros2 launch teknofest_ika gercek_harita.launch.py
+#     rviz2 → 2D Nav Goal ile her aşamanın hedefini belirle ve buraya yaz.
 #
-# ⚠️  PLACEHOLDER DEĞERLERİ — Gerçek parkur haritasından güncelle!
-#     Harita kaydedildikten sonra rviz2 ile koordinatları oku:
-#     ros2 run rviz2 rviz2 → 2D Nav Goal ile konumları not al
+# yolo_sinifi : YOLO modelinin tespit ettiği tabela sınıfı (Tabela_X)
+#               yolo_adapter_node bu değeri /ika/detections JSON'una ve
+#               /yolo/class_id UInt8'e çevirir.
 #
-# yolo_sinifi : Görüntü işleme ekibinin YOLO'dan yayınlayacağı sınıf adı
-#               Bu değer /yolo/trigger topic'inden gelecek
+# pas_gecilir : true → aşama timeout'ta otomatik atlanır
+#               false → aşama zorunlu, timeout'ta hata kurtarmaya düşer
 #
-# pas_gecilir : true → bu aşama timeout'ta otomatik atlanır
-#               false → aşama zorunlu, timeout'ta dur
+# Tabela → class_id eşlemesi (yolo_adapter_node.py ile aynı):
+#   Tabela_1 (class_id=0)  → SULU_YOL
+#   Tabela_2 (class_id=1)  → TASLI_YOL
+#   Tabela_3 (class_id=2)  → YAN_EGIM
+#   Tabela_4 (class_id=3)  → DIK_ENGEL
+#   Tabela_5 (class_id=4)  → KONİLİ_YOL
+#   Tabela_6 (class_id=5)  → KAYAR_ENGEL
+#   Tabela_7 (class_id=6)  → ENGEBELİ_ARAZİ
+#   Tabela_8 (class_id=7)  → DIK_EGIM
+#   Tabela_9 (class_id=8)  → ATIS_BOLGESI
+#   Tabela_10 (class_id=9) → YAN_EGIM_2
 
 asamalar:
 
-  - isim: TASLI_YOL
-    yolo_sinifi: tasli_yol
+  - isim: SULU_YOL
+    yolo_sinifi: Tabela_1
     waypoint:
-      x: -7.651504
-      y: -0.425678
-      yaw: -0.022833
+      x: 0.0
+      y: 0.0
+      yaw: 0.0
     pas_gecilir: false
-    aciklama: "Taşlı yol — hız sınırı aktif, titreşim tolere edilir"
+    aciklama: "Sulu yol — μ≈0.3, yavaş geç, frenleme mesafesi artar"
+
+  - isim: TASLI_YOL
+    yolo_sinifi: Tabela_2
+    waypoint:
+      x: 0.0
+      y: 0.0
+      yaw: 0.0
+    pas_gecilir: false
+    aciklama: "Taşlı yol — lateral temas düzensiz, hız kısılır"
 
   - isim: YAN_EGIM
-    yolo_sinifi: yan_egim
+    yolo_sinifi: Tabela_3
     waypoint:
-      x: -15.761204
-      y: 0.796639
-      yaw: 0.025334
-    pas_gecilir: false
-    aciklama: "Yan eğim — roll açısı izlenir, hız kısılır"
-
-  - isim: HIZLANMA
-    yolo_sinifi: hizlanma
-    waypoint:
-      x: -11.0644526
-      y: 9.418053
+      x: 0.0
+      y: 0.0
       yaw: 0.0
     pas_gecilir: false
-    aciklama: "Hızlanma bölgesi — maksimum hız, düz zemin"
-
-  - isim: KAYAR_ENGEL
-    yolo_sinifi: kayar_engel
-    waypoint:
-      x: -0.021220
-      y: 9.628621
-      yaw: 0.021660
-    pas_gecilir: true
-    aciklama: "Kayar engel — engel pozisyonu değişkendir, dinamik planlama"
-
-  - isim: SU_GECISI
-    yolo_sinifi: su_gecisi
-    waypoint:
-      x: -4.524592
-      y: 19.298165
-      yaw: 0.021660
-    pas_gecilir: false
-    aciklama: "Su geçidi aşaması — yavaş geç, eğim kontrolü aktif"
-
-  - isim: TRAFIK_KON
-    yolo_sinifi: trafik_koni
-    waypoint:
-      x: -14.677923
-      y: 19.585150
-      yaw: 0.021660
-    pas_gecilir: false
-    aciklama: "Trafik konisi slalom — dar geçiş, hız düşürülür"
+    aciklama: "Yan eğim — roll açısı izlenir, imu_guvenlik devrede"
 
   - isim: DIK_ENGEL
-    yolo_sinifi: dik_engel
+    yolo_sinifi: Tabela_4
     waypoint:
-      x: -19.712500
-      y: 29.612490
-      yaw: 0.021660
+      x: 0.0
+      y: 0.0
+      yaw: 0.0
     pas_gecilir: true
-    aciklama: "Dik engel — Nav2 engel kaçınması devreye girer"
+    aciklama: "Dik engel — Nav2 lokal costmap engeli kaçınır"
 
-  - isim: ENGEBELI_ARAZI
-    yolo_sinifi: engebeli_arazi
+  - isim: KONİLİ_YOL
+    yolo_sinifi: Tabela_5
     waypoint:
-      x: -15.970702
-      y: 29.679144
-      yaw: 0.021660
-    pas_gecilir: true
-    aciklama: "Engebeli arazi — koordinatlar haritadan alındı"
-
-  - isim: DIK_EGIM
-    yolo_sinifi: dik_egim
-    waypoint:
-      x: -9.178841
-      y: 29.590205
-      yaw: -3.141591
-    pas_gecilir: false
-    aciklama: "Dik eğim — tork artışı, anti-rollback aktif"
-
-  - isim: ATIS
-    yolo_sinifi: atis
-    waypoint:
-      x: 1.443568
-      y: 29.447639
+      x: 0.0
+      y: 0.0
       yaw: 0.0
     pas_gecilir: false
-    aciklama: "Atış pozisyonu — araç durur, lazer/top mekanizması tetiklenir"
+    aciklama: "Konili yol slalom — dar geçiş, koni_costmap aktif"
+
+  - isim: KAYAR_ENGEL
+    yolo_sinifi: Tabela_6
+    waypoint:
+      x: 0.0
+      y: 0.0
+      yaw: 0.0
+    pas_gecilir: true
+    aciklama: "Kayar engel — pozisyon değişkendir, kayar_yon beklenir"
+
+  - isim: ENGEBELİ_ARAZİ
+    yolo_sinifi: Tabela_7
+    waypoint:
+      x: 0.0
+      y: 0.0
+      yaw: 0.0
+    pas_gecilir: true
+    aciklama: "Engebeli arazi — titreşim tolere, hız minimum"
+
+  - isim: DIK_EGIM_GIRIS
+    yolo_sinifi: Tabela_8
+    waypoint:
+      x: 0.0   # ⚠️ PLACEHOLDER — rampa giriş noktası (düz zemin, rampadan önce)
+      y: 0.0
+      yaw: 0.0
+    pas_gecilir: false
+    aciklama: >
+      §6.10 Dik eğim girişi. Rampa öncesi düz zemin. Rampa dibindeki STOP işareti
+      NavigateState tarafından tespit edilir (Tabela_stop/class_id=13):
+      araç 2s durur, 3s cooldown, rampa çıkışına devam.
+
+  - isim: DIK_EGIM_CIKIS
+    yolo_sinifi: Tabela_8
+    waypoint:
+      x: 0.0   # ⚠️ PLACEHOLDER — rampa çıkış noktası (iniş sonrası düz zemin)
+      y: 0.0
+      yaw: 0.0
+    pas_gecilir: false
+    aciklama: >
+      §6.10 Dik eğim çıkışı. Rampa üzerinde çıkarken ve inerken STOP işaretleri
+      NavigateState tarafından ayrı ayrı işlenir. Cooldown=3s rampa geçiş süresinden
+      kısa olduğu için her STOP doğru tetiklenir. anti_rollback aktif.
+
+  - isim: ATIS_BOLGESI
+    yolo_sinifi: Tabela_9
+    waypoint:
+      x: 0.0
+      y: 0.0
+      yaw: 0.0
+    pas_gecilir: false
+    aciklama: "Atış bölgesi — araç durur, nişan alır, lazer ateşlenir (max 3 deneme)"
+
+
+  - isim: HIZLANMA_PARKURU
+    yolo_sinifi: Tabela_11
+    waypoint:
+      x: 0.0    # ⚠️ PLACEHOLDER — SLAM haritasından doldur (pistin başlangıç noktası)
+      y: 0.0
+      yaw: 0.0  # aracın ilerleme yönüne hizala
+    pas_gecilir: false
+    aciklama: >
+      §6.11 Hızlanma parkuru girişi. Nav2 bu noktaya götürür, sonra
+      HizlanmaState devralır: Nav2 bypass, doğrudan /cmd_vel 10 m/s,
+      30m enkoder mesafesi, son 5m rampalı fren, Tabela_11_son yedek dur.
 
 # Genel parametreler
 parametreler:
-  yolo_confidence_esigi: 0.75     # Bu değerin altındaki tespitler görmezden gelinir
-  ardisik_frame_sayisi: 3         # Kaç ardışık frame'de tespit edilmeli
-  hedef_tolerans_metre: 0.30      # Hedefe bu kadar yaklaşınca "ulaşıldı" sayılır
-  hedef_tolerans_yaw: 0.20        # Yaw toleransı [radyan] ≈ 11.5°
-  asama_timeout_saniye: 120.0     # Aşama bu sürede tamamlanamazsa sonraki aşamaya geç
+  ardisik_frame_sayisi: 3         # terrain_adapter.py → kaç ardışık frame'de tabela geçerli sayılır
+  hedef_tolerans_metre: 0.30      # nav2_params.yaml xy_goal_tolerance ile eşleştirildi [m]
+  hedef_tolerans_yaw: 0.20        # nav2_params.yaml yaw_goal_tolerance ile eşleştirildi [rad]
+  asama_timeout_saniye: 120.0     # misyon_fsm.py → Nav2 bu sürede hedefe varamazsa goal iptal [s]
   baslangic_bekleme: 3.0          # Otonom moda geçişte bekleme süresi [s]

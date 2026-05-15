@@ -16,14 +16,18 @@ GİRİŞ : /scan                 (sensor_msgs/LaserScan)
 ÇIKIŞ : /moving_obs_cloud     (sensor_msgs/PointCloud2) — Nav2 ObstacleLayer
 """
 import math
-import struct
 
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 from sensor_msgs.msg import LaserScan, PointCloud2, PointField
 from std_msgs.msg import String
+
+from teknofest_ika.otonomi.topics import (
+    SCAN_FILTERED_TOPIC, MOVING_OBS_DIR_TOPIC, MOVING_OBS_CLOUD_TOPIC,
+)
 
 # Kayar engel arama penceresi — kayar_engel_kalman.py ile aynı değerler
 ENGEL_MIN_MESAFE = 0.5
@@ -34,28 +38,30 @@ ENGEL_ACI_MAX    =  math.radians(60)
 # Tek gürültü noktasını eleman saymamak için minimum nokta sayısı
 MIN_NOKTA = 3
 
+_FIELDS = [
+    PointField(name='x', offset=0,  datatype=PointField.FLOAT32, count=1),
+    PointField(name='y', offset=4,  datatype=PointField.FLOAT32, count=1),
+    PointField(name='z', offset=8,  datatype=PointField.FLOAT32, count=1),
+]
 
-def _xyz_cloud(points_xy, frame_id: str, stamp) -> PointCloud2:
-    """[(x,y), ...] → XYZ PointCloud2 (z=0, zemin seviyesi)."""
-    fields = [
-        PointField(name='x', offset=0,  datatype=PointField.FLOAT32, count=1),
-        PointField(name='y', offset=4,  datatype=PointField.FLOAT32, count=1),
-        PointField(name='z', offset=8,  datatype=PointField.FLOAT32, count=1),
-    ]
-    data = bytearray()
-    for x, y in points_xy:
-        data += struct.pack('fff', x, y, 0.0)
+
+def _xyz_cloud(xs: np.ndarray, ys: np.ndarray, frame_id: str, stamp) -> PointCloud2:
+    n = len(xs)
+    zs = np.zeros(n, dtype=np.float32)
+    data = np.column_stack([xs.astype(np.float32),
+                            ys.astype(np.float32),
+                            zs]).tobytes()
 
     cloud = PointCloud2()
     cloud.header.stamp    = stamp
     cloud.header.frame_id = frame_id
     cloud.height          = 1
-    cloud.width           = len(points_xy)
-    cloud.fields          = fields
+    cloud.width           = n
+    cloud.fields          = _FIELDS
     cloud.is_bigendian    = False
     cloud.point_step      = 12
-    cloud.row_step        = 12 * len(points_xy)
-    cloud.data            = bytes(data)
+    cloud.row_step        = 12 * n
+    cloud.data            = data
     cloud.is_dense        = True
     return cloud
 
@@ -65,16 +71,15 @@ class KayarEngelCostmap(Node):
     def __init__(self):
         super().__init__('kayar_engel_costmap')
 
-        # Kalman filtresi aktif mi? (direction != 'bilinmiyor')
         self._engel_aktif = False
 
         qos = QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT)
 
-        self.create_subscription(LaserScan, '/scan', self._scan_cb, qos)
+        self.create_subscription(LaserScan, SCAN_FILTERED_TOPIC, self._scan_cb, qos)
         self.create_subscription(
-            String, '/moving_obs/direction', self._dir_cb, 10)
+            String, MOVING_OBS_DIR_TOPIC, self._dir_cb, 10)
 
-        self._pub = self.create_publisher(PointCloud2, '/moving_obs_cloud', 10)
+        self._pub = self.create_publisher(PointCloud2, MOVING_OBS_CLOUD_TOPIC, 10)
 
         self.get_logger().info(
             'KayarEngelCostmap hazır | '
@@ -88,28 +93,31 @@ class KayarEngelCostmap(Node):
         if not self._engel_aktif:
             return
 
-        noktalar = []
-        for i, r in enumerate(msg.ranges):
-            if not math.isfinite(r):
-                continue
-            if r < ENGEL_MIN_MESAFE or r > ENGEL_MAX_MESAFE:
-                continue
-            aci = msg.angle_min + i * msg.angle_increment
-            if aci < ENGEL_ACI_MIN or aci > ENGEL_ACI_MAX:
-                continue
-            x = r * math.cos(aci)
-            y = r * math.sin(aci)
-            noktalar.append((x, y))
+        ranges = np.array(msg.ranges, dtype=np.float32)
+        angles = (msg.angle_min
+                  + np.arange(len(ranges), dtype=np.float32) * msg.angle_increment)
 
-        if len(noktalar) < MIN_NOKTA:
+        mask = (
+            np.isfinite(ranges)
+            & (ranges >= ENGEL_MIN_MESAFE)
+            & (ranges <= ENGEL_MAX_MESAFE)
+            & (angles >= ENGEL_ACI_MIN)
+            & (angles <= ENGEL_ACI_MAX)
+        )
+
+        r_sel = ranges[mask]
+        if len(r_sel) < MIN_NOKTA:
             return
 
+        a_sel = angles[mask]
+        xs = r_sel * np.cos(a_sel)
+        ys = r_sel * np.sin(a_sel)
+
         frame = msg.header.frame_id if msg.header.frame_id else 'laser'
-        cloud = _xyz_cloud(noktalar, frame, msg.header.stamp)
-        self._pub.publish(cloud)
+        self._pub.publish(_xyz_cloud(xs, ys, frame, msg.header.stamp))
 
         self.get_logger().debug(
-            f'Kayar engel: {len(noktalar)} nokta costmap\'e eklendi',
+            f'Kayar engel: {len(r_sel)} nokta costmap\'e eklendi',
             throttle_duration_sec=1.0
         )
 

@@ -2,24 +2,18 @@
 """
 rota_haritalama.py — Eğim-Dayanıklı Haritalama Navigator
 ==========================================================
-Düz zeminde: map → base_footprint TF (SLAM konumu)
-Eğimde     : son bilinen harita konumu + odom deltası (EKF dead reckoning)
+SLAM haritalama sırasında aracı waypoint'lere otomatik götürür.
+Düz zeminde SLAM TF'ini, eğimde EKF dead reckoning kullanır.
 
-Düzeltilen sorunlar:
-  - get_pose() veri gelmeden (0,0,0) döndürüyordu → hazırlık bayrakları eklendi
-  - TF hazır kontrolü anında geçiyordu → gerçek TF başarı kontrolü eklendi
-  - Dead reckoning rotasyonu map yaw yerine map→odom rotasyonu kullanıyor
-  - Spin önleme: MIN_ILERI_HIZ her zaman korunur
+GÜVENLİK ŞARTI:
+  Bu script /cmd_vel'e yazar → mod_yoneticisi üzerinden geçer.
+  Çalışması için araç FULL_AUTO modunda olmalı (RC ch5 > 1700µs).
+  E-STOP alındığında script hemen durur.
 
-Simülasyon notu:
-  Gazebo'da araç diff drive plugin kullanıyor (Ackermann değil).
-  Haritalama için sorun değil — fizik davranışı farklı olsa da
-  SLAM haritayı doğru çizer.
-
-Kullanım:
-  Terminal 1: ros2 launch teknofest_ika slam_haritalama.launch.py
+Kullanım (Jetson'da):
+  Terminal 1: ros2 launch teknofest_ika gercek_harita.launch.py
   Terminal 2: python3 ~/ika_ws/scripts/rota_haritalama.py
-  Bitti:      ros2 run nav2_map_server map_saver_cli -f ~/ika_ws/maps/teknofest_harita
+  Bitti:      ros2 run nav2_map_server map_saver_cli -f ~/ika_ws/maps/gercek_harita
 
 NOT: Harita kaydedildikten sonra bu script bir daha kullanılmaz.
      Yarışmada misyon_fsm.py + Nav2 navigasyonu devralır.
@@ -36,7 +30,12 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
+from std_msgs.msg import Bool
 import tf2_ros
+
+from teknofest_ika.otonomi.topics import (
+    EKF_ODOM_TOPIC, IMU_TOPIC, E_STOP_TOPIC, CMD_VEL_TOPIC,
+)
 
 # ─── Navigasyon Parametreleri ───────────────────────────────────────────────
 MAX_HIZ_DUZLEM   = 0.8    # Düz zeminde hedef hız [m/s]
@@ -103,16 +102,27 @@ class RotaHaritalama(Node):
         self._anc_odom_y   = 0.0
         self._anc_odom_yaw = 0.0   # Dead reckoning rotasyonu için
 
+        # ── E-STOP ───────────────────────────────────────────────────────
+        self._e_stop = False
+
         # ── Subscriptionlar ───────────────────────────────────────────────
         qos_be = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
 
         self.create_subscription(
-            Odometry, '/odometry/filtered', self._odom_cb, qos_be)
+            Odometry, EKF_ODOM_TOPIC, self._odom_cb, qos_be)
         self.create_subscription(
-            Imu, '/imu/data', self._imu_cb, qos_be)
+            Imu, IMU_TOPIC, self._imu_cb, qos_be)
+        self.create_subscription(
+            Bool, E_STOP_TOPIC, self._e_stop_cb, 10)
 
         # ── cmd_vel publisher ─────────────────────────────────────────────
-        self._cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self._cmd_pub = self.create_publisher(Twist, CMD_VEL_TOPIC, 10)
+
+    # ── E-STOP Callback ──────────────────────────────────────────────────
+    def _e_stop_cb(self, msg: Bool):
+        if msg.data and not self._e_stop:
+            self.get_logger().error('!!! E-STOP — haritalama durduruluyor !!!')
+        self._e_stop = msg.data
 
     # ── IMU Callback ─────────────────────────────────────────────────────
     def _imu_cb(self, msg: Imu):
@@ -250,6 +260,11 @@ class RotaHaritalama(Node):
         while rclpy.ok():
             rclpy.spin_once(self, timeout_sec=0.05)
 
+            if self._e_stop:
+                self.get_logger().error(f'E-STOP — {isim} iptal edildi.')
+                self.dur()
+                return False
+
             if time.time() - t0 > TIMEOUT_S:
                 self.get_logger().warn(f'TIMEOUT — {isim} atlanıyor')
                 self.dur()
@@ -322,6 +337,9 @@ class RotaHaritalama(Node):
         self.get_logger().info(f'=== HARITALAMA BAŞLIYOR: {toplam} waypoint ===')
 
         for wp in self.waypoints:
+            if self._e_stop:
+                self.get_logger().error('E-STOP — haritalama erken sonlandırıldı.')
+                break
             if self.git(wp['isim'], wp['x'], wp['y']):
                 basarili += 1
             time.sleep(1.0)
@@ -331,7 +349,7 @@ class RotaHaritalama(Node):
             f'\n=== TAMAMLANDI: {basarili}/{toplam} başarılı ===\n'
             f'Haritayı kaydet:\n'
             f'  ros2 run nav2_map_server map_saver_cli '
-            f'-f ~/ika_ws/maps/teknofest_harita'
+            f'-f ~/ika_ws/maps/gercek_harita'
         )
 
 

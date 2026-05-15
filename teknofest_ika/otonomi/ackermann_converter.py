@@ -83,11 +83,17 @@ KURULUM:
 """
 
 import math
+import threading
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from geometry_msgs.msg import Twist
 from ackermann_msgs.msg import AckermannDriveStamped
+
+from teknofest_ika.otonomi.topics import (
+    MUX_CMD_VEL_TOPIC, ACKERMANN_CMD_TOPIC, E_STOP_TOPIC,
+    ANTI_ROLLBACK_AKTIF_TOPIC, ANTI_ROLLBACK_CMD_TOPIC,
+)
 
 
 class AckermannConverter(Node):
@@ -135,13 +141,14 @@ class AckermannConverter(Node):
         self._e_stop_aktif = False
 
         # ── Override state (anti_rollback) ───────────────────────────────────
+        self._override_lock   = threading.Lock()
         self._override_active = False
         self._override_twist  = Twist()
 
-        # ── Subscriber: /cmd_vel ──────────────────────────────────────────────
+        # ── Subscriber: /mux/cmd_vel — mod_yoneticisi çıkışı ─────────────────
         self._sub = self.create_subscription(
             Twist,
-            '/cmd_vel',
+            MUX_CMD_VEL_TOPIC,
             self._cmd_vel_callback,
             qos_reliable,
         )
@@ -149,21 +156,21 @@ class AckermannConverter(Node):
         # ── Subscriber: anti_rollback override ───────────────────────────────
         from std_msgs.msg import Bool as BoolMsg
         self._override_sub = self.create_subscription(
-            BoolMsg, '/anti_rollback/aktif',
+            BoolMsg, ANTI_ROLLBACK_AKTIF_TOPIC,
             self._override_aktif_cb, 10
         )
         self._override_cmd_sub = self.create_subscription(
-            Twist, '/anti_rollback/cmd',
+            Twist, ANTI_ROLLBACK_CMD_TOPIC,
             self._override_cmd_cb, qos_reliable
         )
         self.create_subscription(
-            BoolMsg, '/e_stop', self._e_stop_cb, 10
+            BoolMsg, E_STOP_TOPIC, self._e_stop_cb, 10
         )
 
         # ── Publisher: /ackermann_cmd ─────────────────────────────────────────
         self._pub = self.create_publisher(
             AckermannDriveStamped,
-            '/ackermann_cmd',
+            ACKERMANN_CMD_TOPIC,
             qos_reliable,
         )
 
@@ -181,10 +188,12 @@ class AckermannConverter(Node):
         )
 
     def _override_aktif_cb(self, msg) -> None:
-        self._override_active = msg.data
+        with self._override_lock:
+            self._override_active = msg.data
 
     def _override_cmd_cb(self, twist: Twist) -> None:
-        self._override_twist = twist
+        with self._override_lock:
+            self._override_twist = twist
 
     def _e_stop_cb(self, msg) -> None:
         self._e_stop_aktif = msg.data
@@ -198,12 +207,10 @@ class AckermannConverter(Node):
             return
 
         # anti_rollback aktifse Nav2 komutunu yoksay
-        if self._override_active:
-            twist = self._override_twist
-        """
-        Gelen Twist mesajını bisiklet modeli kinematik dönüşümüyle
-        AckermannDriveStamped mesajına çevirir.
-        """
+        with self._override_lock:
+            if self._override_active:
+                twist = self._override_twist
+
         self._last_cmd_time = self.get_clock().now()
 
         v = twist.linear.x      # İleri hız [m/s]

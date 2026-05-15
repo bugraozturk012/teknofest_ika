@@ -237,6 +237,99 @@ def generate_launch_description():
         parameters=[{'use_sim_time': False}]
     )
 
+
+    # ── Görüntü Ön İşleme ─────────────────────────────────────────────────────
+    # /ileri_kamera/image_raw → IMX258 ana kameradan (/camera/image_raw)
+    # /yardimci_kamera/image_raw → ön webcam'den (/camera/front/image_raw)
+    preprocessing = Node(
+        package='teknofest_ika', executable='preprocessing_node',
+        name='preprocessing_node', output='screen',
+        parameters=[{'use_sim_time': False}],
+        remappings=[
+            ('/ileri_kamera/image_raw',    '/camera/image_raw'),
+            ('/yardimci_kamera/image_raw', '/camera/front/image_raw'),
+        ]
+    )
+
+    # ── YOLOv8 TensorRT Dedeksiyonu ───────────────────────────────────────────
+    # model_path: Jetson'da best.pt → scripts/export_tensorrt.py ile üretilir
+    yolo_detection = Node(
+        package='teknofest_ika', executable='yolo_detection_node',
+        name='yolo_detection_node', output='screen',
+        parameters=[{
+            'use_sim_time':        False,
+            'model_path':          'models/best.engine',
+            'conf_thres':          0.45,
+            'iou_thres':           0.45,
+            'publish_debug_image': True,
+        }]
+    )
+
+    # ── Koni Füzyon (YOLO + LiDAR → Nav2 costmap) ────────────────────────────
+    cone_fusion = Node(
+        package='teknofest_ika', executable='cone_fusion_node',
+        name='cone_fusion_node', output='screen',
+        parameters=[{
+            'use_sim_time':      False,
+            'camera_fov_deg':    60.0,
+            'image_width':       1280,
+            'cone_safety_radius_m': 0.4,
+            'cone_min_confidence':  0.45,
+            'target_label':      '13',   # yolo_detection_node str(class_id) yayınlar
+        }],
+        remappings=[
+            ('/ileri_kamera/camera_info', '/camera/front/camera_info'),
+        ]
+    )
+
+    # ── Hedef Kilitleme (HSV + Hough + PID) ───────────────────────────────────
+    targeting = Node(
+        package='teknofest_ika', executable='targeting_node',
+        name='targeting_node', output='screen',
+        parameters=[{
+            'use_sim_time':          False,
+            'align_threshold_px':    10.0,
+            'fire_lock_duration_sec': 0.5,
+            'fire_cooldown_sec':     2.0,
+            'publish_debug':         True,
+        }]
+    )
+
+    # ── Servo Kontrolcüsü (PCA9685 + GPIO ateş) ───────────────────────────────
+    servo_controller = Node(
+        package='teknofest_ika', executable='servo_controller_node',
+        name='servo_controller_node', output='screen',
+        parameters=[{
+            'use_sim_time':   False,
+            'use_pca9685':    True,
+            'yaw_channel':    0,
+            'pitch_channel':  1,
+            'yaw_home_deg':   90.0,
+            'pitch_home_deg': 90.0,
+        }]
+    )
+
+    # ── Watchdog (Kritik topic sağlık izleme) ─────────────────────────────────
+    watchdog = Node(
+        package='teknofest_ika', executable='watchdog',
+        name='watchdog', output='screen',
+        parameters=[{'use_sim_time': False}]
+    )
+
+    # ── YOLO Adapter — Detection2DArray → /ika/detections JSON köprüsü ───────
+    # yolo_detection_node'dan sonra başlamalı (13s+)
+    # img_cx/img_cy: YOLO giriş boyutuna göre (preprocessing_node 640x640 → 320,320)
+    yolo_adapter = Node(
+        package='teknofest_ika', executable='yolo_adapter_node',
+        name='yolo_adapter_node', output='screen',
+        parameters=[{
+            'use_sim_time':   False,
+            'img_cx':         320.0,
+            'img_cy':         320.0,
+            'conf_threshold': 0.45,
+        }]
+    )
+
     # ── LR02 433MHz LoRa GCS Köprüsü ─────────────────────────────────────────
     # Udev (bir kez): /dev/lora symlink oluştur
     #   echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="2303", SYMLINK+="lora"' \
@@ -255,28 +348,43 @@ def generate_launch_description():
         }]
     )
 
-    # ── Microcase 720P Webcam — Taret kamerası ────────────────────────────────
-    # Kurulum (bir kez): sudo apt install ros-humble-usb-cam
-    # Udev  (bir kez): aşağıdaki komutu çalıştır
-    #   echo 'SUBSYSTEM=="video4linux", ATTR{name}=="Microcase*", SYMLINK+="webcam_taret"' \
-    #       | sudo tee /etc/udev/rules.d/99-webcam-taret.rules
+    # ── Microcase 720P Webcam'ler — Şartname §6.12: 3 kamera zorunlu ────────────
+    #
+    # 3 Microcase 720P aynı USB VID:PID paylaşır → udev'de by-path ile ayırt et.
+    # Hangi kamera hangi USB portuna takılı → lsusb -t ile bak, ardından:
+    #
+    #   Taret (nişan):
+    #     echo 'SUBSYSTEM=="video4linux", KERNELS=="<PORT_TARET>", SYMLINK+="webcam_taret"' \
+    #         | sudo tee /etc/udev/rules.d/99-webcam-taret.rules
+    #
+    #   Ön (ileri):
+    #     echo 'SUBSYSTEM=="video4linux", KERNELS=="<PORT_ILERI>", SYMLINK+="webcam_ileri"' \
+    #         | sudo tee /etc/udev/rules.d/99-webcam-ileri.rules
+    #
+    #   Arka (geri):
+    #     echo 'SUBSYSTEM=="video4linux", KERNELS=="<PORT_GERI>", SYMLINK+="webcam_geri"' \
+    #         | sudo tee /etc/udev/rules.d/99-webcam-geri.rules
+    #
     #   sudo udevadm control --reload-rules && sudo udevadm trigger
-    # Eğer udev kuralı yoksa video_device'ı /dev/video0 veya /dev/video1 yap.
+    #
+    # Udev yoksa /dev/video0, /dev/video1, /dev/video2 olarak dene.
+
+    # Taret kamerası — nişan alma (taret üzeri)
     webcam_taret = Node(
         package='usb_cam',
         executable='usb_cam_node_exe',
         name='webcam_taret',
         output='screen',
         parameters=[{
-            'video_device':    '/dev/webcam_taret',
-            'image_width':     1280,
-            'image_height':    720,
-            'framerate':       30.0,
-            'pixel_format':    'mjpeg2rgb',
-            'camera_name':     'taret',
-            'camera_info_url': '',
+            'video_device':       '/dev/webcam_taret',
+            'image_width':        1280,
+            'image_height':       720,
+            'framerate':          30.0,
+            'pixel_format':       'mjpeg2rgb',
+            'camera_name':        'taret',
+            'camera_info_url':    '',
             'auto_white_balance': True,
-            'autoexposure':    True,
+            'autoexposure':       True,
         }],
         remappings=[
             ('image_raw',   '/camera/taret/image_raw'),
@@ -284,10 +392,59 @@ def generate_launch_description():
         ]
     )
 
+    # Ön kamera — ileri sürüş görüntüsü (§6.12 zorunlu)
+    webcam_ileri = Node(
+        package='usb_cam',
+        executable='usb_cam_node_exe',
+        name='webcam_ileri',
+        output='screen',
+        parameters=[{
+            'video_device':       '/dev/webcam_ileri',
+            'image_width':        1280,
+            'image_height':       720,
+            'framerate':          30.0,
+            'pixel_format':       'mjpeg2rgb',
+            'camera_name':        'ileri',
+            'camera_info_url':    '',
+            'auto_white_balance': True,
+            'autoexposure':       True,
+        }],
+        remappings=[
+            ('image_raw',   '/camera/front/image_raw'),
+            ('camera_info', '/camera/front/camera_info'),
+        ]
+    )
+
+    # Arka kamera — geri sürüş görüntüsü (§6.12 zorunlu)
+    webcam_geri = Node(
+        package='usb_cam',
+        executable='usb_cam_node_exe',
+        name='webcam_geri',
+        output='screen',
+        parameters=[{
+            'video_device':       '/dev/webcam_geri',
+            'image_width':        1280,
+            'image_height':       720,
+            'framerate':          30.0,
+            'pixel_format':       'mjpeg2rgb',
+            'camera_name':        'geri',
+            'camera_info_url':    '',
+            'auto_white_balance': True,
+            'autoexposure':       True,
+        }],
+        remappings=[
+            ('image_raw',   '/camera/rear/image_raw'),
+            ('camera_info', '/camera/rear/camera_info'),
+        ]
+    )
+
     return LaunchDescription([
         rsp,
         TimerAction(period=0.5,  actions=[e_stop]),
-        TimerAction(period=1.0,  actions=[seri_kopru, lidar, os30a, webcam_taret, lora]),
+        TimerAction(period=1.0,  actions=[seri_kopru, lidar, os30a,
+                                          webcam_taret, webcam_ileri, webcam_geri,
+                                          lora]),
+        TimerAction(period=2.0,  actions=[preprocessing]),
         TimerAction(period=3.0,  actions=[ekf]),
         TimerAction(period=5.0,  actions=[slam]),
         TimerAction(period=8.0,  actions=[nav2]),
@@ -296,5 +453,9 @@ def generate_launch_description():
         TimerAction(period=11.5, actions=[veri_paketi, terrain_adapter,
                                           kayar_kalman, koni_costmap,
                                           kayar_costmap]),
-        TimerAction(period=13.0, actions=[misyon_fsm]),
+        TimerAction(period=12.0, actions=[watchdog]),
+        TimerAction(period=13.0, actions=[yolo_detection, cone_fusion,
+                                          targeting, servo_controller]),
+        TimerAction(period=13.5, actions=[yolo_adapter]),
+        TimerAction(period=14.0, actions=[misyon_fsm]),
     ])

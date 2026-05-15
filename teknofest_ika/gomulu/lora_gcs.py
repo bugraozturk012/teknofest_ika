@@ -54,6 +54,12 @@ try:
 except ImportError:
     _SERIAL_MEVCUT = False
 
+from teknofest_ika.otonomi.topics import (
+    E_STOP_FORCE_TOPIC, MOD_KOMUT_TOPIC, MOD_AKTIF_TOPIC,
+    FSM_STATE_TOPIC, BATTERY_TOPIC, E_STOP_TOPIC, ODOM_TOPIC,
+    MISYON_WP_INDEX_TOPIC,
+)
+
 _MOD_ISIM = {0: 'MANUAL', 1: 'SEMI', 2: 'AUTO'}
 
 
@@ -85,16 +91,17 @@ class LoraGCS(Node):
         self._baslangic = time.time()
 
         # GCS komutlarından gelen publisher'lar
-        self._e_stop_pub = self.create_publisher(Bool,  '/e_stop/force', 10)
-        self._mod_pub    = self.create_publisher(UInt8, '/mod/komut',    10)
+        self._e_stop_pub = self.create_publisher(Bool,  E_STOP_FORCE_TOPIC, 10)
+        self._mod_pub    = self.create_publisher(UInt8, MOD_KOMUT_TOPIC,    10)
 
         # Abonelikler
         qos_be = QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT)
-        self.create_subscription(UInt8,        '/mod/aktif',      self._mod_cb,     10)
-        self.create_subscription(String,       '/fsm_state',      self._fsm_cb,     10)
-        self.create_subscription(BatteryState, '/battery/status', self._bat_cb,     10)
-        self.create_subscription(Bool,         '/e_stop',         self._estop_cb,   10)
-        self.create_subscription(Odometry,     '/odom',           self._odom_cb,    qos_be)
+        self.create_subscription(UInt8,        MOD_AKTIF_TOPIC,      self._mod_cb,    10)
+        self.create_subscription(String,       FSM_STATE_TOPIC,      self._fsm_cb,    10)
+        self.create_subscription(BatteryState, BATTERY_TOPIC,        self._bat_cb,    10)
+        self.create_subscription(Bool,         E_STOP_TOPIC,         self._estop_cb,  10)
+        self.create_subscription(Odometry,     ODOM_TOPIC,           self._odom_cb,   qos_be)
+        self.create_subscription(UInt8,        MISYON_WP_INDEX_TOPIC, self._wp_cb,    10)
 
         # Seri port
         self._ser = None
@@ -129,7 +136,7 @@ class LoraGCS(Node):
             b'AT+RST\r\n',           # Sıfırla
             b'AT+MODE=1\r\n',        # Şeffaf mod
             b'AT+FREQ=433000000\r\n', # 433 MHz
-            b'AT+POWE=22\r\n',       # Maks güç (22 dBm)
+            b'AT+POWER=22\r\n',      # Maks güç (22 dBm)
             b'AT+BAUD=9600\r\n',     # 9600 baud
         ]
         try:
@@ -166,6 +173,10 @@ class LoraGCS(Node):
         with self._lock:
             self._x = round(msg.pose.pose.position.x, 1)
             self._y = round(msg.pose.pose.position.y, 1)
+
+    def _wp_cb(self, msg: UInt8):
+        with self._lock:
+            self._wp_index = int(msg.data)
 
     # ── Telemetri gönder (1 Hz) ──────────────────────────────────────────────
     def _telemetri_gonder(self):

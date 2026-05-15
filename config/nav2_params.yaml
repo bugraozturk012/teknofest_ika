@@ -39,7 +39,7 @@ bt_navigator:
       - nav2_compute_path_through_poses_action_bt_node
       - nav2_smooth_path_action_bt_node
       - nav2_follow_path_action_bt_node
-      - nav2_spin_action_bt_node
+      # nav2_spin_action_bt_node kaldırıldı — Ackermann uyumsuz
       - nav2_wait_action_bt_node
       - nav2_back_up_action_bt_node
       - nav2_drive_on_heading_bt_node
@@ -94,7 +94,7 @@ controller_server:
     general_goal_checker:
       stateful: true
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.25       # [m] — Hedefe varış toleransı
+      xy_goal_tolerance: 0.30       # [m] — waypoints.yaml hedef_tolerans_metre ile eşleştirildi
       yaw_goal_tolerance: 0.15      # [rad] ≈ 8.6°
 
     # ── Regulated Pure Pursuit Controller ────────────────────────────────
@@ -190,9 +190,9 @@ behavior_server:
     costmap_topic: local_costmap/costmap_raw
     footprint_topic: local_costmap/published_footprint
     cycle_frequency: 10.0
-    behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
-    spin:
-      plugin: "nav2_behaviors/Spin"
+    # spin kaldırıldı — Ackermann araç yerinde dönemez, spin recovery çağrılırsa
+    # araç titreşir ve timeout'a girer. backup + drive_on_heading ile yeniden plan üretilir.
+    behavior_plugins: ["backup", "drive_on_heading", "wait"]
     backup:
       plugin: "nav2_behaviors/BackUp"
     drive_on_heading:
@@ -232,9 +232,9 @@ global_costmap:
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
-        observation_sources: scan cone_cloud moving_obs_cloud os30a_cloud
+        observation_sources: scan koni_cloud yolo_cone_cloud moving_obs_cloud os30a_cloud
         scan:
-          topic: /scan
+          topic: /scan/filtered
           max_obstacle_height: 2.0
           clearing: true
           marking: true
@@ -243,8 +243,18 @@ global_costmap:
           raytrace_min_range: 0.0
           obstacle_max_range: 4.0
           obstacle_min_range: 0.50
-        cone_cloud:
+        koni_cloud:
           topic: /cone_cloud
+          max_obstacle_height: 2.0
+          clearing: false
+          marking: true
+          data_type: "PointCloud2"
+          raytrace_max_range: 8.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 8.0
+          obstacle_min_range: 0.0
+        yolo_cone_cloud:
+          topic: /costmap/cone_cloud
           max_obstacle_height: 2.0
           clearing: false
           marking: true
@@ -303,9 +313,9 @@ local_costmap:
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
-        observation_sources: scan cone_cloud moving_obs_cloud os30a_cloud
+        observation_sources: scan koni_cloud yolo_cone_cloud moving_obs_cloud os30a_cloud
         scan:
-          topic: /scan
+          topic: /scan/filtered
           max_obstacle_height: 2.0
           clearing: true
           marking: true
@@ -314,8 +324,18 @@ local_costmap:
           raytrace_min_range: 0.0
           obstacle_max_range: 1.5
           obstacle_min_range: 0.50
-        cone_cloud:
+        koni_cloud:
           topic: /cone_cloud
+          max_obstacle_height: 2.0
+          clearing: false
+          marking: true
+          data_type: "PointCloud2"
+          raytrace_max_range: 5.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 5.0
+          obstacle_min_range: 0.0
+        yolo_cone_cloud:
+          topic: /costmap/cone_cloud
           max_obstacle_height: 2.0
           clearing: false
           marking: true
@@ -424,10 +444,4 @@ lifecycle_manager:
       - behavior_server
       - bt_navigator
 
-lifecycle_manager_localization:
-  ros__parameters:
-    use_sim_time: false
-    autostart: true
-    node_names:
-      - map_server
-      - amcl
+# lifecycle_manager_localization kaldırıldı — SLAM_Toolbox kullanılıyor, AMCL aktif değil.

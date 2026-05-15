@@ -46,6 +46,12 @@ from std_msgs.msg import Bool, Int16, Float32MultiArray
 from tf2_ros import TransformBroadcaster
 import serial
 
+from teknofest_ika.otonomi.topics import (
+    ACKERMANN_CMD_TOPIC, SHOOT_RESULT_TOPIC, TARET_PAN_TOPIC, TARET_TILT_TOPIC,
+    ODOM_TOPIC, IMU_TOPIC, BATTERY_TOPIC, RC_INPUT_TOPIC,
+    E_STOP_FORCE_TOPIC, E_STOP_TOPIC, SHOOT_CMD_TOPIC,
+)
+
 
 # ─── Binary Protokol Tanımları (ika_iletisim.h ile eşleşmeli) ─────────────
 PKT_BOYUT   = 8
@@ -185,29 +191,29 @@ class SeriKopru(Node):
         # ROS
         # /ackermann_cmd: ackermann_converter'dan gelir
         # (kinematik dönüşüm orada yapılır, burada doğrudan kullanılır)
-        self.create_subscription(AckermannDriveStamped, '/ackermann_cmd',
+        self.create_subscription(AckermannDriveStamped, ACKERMANN_CMD_TOPIC,
                                  self._cmd_cb, qos_cmd)
-        self._shoot_conf_pub = self.create_publisher(Bool, '/shoot/result', 10)  # topics.py: SHOOT_RESULT_TOPIC
+        self._shoot_conf_pub = self.create_publisher(Bool, SHOOT_RESULT_TOPIC, 10)
 
         # Servo komutları — misyon_fsm ShootApproachState'ten gelir
-        self.create_subscription(Int16, '/taret/pan',   # topics.py: TARET_PAN_TOPIC
+        self.create_subscription(Int16, TARET_PAN_TOPIC,
                                  lambda m: self._paket_gonder(PKT_SERVO_PAN, m.data, 0), 10)
-        self.create_subscription(Int16, '/taret/tilt',  # topics.py: TARET_TILT_TOPIC
+        self.create_subscription(Int16, TARET_TILT_TOPIC,
                                  lambda m: self._paket_gonder(PKT_SERVO_TLT, m.data, 0), 10)
-        self._pub      = self.create_publisher(Odometry, '/odom', qos_odom)
-        self._imu_pub  = self.create_publisher(Imu, '/imu/data', qos_odom)
+        self._pub      = self.create_publisher(Odometry, ODOM_TOPIC, qos_odom)
+        self._imu_pub  = self.create_publisher(Imu, IMU_TOPIC, qos_odom)
         self._tf       = TransformBroadcaster(self)
 
         # Batarya durumu yayıncısı — INA219 → PKT_AKIM → /battery/status
         # 4S LiPo: 16.8V tam, 14.0V boş (4.2V / 3.5V per hücre)
-        self._battery_pub = self.create_publisher(BatteryState, '/battery/status', 10)
+        self._battery_pub = self.create_publisher(BatteryState, BATTERY_TOPIC, 10)
         self._BATARYA_V_MAX = 16.8
         self._BATARYA_V_MIN = 14.0
         self._BATARYA_UYARI = 14.8   # 3.7V/hücre × 4 → nominal = uyarı eşiği
 
         # RC kanal yayıncısı — mod_yoneticisi dinler
         # Format: [ch1_throttle_us, ch2_steering_us, ch5_mode_us, ch3_aux_us]
-        self._rc_pub   = self.create_publisher(Float32MultiArray, '/rc_input', 10)
+        self._rc_pub   = self.create_publisher(Float32MultiArray, RC_INPUT_TOPIC, 10)
 
         # RC kanalları biriktirici (PKT_RC + PKT_RC2 ayrı gelir)
         self._rc_ch1   = 1500.0
@@ -226,11 +232,11 @@ class SeriKopru(Node):
         # _guvenlik_kontrol her 100ms'de PKT_ESTOP_OUT + PKT_DUR gönderir
         self._e_stop_aktif = False
         # Arduino'dan PKT_ESTOP_IN gelince /e_stop/force'a yaz (e_stop_node toplar)
-        self._e_stop_force_pub = self.create_publisher(Bool, '/e_stop/force', 10)
-        self.create_subscription(Bool, '/e_stop', self._e_stop_cb, 10)
+        self._e_stop_force_pub = self.create_publisher(Bool, E_STOP_FORCE_TOPIC, 10)
+        self.create_subscription(Bool, E_STOP_TOPIC, self._e_stop_cb, 10)
 
         # /shoot_command → PKT_LAZER
-        self.create_subscription(Bool, '/shoot_command', self._shoot_cb, 10)
+        self.create_subscription(Bool, SHOOT_CMD_TOPIC, self._shoot_cb, 10)
 
         # IMU parçalı veri biriktirici
         self._imu_yaw   = 0.0

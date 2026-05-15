@@ -21,6 +21,10 @@ from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Bool
 
+from teknofest_ika.otonomi.topics import (
+    IMU_TOPIC, ODOM_TOPIC, ANTI_ROLLBACK_CMD_TOPIC, ANTI_ROLLBACK_AKTIF_TOPIC,
+)
+
 RAMP_PITCH_THRESHOLD   = math.radians(10.0)
 ROLLBACK_VEL_THRESHOLD = 0.05
 RECOVERY_SPEED         = 0.3
@@ -39,12 +43,12 @@ class AntiRollback(Node):
         qos_be  = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
         qos_rel = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
 
-        self.create_subscription(Imu,      '/imu/data', self._imu_cb,  qos_be)
-        self.create_subscription(Odometry, '/odom',     self._odom_cb, qos_be)
+        self.create_subscription(Imu,      IMU_TOPIC,  self._imu_cb,  qos_be)
+        self.create_subscription(Odometry, ODOM_TOPIC, self._odom_cb, qos_be)
 
         # Twist komutu → ackermann_converter override eder (tek yazıcı garantisi)
-        self._cmd_pub   = self.create_publisher(Twist, '/anti_rollback/cmd', qos_rel)
-        self._durum_pub = self.create_publisher(Bool,  '/anti_rollback/aktif', 10)
+        self._cmd_pub   = self.create_publisher(Twist, ANTI_ROLLBACK_CMD_TOPIC,   qos_rel)
+        self._durum_pub = self.create_publisher(Bool,  ANTI_ROLLBACK_AKTIF_TOPIC, 10)
 
         self.create_timer(1.0 / KONTROL_HZ, self._kontrol)
         self.get_logger().info(

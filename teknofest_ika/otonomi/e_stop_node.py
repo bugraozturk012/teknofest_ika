@@ -27,11 +27,25 @@ PARAMETRE:
 
 NOT: Jetson.GPIO paketi kurulu değilse gpio_mod otomatik devre dışı kalır.
      sudo pip3 install Jetson.GPIO
+
+E-STOP KAYNAK MİMARİSİ (OR mantığı):
+  /e_stop/force'a birden fazla node yayın yapar:
+    - imu_guvenlik  : devrilme tespiti (10 Hz sürekli)
+    - seri_kopru    : fiziksel buton (olay bazlı)
+    - lora_gcs      : GCS komutu (olay bazlı)
+
+  Her kaynak ayrı takip edilir. Herhangi biri True → /e_stop True.
+  Tümü aynı anda False göndermeden E-STOP temizlenmez.
+  Bu sayede imu_guvenlik'in sürekli False yayını fiziksel butonu temizleyemez.
 """
+
+import threading
 
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Bool
+
+from teknofest_ika.otonomi.topics import E_STOP_TOPIC, E_STOP_FORCE_TOPIC
 
 _GPIO_MEVCUT = False
 try:
@@ -39,6 +53,12 @@ try:
     _GPIO_MEVCUT = True
 except ImportError:
     pass
+
+# /e_stop/force yayıncıları — her biri ayrı takip edilir
+_KAYNAK_IMU    = 'imu_guvenlik'
+_KAYNAK_SERIAL = 'seri_kopru'
+_KAYNAK_GCS    = 'lora_gcs'
+_KAYNAK_GENEL  = 'genel'
 
 
 class EStopNode(Node):
@@ -52,12 +72,17 @@ class EStopNode(Node):
 
         self._gpio_pin = self.get_parameter('gpio_pin').value
         self._gpio_mod = self.get_parameter('gpio_mod').value and _GPIO_MEVCUT
-        self._aktif    = False   # gerçek e-stop durumu
+
+        # OR mantığı: her kaynak bağımsız takip edilir
+        # Herhangi biri True → _aktif True
+        self._lock = threading.Lock()
+        self._gpio_aktif   = False   # fiziksel GPIO butonu
+        self._force_aktif  = False   # /e_stop/force'tan gelen yazılımsal E-STOP
 
         self._gpio_kur()
 
-        self._pub = self.create_publisher(Bool, '/e_stop', 10)
-        self.create_subscription(Bool, '/e_stop/force', self._force_cb, 10)
+        self._pub = self.create_publisher(Bool, E_STOP_TOPIC, 10)
+        self.create_subscription(Bool, E_STOP_FORCE_TOPIC, self._force_cb, 10)
 
         hz = self.get_parameter('publish_hz').value
         self.create_timer(1.0 / hz, self._yayinla)
@@ -65,6 +90,11 @@ class EStopNode(Node):
         self.get_logger().info(
             f'EStopNode hazır | GPIO: {"aktif pin=" + str(self._gpio_pin) if self._gpio_mod else "devre dışı"}'
         )
+
+    @property
+    def _aktif(self) -> bool:
+        """GPIO VEYA yazılımsal kaynaklardan herhangi biri True → E-STOP aktif."""
+        return self._gpio_aktif or self._force_aktif
 
     # ── GPIO kurulumu ────────────────────────────────────────────────────────
     def _gpio_kur(self):
@@ -81,11 +111,12 @@ class EStopNode(Node):
             GPIO.add_event_detect(
                 self._gpio_pin, GPIO.BOTH,
                 callback=self._gpio_cb,
-                bouncetime=50
+                bouncetime=100
             )
             # Başlangıçta mevcut pin durumunu oku (güç gelirken buton basılıysa)
-            self._aktif = (GPIO.input(self._gpio_pin) == GPIO.LOW)
-            if self._aktif:
+            with self._lock:
+                self._gpio_aktif = (GPIO.input(self._gpio_pin) == GPIO.LOW)
+            if self._gpio_aktif:
                 self.get_logger().error('!!! BAŞLANGIÇTA E-STOP AKTIF — Butonu kontrol et !!!')
         except Exception as exc:
             self.get_logger().error(f'GPIO kur hatası: {exc} — GPIO devre dışı bırakıldı.')
@@ -97,28 +128,45 @@ class EStopNode(Node):
             low = (GPIO.input(self._gpio_pin) == GPIO.LOW)
         except Exception:
             return
-        if low and not self._aktif:
-            self._aktif = True
+        with self._lock:
+            onceki = self._gpio_aktif
+            self._gpio_aktif = low
+        if low and not onceki:
             self.get_logger().error(
                 '!!! E-STOP BUTONUNA BASILDI — Tüm hareket durduruldu !!!'
             )
-        elif not low and self._aktif:
-            self._aktif = False
+        elif not low and onceki:
             self.get_logger().warn(
-                '[E-STOP] Buton bırakıldı. /e_stop False yayınlanıyor.'
+                '[E-STOP] Fiziksel buton bırakıldı.'
             )
 
-    # ── Yazılımsal override ──────────────────────────────────────────────────
+    # ── Yazılımsal override — OR mantığı ────────────────────────────────────
     def _force_cb(self, msg: Bool):
-        self._aktif = msg.data
-        if msg.data:
+        """
+        Birden fazla kaynak bu topic'e yayın yapar (imu_guvenlik, seri_kopru, lora_gcs).
+        True → force_aktif bayrağını set et (OR mantığı).
+        False → sadece force_aktif'i temizle; GPIO butonu hâlâ basılıysa E-STOP sürer.
+        """
+        with self._lock:
+            onceki_force = self._force_aktif
+            self._force_aktif = msg.data
+            aktif = self._aktif   # OR sonucu
+
+        if msg.data and not onceki_force:
             self.get_logger().error('!!! YAZILIMSAL E-STOP AKTİF !!!')
-        else:
-            self.get_logger().warn('[E-STOP] Yazılımsal e-stop kaldırıldı.')
+        elif not msg.data and onceki_force:
+            if aktif:
+                self.get_logger().warn(
+                    '[E-STOP] Yazılımsal force kaldırıldı ama GPIO butonu hâlâ basılı.'
+                )
+            else:
+                self.get_logger().warn('[E-STOP] Yazılımsal e-stop kaldırıldı.')
 
     # ── 20 Hz yayın ─────────────────────────────────────────────────────────
     def _yayinla(self):
-        self._pub.publish(Bool(data=self._aktif))
+        with self._lock:
+            aktif = self._aktif
+        self._pub.publish(Bool(data=aktif))
 
     # ── Temizlik ─────────────────────────────────────────────────────────────
     def destroy_node(self):

@@ -17,16 +17,18 @@ doğrudan /yolo/class_id topic'ine UInt8 olarak yayınlar.
 TOPIC ARAYÜZÜ
 ─────────────────────────────────────────────────────────────────────────────
   Giriş  : /yolo/class_id  (std_msgs/UInt8)
-             0 = su_gecisi    → wet
-             1 = tasli_yol    → gravel
-             2 = yan_egim     → slope
-             3 = dik_engel    → obstacle
-             4 = trafik_koni  → normal (Nav2 halleder)
-             5 = kayar_engel  → normal (Nav2 halleder)
-             6 = dik_egim     → rough
-             7 = atis         → slow
-             8 = hizlanma     → fast
-           255 = tespit yok   → normal (varsayılan profil)
+             0 = SULU_YOL      (Tabela_1)  → wet
+             1 = TASLI_YOL     (Tabela_2)  → gravel
+             2 = YAN_EGIM      (Tabela_3)  → slope
+             3 = DIK_ENGEL     (Tabela_4)  → obstacle
+             4 = KONİLİ_YOL   (Tabela_5)  → normal (Nav2 halleder)
+             5 = KAYAR_ENGEL   (Tabela_6)  → normal (Nav2 halleder)
+             6 = ENGEBELİ_ARAZİ(Tabela_7) → rough
+             7 = DIK_EGIM      (Tabela_8)  → rough
+             8 = ATIS_BOLGESI  (Tabela_9)  → slow
+             9 = YAN_EGIM_2    (Tabela_10) → slope
+            10 = HIZLANMA_PARKURU(Tabela_11) → fast (HizlanmaState Nav2'yi bypass eder)
+           255 = tespit yok               → normal (varsayılan profil)
 
   Çıkış  : Nav2 /controller_server/set_parameters RPC çağrısı
            (Node yeniden başlatılmaz — anlık etkili)
@@ -59,42 +61,51 @@ TEST (görüntü ekibi olmadan):
 ─────────────────────────────────────────────────────────────────────────────
 """
 
+import os
+import yaml
+
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from std_msgs.msg import UInt8, Float32
 from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
 from rcl_interfaces.srv import SetParameters
+from ament_index_python.packages import get_package_share_directory
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TOPIC SABİTİ
-# topics.py import edilmez — terrain_adapter tek başına çalışabilsin diye
-# Değiştirirsen topics.py'deki YOLO_CLASS_ID_TOPIC ile eşleştir.
-# ─────────────────────────────────────────────────────────────────────────────
-YOLO_CLASS_ID_TOPIC = '/yolo/class_id'   # std_msgs/UInt8
+from teknofest_ika.otonomi.topics import YOLO_CLASS_ID_TOPIC, SPEED_LIMIT_TOPIC
 
 # Yok tespit sentinel değeri (255: UInt8 max → "boş")
 NO_DETECTION = 255
 
-# Ardışık frame eşiği — topics.py YOLO_CONSECUTIVE_FRAMES ile eşleşmeli
-CONSECUTIVE_FRAMES = 3
-
 # ─────────────────────────────────────────────────────────────────────────────
 # INTEGER CLASS_ID → TERRAIN PROFİLİ
-# Sıra topics.py YOLO_CLASSES listesiyle birebir eşleşmeli:
-#   [su_gecisi, tasli_yol, yan_egim, dik_engel, trafik_koni,
-#    kayar_engel, dik_egim, atis, hizlanma]
+# Sıra Tabela numarasıyla birebir eşleşmeli (class_id = Tabela_N - 1):
+#   [SULU_YOL, TASLI_YOL, YAN_EGIM, DIK_ENGEL, KONİLİ_YOL,
+#    KAYAR_ENGEL, ENGEBELİ_ARAZİ, DIK_EGIM, ATIS_BOLGESI, YAN_EGIM_2]
 # ─────────────────────────────────────────────────────────────────────────────
+# Model alfabetik sırayla eğitildi — class_id Tabela numarasıyla örtüşmüyor.
+# Gerçek eşleme (m.names çıktısından doğrulandı 2026-05-16):
+#   0=Tabela_1  1=Tabela_10  2=Tabela_11  3=Tabela_11_son  4=Tabela_12
+#   5=Tabela_2  6=Tabela_3   7=Tabela_4   8=Tabela_5       9=Tabela_6
+#   10=Tabela_7 11=Tabela_8  12=Tabela_9  13=Tabela_stop   14=hedef_tahtasi
+#   15=trafik_huni
 CLASS_TO_TERRAIN = {
-    0:   'wet',      # su_gecisi   — μ≈0.3, fren mesafesi artar
-    1:   'gravel',   # tasli_yol   — lateral stabilite azalır
-    2:   'slope',    # yan_egim    — F_lat = m·g·sin(θ)
-    3:   'obstacle', # dik_engel   — lokal costmap kaçınır
-    4:   'normal',   # trafik_koni — Nav2 local costmap yeterli
-    5:   'normal',   # kayar_engel — Nav2 local costmap yeterli
-    6:   'rough',    # dik_egim    — eğim + zemin: en kısıtlı profil
-    7:   'slow',     # atis        — dur, nişan al
-    8:   'fast',     # hizlanma    — düz zemin, tam gaz
+    0:  'wet',      # Tabela_1   SULU_YOL        — μ≈0.3, fren mesafesi artar
+    1:  'normal',   # Tabela_10  DIK_EGIM_CIKIS  — rampa çıkış, düz zemin
+    2:  'fast',     # Tabela_11  HIZLANMA        — HizlanmaState Nav2'yi bypass eder
+    3:  'normal',   # Tabela_11_son HIZLANMA_SON — hızlanma bitiyor, normale dön
+    4:  'normal',   # Tabela_12  — görüntü ekibinden netleştirilecek
+    5:  'gravel',   # Tabela_2   TASLI_YOL       — lateral stabilite azalır
+    6:  'slope',    # Tabela_3   YAN_EGIM        — F_lat = m·g·sin(θ)
+    7:  'obstacle', # Tabela_4   DIK_ENGEL       — lokal costmap kaçınır
+    8:  'normal',   # Tabela_5   KONİLİ_YOL     — Nav2 local costmap yeterli
+    9:  'normal',   # Tabela_6   KAYAR_ENGEL     — Nav2 local costmap yeterli
+    10: 'rough',    # Tabela_7   ENGEBELİ_ARAZİ — titreşim + düzensiz zemin
+    11: 'rough',    # Tabela_8   DIK_EGIM        — eğim + zemin: en kısıtlı profil
+    12: 'slow',     # Tabela_9   ATIS_BOLGESI    — dur, nişan al
+    13: 'normal',   # Tabela_stop STOP işareti   — terrain değişmez, FSM halleder
+    14: 'slow',     # hedef_tahtasi              — atış bölgesine yakın, yavaş
+    15: 'normal',   # trafik_huni                — Nav2 costmap halleder
     NO_DETECTION: 'normal',
 }
 
@@ -228,10 +239,12 @@ class TerrainAdapter(Node):
     def __init__(self):
         super().__init__('terrain_adapter')
 
-        self._current_terrain  = 'normal'
-        self._last_class_id    = NO_DETECTION
-        self._consecutive      = 0
-        self._speed_limit      = float('inf')   # imu_guvenlik'ten gelir
+        self._current_terrain    = 'normal'
+        self._last_class_id     = NO_DETECTION
+        self._consecutive       = 0
+        self._speed_limit       = float('inf')   # imu_guvenlik'ten gelir
+        self._consecutive_frames = self._load_consecutive_frames()
+        self._baslangic_yapildi = False
 
         # ── QoS: görüntü ekibi BEST_EFFORT yayınlar (kamera pipeline) ────────
         qos = QoSProfile(
@@ -245,7 +258,7 @@ class TerrainAdapter(Node):
                                  self._on_class_id, qos)
 
         # ── /speed_limit — imu_guvenlik'ten hız sınırı ───────────────────────
-        self.create_subscription(Float32, '/speed_limit',
+        self.create_subscription(Float32, SPEED_LIMIT_TOPIC,
                                  self._on_speed_limit, 10)
 
         # ── Nav2 set_parameters servis client'ları ────────────────────────────
@@ -265,8 +278,34 @@ class TerrainAdapter(Node):
         self.get_logger().info(
             f'TerrainAdapter v3.0 hazır | '
             f'topic={YOLO_CLASS_ID_TOPIC} (UInt8) | '
-            f'filtre={CONSECUTIVE_FRAMES} ardışık frame'
+            f'filtre={self._consecutive_frames} ardışık frame'
         )
+
+        # Nav2 servisleri hazır olunca başlangıç profilini uygula.
+        # terrain_adapter 11.5s'de başlar, Nav2 8s'de — servisler genellikle hazırdır.
+        self.create_timer(2.0, self._baslangic_profil)
+
+    def _baslangic_profil(self) -> None:
+        """Node başladıktan 2s sonra 'normal' profili Nav2'ye uygular (bir kez)."""
+        if self._baslangic_yapildi:
+            return
+        self._baslangic_yapildi = True
+        self.get_logger().info('Başlangıç profili uygulanıyor: normal')
+        self._apply_profile('normal')
+
+    def _load_consecutive_frames(self) -> int:
+        """waypoints.yaml'dan ardisik_frame_sayisi okur, bulunamazsa 3 döner."""
+        try:
+            pkg = get_package_share_directory('teknofest_ika')
+            wp_path = os.path.join(pkg, 'config', 'waypoints.yaml')
+            with open(wp_path, 'r') as f:
+                data = yaml.safe_load(f)
+            val = int(data.get('parametreler', {}).get('ardisik_frame_sayisi', 3))
+            self.get_logger().info(f'ardisik_frame_sayisi={val} (waypoints.yaml)')
+            return val
+        except Exception as e:
+            self.get_logger().warn(f'waypoints.yaml okunamadı, varsayılan 3: {e}')
+            return 3
 
     def _on_speed_limit(self, msg: Float32) -> None:
         """imu_guvenlik'ten gelen hız sınırını saklar; profil uygulamada kullanılır."""
@@ -300,7 +339,7 @@ class TerrainAdapter(Node):
             self._last_class_id = cid
 
         # Eşiğe ulaşılmadıysa bekle
-        if self._consecutive < CONSECUTIVE_FRAMES:
+        if self._consecutive < self._consecutive_frames:
             return
 
         # Eşiğe ulaşıldı — profili kontrol et

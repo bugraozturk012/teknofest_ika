@@ -56,11 +56,22 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 
-from std_msgs.msg import Bool, String, Int16, UInt8
-from geometry_msgs.msg import PoseStamped
+from std_msgs.msg import Bool, String, UInt8
+from geometry_msgs.msg import PoseStamped, Twist
+from nav_msgs.msg import Odometry
 from nav2_msgs.action import NavigateToPose
 
 import smach
+
+from teknofest_ika.otonomi.topics import (
+    YOLO_CLASS_ID_TOPIC, FSM_STATE_TOPIC, DETECTIONS_TOPIC,
+    MOVING_OBS_DIR_TOPIC, E_STOP_TOPIC, MOD_AKTIF_TOPIC,
+    MISSION_START_TOPIC, MISYON_AKTIF_TOPIC,
+    TARGETING_ENABLE_TOPIC, TARGETING_STATUS_TOPIC,
+    SHOOT_CMD_TOPIC, SHOOT_RESULT_TOPIC,
+    MISSION_STATUS_TOPIC, MISYON_WP_INDEX_TOPIC,
+    CMD_VEL_TOPIC, ODOM_TOPIC,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -75,19 +86,21 @@ class DetectionsStore:
     """
 
     _DEFAULT = {
-        'tabela':        0,
-        'koni_var':      False,
-        'koni_hata_x':   0.0,
-        'kayar_engel_x': 0.5,
-        'kayar_yon':     'bilinmiyor',
-        'hedef_var':     False,
-        'hedef_hata_x':  0.0,
-        'hedef_hata_y':  0.0,
-        'bariyer_sol_m': 1.5,
-        'bariyer_sag_m': 1.5,
-        'fps':           0.0,
-        'e_stop':        False,
-        'manual_mod':    False,   # mod_yoneticisi MANUAL/SEMI → navigasyon dur
+        'tabela':           255,
+        'koni_var':         False,
+        'koni_hata_x':      0.0,
+        'kayar_engel_x':    0.5,
+        'kayar_yon':        'bilinmiyor',
+        'hedef_var':        False,
+        'hedef_hata_x':     0.0,
+        'hedef_hata_y':     0.0,
+        'bariyer_sol_m':    1.5,
+        'bariyer_sag_m':    1.5,
+        'fps':              0.0,
+        'e_stop':           False,
+        'manual_mod':       False,
+        'hizlanma_bitti':   False,   # Tabela_11_son (class_id=11) tespit edildi
+        'stop_var':         False,   # §6.10 STOP işareti (class_id=12) tespit edildi
     }
 
     def __init__(self):
@@ -130,48 +143,69 @@ class Nav2Client:
             callback_group=ReentrantCallbackGroup()
         )
 
-    def go_to(self, x: float, y: float, yaw: float) -> bool:
+    def go_to(self, x: float, y: float, yaw: float,
+              timeout_sec: float = 120.0,
+              stop_check_fn=None) -> str:
         """
         Verilen (x, y, yaw) noktasına git. Bloklar.
-        Başarı → True, hata → False.
+        Dönüş: 'success' | 'failed' | 'timeout' | 'stop_requested'
+
+        stop_check_fn: callable → bool. True döndürünce goal iptal edilir,
+        'stop_requested' döner. NavigateState §6.10 STOP mantığı için kullanır.
         """
         if not self._client.wait_for_server(timeout_sec=5.0):
             self.node.get_logger().error(
                 'Nav2 /navigate_to_pose servisi bulunamadı!'
             )
-            return False
+            return 'failed'
 
         goal = NavigateToPose.Goal()
         goal.pose = self._build_pose(x, y, yaw)
 
         self.node.get_logger().info(
-            f'Nav2 hedef → ({x:.2f}, {y:.2f}, yaw={yaw:.2f} rad)'
+            f'Nav2 hedef → ({x:.2f}, {y:.2f}, yaw={yaw:.2f} rad) '
+            f'timeout={timeout_sec:.0f}s'
         )
 
+        deadline = time.time() + timeout_sec
+
         future = self._client.send_goal_async(goal)
-        # spin thread zaten çalışıyor — spin_until_future_complete yerine bekle
         while not future.done():
+            if time.time() > deadline:
+                self.node.get_logger().warn('Nav2 hedef gönderme timeout.')
+                return 'timeout'
+            if stop_check_fn and stop_check_fn():
+                return 'stop_requested'
             time.sleep(0.05)
 
         try:
             goal_handle = future.result()
         except Exception as e:
             self.node.get_logger().error(f'Nav2 hedef gönderilemedi: {e}')
-            return False
+            return 'failed'
 
         if not goal_handle.accepted:
             self.node.get_logger().warn('Nav2 hedefi reddetti.')
-            return False
+            return 'failed'
 
         result_future = goal_handle.get_result_async()
         while not result_future.done():
+            if time.time() > deadline:
+                self.node.get_logger().warn(
+                    f'Nav2 aşama timeout ({timeout_sec:.0f}s) — hedef iptal ediliyor.'
+                )
+                goal_handle.cancel_goal_async()
+                return 'timeout'
+            if stop_check_fn and stop_check_fn():
+                goal_handle.cancel_goal_async()
+                return 'stop_requested'
             time.sleep(0.05)
 
         try:
             result = result_future.result()
         except Exception as e:
             self.node.get_logger().error(f'Nav2 sonuç alınamadı: {e}')
-            return False
+            return 'failed'
 
         success = (result.status == 4)  # GoalStatus.STATUS_SUCCEEDED = 4
 
@@ -181,7 +215,7 @@ class Nav2Client:
             self.node.get_logger().warn(
                 f'Hedefe ulaşılamadı. Status={result.status}'
             )
-        return success
+        return 'success' if success else 'failed'
 
     def _build_pose(self, x: float, y: float, yaw: float) -> PoseStamped:
         pose = PoseStamped()
@@ -208,16 +242,17 @@ class IdleState(smach.State):
     Geçişler: 'started' → NavigateState
     """
 
-    def __init__(self, node: Node):
+    def __init__(self, node: Node, baslangic_bekleme: float = 3.0):
         smach.State.__init__(self, outcomes=['started'])
         self.node = node
         self._start_received = False
+        self._baslangic_bekleme = baslangic_bekleme
 
         self.node.create_subscription(
-            Bool, '/mission_start', self._on_start, 10
+            Bool, MISSION_START_TOPIC, self._on_start, 10
         )
         # Veri paketi kaydedici için misyon aktif yayıncısı
-        self._misyon_pub = self.node.create_publisher(Bool, '/misyon/aktif', 10)
+        self._misyon_pub = self.node.create_publisher(Bool, MISYON_AKTIF_TOPIC, 10)
         self.node.get_logger().info('[IDLE] Hazır. /mission_start bekleniyor...')
 
     def _on_start(self, msg: Bool):
@@ -231,6 +266,12 @@ class IdleState(smach.State):
         rate = self.node.create_rate(10)
         while rclpy.ok() and not self._start_received:
             rate.sleep()
+        if self._baslangic_bekleme > 0:
+            self.node.get_logger().info(
+                f'[IDLE] Başlangıç bekleme: {self._baslangic_bekleme:.0f}s '
+                f'(SLAM + Nav2 stabilizasyonu)...'
+            )
+            time.sleep(self._baslangic_bekleme)
         self.node.get_logger().info('[IDLE] Görev başlıyor.')
         self._misyon_pub.publish(Bool(data=True))
         return 'started'
@@ -259,17 +300,27 @@ class NavigateState(smach.State):
       'failed'           → ErrorRecoveryState
     """
 
-    def __init__(self, node: Node, nav: Nav2Client, det_store: DetectionsStore):
+    def __init__(self, node: Node, nav: Nav2Client, det_store: DetectionsStore,
+                 stage_timeout: float = 120.0):
         smach.State.__init__(
             self,
-            outcomes=['next_waypoint', 'shoot_waypoint',
+            outcomes=['next_waypoint', 'shoot_waypoint', 'hizlanma_waypoint',
                       'mission_complete', 'failed'],
             input_keys=['waypoints', 'wp_index'],
             output_keys=['wp_index', 'current_wp']
         )
-        self.node      = node
-        self.nav       = nav
-        self.det_store = det_store
+        self.node                  = node
+        self.nav                   = nav
+        self.det_store             = det_store
+        self.stage_timeout         = stage_timeout
+        self._wp_index_pub         = node.create_publisher(UInt8, MISYON_WP_INDEX_TOPIC, 10)
+        self._stop_cooldown_bitis  = 0.0   # §6.10: son STOP sonrası tekrar tetiklenme engeli
+
+    def _stop_check(self) -> bool:
+        """Nav2Client.go_to() callback'i: True dönünce goal iptal edilir (§6.10 STOP)."""
+        if time.time() < self._stop_cooldown_bitis:
+            return False
+        return self.det_store.get_field('stop_var', False)
 
     def execute(self, userdata):
         if hasattr(self.node, '_fsm_state_pub'):
@@ -303,10 +354,35 @@ class NavigateState(smach.State):
             f'({wp["x"]:.2f}, {wp["y"]:.2f})'
         )
 
-        # Nav2'ye git
-        success = self.nav.go_to(wp['x'], wp['y'], wp.get('yaw', 0.0))
+        # Nav2'ye git — STOP işareti görülürse ortada kesilir, 2s beklenir, tekrar gönderilir
+        while True:
+            result = self.nav.go_to(
+                wp['x'], wp['y'], wp.get('yaw', 0.0),
+                timeout_sec=self.stage_timeout,
+                stop_check_fn=self._stop_check,
+            )
 
-        if not success:
+            if result == 'stop_requested':
+                self.node.get_logger().info(
+                    f'[NAVIGATE] §6.10 STOP işareti — araç durduruluyor, 2s bekleniyor.'
+                )
+                # Cooldown: aynı STOP işaretinin hemen tekrar tetiklenmesini engeller
+                # 3s: rampada üst-STOP ile alt-STOP arası için yeterli
+                self._stop_cooldown_bitis = time.time() + 3.0
+                self.det_store.update_field('stop_var', False)
+                deadline_stop = time.time() + 2.0
+                while time.time() < deadline_stop:
+                    if self.det_store.get_field('e_stop', False):
+                        self.node.get_logger().error('[NAVIGATE] E-STOP — STOP bekleme iptal.')
+                        return 'failed'
+                    time.sleep(0.1)
+                self.node.get_logger().info('[NAVIGATE] §6.10 STOP bekleme tamam — devam ediliyor.')
+                continue
+
+            if result == 'success':
+                break
+
+            # 'failed' veya 'timeout'
             if wp.get('pas_gecilir', False):
                 self.node.get_logger().warn(
                     f'[NAVIGATE] {label} başarısız — pas_gecilir=True, atlıyorum.'
@@ -322,15 +398,7 @@ class NavigateState(smach.State):
 
         # ── Varış sonrası özel mantık ─────────────────────────────────
 
-        if label == 'DIK_EGIM':
-            # Şartname: dik eğim çıkışında 2 saniye dur, sonra devam
-            self.node.get_logger().info(
-                '[NAVIGATE] DIK_EGIM: şartname gereği 2 saniye bekleniyor...'
-            )
-            time.sleep(2.0)
-            self.node.get_logger().info('[NAVIGATE] DIK_EGIM: devam.')
-
-        elif label == 'KAYAR_ENGEL':
+        if label == 'KAYAR_ENGEL':
             # Kayar engelin hangi tarafa geçtiğini bekle (max 10s)
             self.node.get_logger().info(
                 '[NAVIGATE] KAYAR_ENGEL: geçiş yönü bekleniyor...'
@@ -352,13 +420,16 @@ class NavigateState(smach.State):
                     '[NAVIGATE] Kayar engel yönü alınamadı (timeout) — devam ediliyor.'
                 )
 
-        # İndeksi artır
+        # İndeksi artır ve GCS'e bildir
         userdata.wp_index  = idx + 1
         userdata.current_wp = wp
+        self._wp_index_pub.publish(UInt8(data=min(idx + 1, 255)))
 
-        # Atış noktasına geldik mi?
         if wp.get('type') == 'shoot':
             return 'shoot_waypoint'
+
+        if wp.get('type') == 'hizlanma':
+            return 'hizlanma_waypoint'
 
         return 'next_waypoint'
 
@@ -371,126 +442,65 @@ class ShootApproachState(smach.State):
     """
     Atış pozisyonu doğrulama.
 
-    Protokol (Madde 3.3):
-      hedef_hata_x piksel cinsindendir.
-      ±5 pikselin altında "nişan tamam" sayılır.
-
-    Görüntü ekibinden /ika/detections üzerinden hedef_var ve
-    hedef_hata_x/y okunur. Tolerans sağlandığında ShootState'e geçilir.
+    targeting_node'u aktifleştirir (HSV+Hough+PID ile hedef kilitler).
+    Servo kontrolü ve hizalama targeting_node tarafından yapılır.
+    "/targeting/status" == "ALIGNED" gelince ShootState'e geçilir.
     Max 15 saniye beklenir — timeout'ta yine de ateş edilir.
 
     Geçişler: 'in_position' → ShootState
               'failed'      → ErrorRecoveryState
     """
 
-    HEDEF_TOLERANS_PX = 5.0   # Protokol Madde 3.3 — ±5 piksel
-    TIMEOUT_S         = 15.0
-
-    KP_SERVO = 0.30    # Proportional — 1 piksel hata ≈ 0.3° servo hareketi
-    KI_SERVO = 0.001   # Integral     — sabit ofset hatalarını giderir
-    KD_SERVO = 0.05    # Derivative   — salınımı söndürür
-    INTEGRAL_MAX = 30.0  # Windup koruması — servo 0-180° sınırlı olsa da integral serbest kalmamalı
+    TIMEOUT_S = 15.0
 
     def __init__(self, node: Node, det_store: DetectionsStore):
         smach.State.__init__(
             self,
-            outcomes=['in_position'],
+            outcomes=['in_position', 'failed'],
             input_keys=['current_wp']
         )
         self.node      = node
         self.det_store = det_store
 
-        # Servo komut publisher'ları — seri_kopru.py dinler
-        self._pan_pub  = node.create_publisher(Int16, '/taret/pan',  10)
-        self._tilt_pub = node.create_publisher(Int16, '/taret/tilt', 10)
+        self._targeting_status = "STANDBY"
+        self._targeting_enable_pub = node.create_publisher(
+            Bool, TARGETING_ENABLE_TOPIC, 10
+        )
+        node.create_subscription(
+            String, TARGETING_STATUS_TOPIC, self._on_targeting_status, 10
+        )
 
-        # Mevcut servo açıları (başlangıç: merkez)
-        self._pan_aci  = 90
-        self._tilt_aci = 90
-
-        # PID durum değişkenleri
-        self._pan_integral    = 0.0
-        self._tilt_integral   = 0.0
-        self._pan_prev_error  = 0.0
-        self._tilt_prev_error = 0.0
-        self._last_pid_time   = 0.0
-
-    def _servo_gonder(self):
-        self._pan_pub.publish(Int16(data=self._pan_aci))
-        self._tilt_pub.publish(Int16(data=self._tilt_aci))
+    def _on_targeting_status(self, msg: String):
+        self._targeting_status = msg.data
 
     def execute(self, userdata):
         if hasattr(self.node, '_fsm_state_pub'):
             self.node._fsm_state_pub.publish(String(data='SHOOT_APPROACH'))
-        self.node.get_logger().info('[SHOOT_APPROACH] Servo nişan başlıyor...')
+        self.node.get_logger().info('[SHOOT_APPROACH] targeting_node aktifleştiriliyor...')
 
-        # PID sıfırla
-        self._pan_integral    = 0.0
-        self._tilt_integral   = 0.0
-        self._pan_prev_error  = 0.0
-        self._tilt_prev_error = 0.0
-        self._last_pid_time   = time.time()
-
-        # Başlangıçta merkeze al
-        self._pan_aci  = 90
-        self._tilt_aci = 90
-        self._servo_gonder()
+        self._targeting_status = "STANDBY"
+        self._targeting_enable_pub.publish(Bool(data=True))
 
         deadline = time.time() + self.TIMEOUT_S
         while time.time() < deadline:
-            det = self.det_store.get()
+            if self.det_store.get_field('e_stop', False):
+                self.node.get_logger().error('[SHOOT_APPROACH] E-STOP.')
+                self._targeting_enable_pub.publish(Bool(data=False))
+                return 'failed'
 
-            if det.get('hedef_var', False):
-                hata_x = det.get('hedef_hata_x', 0.0)
-                hata_y = det.get('hedef_hata_y', 0.0)
+            if self._targeting_status == 'ALIGNED':
+                self.node.get_logger().info('[SHOOT_APPROACH] Nişan tamam ✓')
+                self._targeting_enable_pub.publish(Bool(data=False))
+                return 'in_position'
 
-                # Tam PID servo kontrolü
-                now = time.time()
-                dt  = max(now - self._last_pid_time, 1e-3)
-                self._last_pid_time = now
+            self.node.get_logger().debug(
+                f'[SHOOT_APPROACH] targeting={self._targeting_status}',
+                throttle_duration_sec=2.0,
+            )
+            time.sleep(0.05)
 
-                self._pan_integral  = max(-self.INTEGRAL_MAX,
-                                        min(self.INTEGRAL_MAX, self._pan_integral + hata_x * dt))
-                self._tilt_integral = max(-self.INTEGRAL_MAX,
-                                        min(self.INTEGRAL_MAX, self._tilt_integral - hata_y * dt))
-
-                pan_d  = (hata_x - self._pan_prev_error)  / dt
-                tilt_d = (hata_y - self._tilt_prev_error) / dt
-                self._pan_prev_error  = hata_x
-                self._tilt_prev_error = hata_y
-
-                self._pan_aci  += int(self.KP_SERVO * hata_x
-                                    + self.KI_SERVO * self._pan_integral
-                                    + self.KD_SERVO * pan_d)
-                self._tilt_aci -= int(self.KP_SERVO * hata_y
-                                    + self.KI_SERVO * self._tilt_integral
-                                    + self.KD_SERVO * tilt_d)
-
-                # Sınır kontrolü [0-180°]
-                self._pan_aci  = max(0, min(180, self._pan_aci))
-                self._tilt_aci = max(0, min(180, self._tilt_aci))
-
-                self._servo_gonder()
-
-                self.node.get_logger().info(
-                    f'[SHOOT_APPROACH] hata=({hata_x:.1f},{hata_y:.1f})px '
-                    f'servo=({self._pan_aci}°,{self._tilt_aci}°)'
-                )
-
-                if (abs(hata_x) <= self.HEDEF_TOLERANS_PX and
-                        abs(hata_y) <= self.HEDEF_TOLERANS_PX):
-                    self.node.get_logger().info('[SHOOT_APPROACH] Nişan tamam ✓')
-                    return 'in_position'
-            else:
-                self.node.get_logger().info(
-                    '[SHOOT_APPROACH] Hedef görüntüde yok, bekleniyor...'
-                )
-
-            time.sleep(0.05)   # 20 Hz servo döngüsü
-
-        self.node.get_logger().warn(
-            '[SHOOT_APPROACH] Timeout — nişan alınamadı, yine de ateş ediliyor.'
-        )
+        self.node.get_logger().warn('[SHOOT_APPROACH] Timeout — yine de ateş ediliyor.')
+        self._targeting_enable_pub.publish(Bool(data=False))
         return 'in_position'
 
 
@@ -524,9 +534,9 @@ class ShootState(smach.State):
         self.node       = node
         self._confirmed = False
 
-        self._shoot_pub = node.create_publisher(Bool, '/shoot_command', 10)
+        self._shoot_pub = node.create_publisher(Bool, SHOOT_CMD_TOPIC, 10)
         node.create_subscription(
-            Bool, '/shoot/result', self._on_confirmed, 10
+            Bool, SHOOT_RESULT_TOPIC, self._on_confirmed, 10
         )
 
     def _on_confirmed(self, msg: Bool):
@@ -580,7 +590,146 @@ class ShootState(smach.State):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# STATE 5 — MISSION_COMPLETE
+# STATE 5 — HIZLANMA
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class HizlanmaState(smach.State):
+    """
+    §6.11 Hızlanma Parkuru — Nav2 bypass, doğrudan /cmd_vel → mod_yoneticisi.
+
+    Tabela_11 tespit edince NavigateState bu state'e geçer.
+    Nav2 path planner devre dışı — düz pistte gereksiz overhead.
+    RC override hâlâ çalışır (mod_yoneticisi /cmd_vel'i dinlemeye devam eder).
+
+    Hız profili:
+      0  .. FREN_BASI_MESAFE (25m) → MAX_HIZ (10 m/s)
+      25 .. TOPLAM_MESAFE    (30m) → doğrusal düşüş 10→0 m/s
+      Erken çıkış: Tabela_11_son tespiti VEYA timeout
+
+    Geçişler: 'completed' → NavigateState
+              'failed'    → ErrorRecoveryState
+    """
+
+    MAX_HIZ          = 10.0   # m/s — istersen değiştir
+    TOPLAM_MESAFE    = 30.0   # m
+    FREN_BASI_MESAFE = 25.0   # m — son 5m'de yavaşla
+    TIMEOUT_S        = 15.0   # s — donanım arızasına karşı üst limit
+    CMD_HZ           = 10.0   # Hz
+
+    def __init__(self, node: Node, det_store: DetectionsStore):
+        smach.State.__init__(self, outcomes=['completed', 'failed'])
+        self.node      = node
+        self.det_store = det_store
+
+        self._cmd_pub = node.create_publisher(Twist, CMD_VEL_TOPIC, 10)
+
+        self._lock   = threading.Lock()
+        self._pos    = None   # (x, y) — son odom konumu
+
+        node.create_subscription(Odometry, ODOM_TOPIC, self._on_odom, 10)
+
+    def _on_odom(self, msg: Odometry):
+        with self._lock:
+            self._pos = (
+                msg.pose.pose.position.x,
+                msg.pose.pose.position.y,
+            )
+
+    def _mesafe(self, baslangic) -> float:
+        with self._lock:
+            if self._pos is None:
+                return 0.0
+        dx = self._pos[0] - baslangic[0]
+        dy = self._pos[1] - baslangic[1]
+        return math.sqrt(dx * dx + dy * dy)
+
+    def execute(self, userdata):
+        if hasattr(self.node, '_fsm_state_pub'):
+            self.node._fsm_state_pub.publish(String(data='HIZLANMA'))
+
+        # Odom başlangıç konumunu al (maks 2s bekle)
+        deadline_init = time.time() + 2.0
+        while time.time() < deadline_init:
+            with self._lock:
+                if self._pos is not None:
+                    baslangic = self._pos
+                    break
+            time.sleep(0.05)
+        else:
+            self.node.get_logger().error('[HIZLANMA] Odom verisi yok — iptal.')
+            return 'failed'
+
+        self.node.get_logger().info(
+            f'[HIZLANMA] Başladı. Hedef: {self.TOPLAM_MESAFE:.0f}m @ {self.MAX_HIZ:.1f} m/s'
+        )
+
+        twist   = Twist()
+        dt      = 1.0 / self.CMD_HZ
+        deadline = time.time() + self.TIMEOUT_S
+        sonuc   = 'completed'
+
+        while rclpy.ok():
+            if self.det_store.get_field('e_stop', False):
+                self.node.get_logger().error('[HIZLANMA] E-STOP — durduruluyor.')
+                sonuc = 'failed'
+                break
+
+            if self.det_store.get_field('manual_mod', False):
+                self.node.get_logger().warn('[HIZLANMA] Manuel mod — RC devraldı, bekleniyor.')
+                twist.linear.x = 0.0
+                self._cmd_pub.publish(twist)
+                time.sleep(0.1)
+                continue
+
+            if time.time() > deadline:
+                self.node.get_logger().warn('[HIZLANMA] Timeout — durduruluyor.')
+                break
+
+            dist = self._mesafe(baslangic)
+
+            if self.det_store.get_field('hizlanma_bitti', False):
+                self.node.get_logger().info(
+                    f'[HIZLANMA] Tabela_11_son tespit ({dist:.1f}m) — fren.'
+                )
+                break
+
+            if dist >= self.TOPLAM_MESAFE:
+                self.node.get_logger().info(
+                    f'[HIZLANMA] {self.TOPLAM_MESAFE:.0f}m tamamlandı — fren.'
+                )
+                break
+
+            # Hız profili
+            if dist < self.FREN_BASI_MESAFE:
+                hiz = self.MAX_HIZ
+            else:
+                kalan         = self.TOPLAM_MESAFE - dist
+                fren_uzunlugu = self.TOPLAM_MESAFE - self.FREN_BASI_MESAFE
+                hiz = self.MAX_HIZ * (kalan / fren_uzunlugu)
+                hiz = max(0.3, hiz)   # seri_kopru heartbeat timeout'unu engelle
+
+            twist.linear.x  = hiz
+            twist.angular.z = 0.0
+            self._cmd_pub.publish(twist)
+
+            self.node.get_logger().info(
+                f'[HIZLANMA] dist={dist:.1f}m  hız={hiz:.1f}m/s',
+                throttle_duration_sec=0.5,
+            )
+            time.sleep(dt)
+
+        # Dur
+        twist.linear.x = 0.0
+        for _ in range(5):
+            self._cmd_pub.publish(twist)
+            time.sleep(0.05)
+
+        self.node.get_logger().info(f'[HIZLANMA] Tamamlandı → {sonuc}.')
+        return sonuc
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STATE 6 — MISSION_COMPLETE
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class MissionCompleteState(smach.State):
@@ -592,8 +741,8 @@ class MissionCompleteState(smach.State):
     def __init__(self, node: Node):
         smach.State.__init__(self, outcomes=['done'])
         self.node        = node
-        self._status_pub = node.create_publisher(String, '/mission_status', 10)
-        self._misyon_pub = node.create_publisher(Bool, '/misyon/aktif', 10)
+        self._status_pub = node.create_publisher(String, MISSION_STATUS_TOPIC, 10)
+        self._misyon_pub = node.create_publisher(Bool, MISYON_AKTIF_TOPIC, 10)
 
     def execute(self, userdata):
         if hasattr(self.node, '_fsm_state_pub'):
@@ -606,7 +755,7 @@ class MissionCompleteState(smach.State):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# STATE 6 — ERROR_RECOVERY
+# STATE 7 — ERROR_RECOVERY
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class ErrorRecoveryState(smach.State):
@@ -650,6 +799,7 @@ class ErrorRecoveryState(smach.State):
             userdata.wp_index -= 1
 
         time.sleep(2.0)
+        self._retry_count = 0   # başarılı kurtarma → sayacı sıfırla
         return 'recovered'
 
 
@@ -657,11 +807,11 @@ class ErrorRecoveryState(smach.State):
 # WAYPOINT YÜKLEYİCİ
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def load_waypoints(yaml_path: str) -> list:
+def load_waypoints(yaml_path: str):
     """
-    waypoints.yaml → waypoint listesi.
+    waypoints.yaml → (waypoint listesi, parametreler dict).
 
-    'ATIS' isimli aşama type='shoot' olarak işaretlenir.
+    'ATIS_BOLGESI' isimli aşama type='shoot' olarak işaretlenir.
     'DIK_EGIM' ve 'KAYAR_ENGEL' etiketleri NavigateState'te özel işlenir.
     """
     try:
@@ -673,24 +823,31 @@ def load_waypoints(yaml_path: str) -> list:
         for a in asamalar:
             wp    = a.get('waypoint', {})
             isim  = a.get('isim', '')
+            if isim == 'ATIS_BOLGESI':
+                tip = 'shoot'
+            elif isim == 'HIZLANMA_PARKURU':
+                tip = 'hizlanma'
+            else:
+                tip = 'nav'
             waypoints.append({
                 'x':           wp.get('x', 0.0),
                 'y':           wp.get('y', 0.0),
                 'yaw':         wp.get('yaw', 0.0),
-                'type':        'shoot' if isim == 'ATIS' else 'nav',
+                'type':        tip,
                 'label':       isim,
                 'pas_gecilir': a.get('pas_gecilir', False),
             })
 
+        parametreler = data.get('parametreler', {})
         print(f'[WAYPOINTS] {len(waypoints)} waypoint yüklendi.')
-        return waypoints
+        return waypoints, parametreler
 
     except FileNotFoundError:
         print(f'[WAYPOINTS] UYARI: {yaml_path} bulunamadı. Boş liste.')
-        return []
+        return [], {}
     except Exception as e:
         print(f'[WAYPOINTS] HATA: {e}')
-        return []
+        return [], {}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -705,9 +862,9 @@ def main():
     det_store = DetectionsStore()
 
     # /yolo/class_id köprüsü: görüntü ekibinin tabela integer'ı terrain_adapter'a iletilir
-    class_id_pub = node.create_publisher(UInt8, '/yolo/class_id', 10)
+    class_id_pub = node.create_publisher(UInt8, YOLO_CLASS_ID_TOPIC, 10)
     # FSM durum yayını: tüm ekiplerin izleyebileceği string durum
-    fsm_state_pub = node.create_publisher(String, '/fsm_state', 10)
+    fsm_state_pub = node.create_publisher(String, FSM_STATE_TOPIC, 10)
     # node üzerinden state'lerin erişmesi için referans
     node._fsm_state_pub = fsm_state_pub
 
@@ -722,19 +879,19 @@ def main():
         except (json.JSONDecodeError, ValueError):
             pass
 
-    node.create_subscription(String, '/ika/detections', _on_detections, 10)
+    node.create_subscription(String, DETECTIONS_TOPIC, _on_detections, 10)
 
     def _on_obs_direction(msg: String):
         det_store.update_field('kayar_yon', msg.data)
 
-    node.create_subscription(String, '/moving_obs/direction', _on_obs_direction, 10)
+    node.create_subscription(String, MOVING_OBS_DIR_TOPIC, _on_obs_direction, 10)
 
     def _on_e_stop(msg: Bool):
         det_store.update_field('e_stop', msg.data)
         if msg.data:
             node.get_logger().error('!!! E-STOP ALINDI — TÜM NAVIGASYON DURDURULUYOR !!!')
 
-    node.create_subscription(Bool, '/e_stop', _on_e_stop, 10)
+    node.create_subscription(Bool, E_STOP_TOPIC, _on_e_stop, 10)
 
     def _on_mod(msg: UInt8):
         # 0=MANUAL → FSM navigasyonu bekletir (RC kumanda sürüyor)
@@ -742,7 +899,7 @@ def main():
         # 2=FULL_AUTO → tam otonom
         det_store.update_field('manual_mod', msg.data == 0)
 
-    node.create_subscription(UInt8, '/mod/aktif', _on_mod, 10)
+    node.create_subscription(UInt8, MOD_AKTIF_TOPIC, _on_mod, 10)
 
     # ── Nav2 Client ───────────────────────────────────────────────────
     nav = Nav2Client(node)
@@ -756,7 +913,11 @@ def main():
     except Exception:
         wp_path = os.path.expanduser('~/ika_ws/config/waypoints.yaml')
 
-    waypoints = load_waypoints(wp_path)
+    waypoints, parametreler = load_waypoints(wp_path)
+
+    stage_timeout      = float(parametreler.get('asama_timeout_saniye', 120.0))
+    baslangic_bekleme  = float(parametreler.get('baslangic_bekleme',    3.0))
+    node.get_logger().info(f'Aşama timeout: {stage_timeout:.0f}s | Başlangıç bekleme: {baslangic_bekleme:.0f}s (waypoints.yaml)')
 
     # ── SMACH FSM Kurulumu ────────────────────────────────────────────
     sm = smach.StateMachine(outcomes=['GOREV_TAMAMLANDI', 'GOREV_IPTAL'])
@@ -768,18 +929,28 @@ def main():
     with sm:
         smach.StateMachine.add(
             'IDLE',
-            IdleState(node),
+            IdleState(node, baslangic_bekleme),
             transitions={'started': 'NAVIGATE'}
         )
 
         smach.StateMachine.add(
             'NAVIGATE',
-            NavigateState(node, nav, det_store),
+            NavigateState(node, nav, det_store, stage_timeout),
             transitions={
                 'next_waypoint':    'NAVIGATE',
                 'shoot_waypoint':   'SHOOT_APPROACH',
+                'hizlanma_waypoint':'HIZLANMA',
                 'mission_complete': 'MISSION_COMPLETE',
                 'failed':           'ERROR_RECOVERY',
+            }
+        )
+
+        smach.StateMachine.add(
+            'HIZLANMA',
+            HizlanmaState(node, det_store),
+            transitions={
+                'completed': 'NAVIGATE',
+                'failed':    'ERROR_RECOVERY',
             }
         )
 
@@ -788,6 +959,7 @@ def main():
             ShootApproachState(node, det_store),
             transitions={
                 'in_position': 'SHOOT',
+                'failed':      'ERROR_RECOVERY',
             }
         )
 

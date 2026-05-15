@@ -21,11 +21,16 @@ KURAL: Topic adı değiştirilecekse bu dosyada değiştirilir,
 # Tüketen: Otomasyon (EKF, SLAM, Nav2)
 # ─────────────────────────────────────────────
 
-# YDLidar Tmini Pro — 360° LaserScan
+# YDLidar Tmini Pro — 360° LaserScan (ham çıkış)
 # Mesaj tipi : sensor_msgs/LaserScan
 # Frekans    : ~10 Hz
 # Frame      : laser_frame
 SCAN_TOPIC = "/scan"
+
+# preprocessing_node filtrelenmiş LaserScan
+# Açı kırpma + geçersiz okuma temizleme + hareketli ortalama uygulanmış
+# Nav2 costmap ve kayar_engel_* bu topic'i kullanır
+SCAN_FILTERED_TOPIC = "/scan/filtered"
 
 # YDLidar OS30A — 3D PointCloud2
 # Mesaj tipi : sensor_msgs/PointCloud2
@@ -85,22 +90,23 @@ CAMERA_TARET_TOPIC = "/camera/taret/image_raw"
 # YOLO tespit sonuçları
 # Mesaj tipi : vision_msgs/Detection2DArray
 # Frekans    : ~25 Hz (TensorRT FP16)
-DETECTIONS_TOPIC = "/detections"
+DETECTIONS_TOPIC = "/ika/detections"
 
-# YOLO → FSM tetikleme sinyali
-# Mesaj tipi : std_msgs/String
-# İçerik     : "SU_GECISI" | "TASLI_YOL" | "YAN_EGIM" |
-#              "DIK_ENGEL" | "TRAFIK_KON" | "KAYAR_ENGEL" |
-#              "DIK_EGIM" | "ATIS" | "HIZLANMA"
-YOLO_TRIGGER_TOPIC = "/yolo/trigger"
+# Ham YOLO tespit çıkışı — yolo_detection_node → yolo_adapter_node + cone_fusion_node
+# Mesaj tipi : vision_msgs/Detection2DArray
+YOLO_RAW_TOPIC = "/detections/yolo"
 
-# Debug görüntüsü — YOLO bounding box overlay
+# YOLO debug görüntüsü — bounding box overlay
+# Mesaj tipi : sensor_msgs/Image
+YOLO_RAW_DEBUG_TOPIC = "/detections/yolo/debug"
+
+# Debug görüntüsü — YOLO bounding box overlay (genel)
 # Mesaj tipi : sensor_msgs/Image
 DEBUG_IMAGE_TOPIC = "/debug/image"
 
-# Atış hedefi merkez koordinatı (piksel)
-# Mesaj tipi : geometry_msgs/Point (x=px, y=py, z=0)
-TARGET_CENTER_TOPIC = "/target/center_px"
+# Koni füzyon costmap çıkışı — cone_fusion_node → Nav2 ObstacleLayer
+# Mesaj tipi : sensor_msgs/PointCloud2
+CONE_FUSION_CLOUD_TOPIC = "/costmap/cone_cloud"
 
 # Trafik konisi 3D konumu (LiDAR füzyon sonrası)
 # Mesaj tipi : geometry_msgs/PoseArray
@@ -154,17 +160,45 @@ FSM_STATE_TOPIC = "/fsm_state"
 # Tüketen: Gömülü Sistemler (Arduino Nano → MG958/MG996R)
 # ─────────────────────────────────────────────
 
-# Taret pan açısı — MG958 servo
-# Mesaj tipi : std_msgs/Float32  (derece, -90..+90)
-TARET_PAN_TOPIC = "/taret/pan"
+# Servo komutları — servo_controller_node → seri_kopru → PKT_SERVO_PAN/TLT
+# Mesaj tipi : std_msgs/Int16  (derece, 0-180)
+TARET_PAN_TOPIC  = "/taret/pan"    # Pan (yatay) açısı
+TARET_TILT_TOPIC = "/taret/tilt"   # Tilt (dikey) açısı
 
-# Taret tilt açısı — MG996R servo
-# Mesaj tipi : std_msgs/Float32  (derece, -45..+45)
-TARET_TILT_TOPIC = "/taret/tilt"
+# Taret servo hareket komutu — targeting_node → servo_controller_node
+# Mesaj tipi : geometry_msgs/Vector3  (x=yaw_offset_deg, y=pitch_offset_deg, z=0)
+TURRET_CMD_TOPIC = "/turret/cmd"
+
+# Taret hedefleme etkinleştirme — misyon_fsm → targeting_node
+# Mesaj tipi : std_msgs/Bool  (True=aktif, False=standby/home)
+TARGETING_ENABLE_TOPIC = "/targeting/enable"
+
+# Taret hedefleme durumu — targeting_node → misyon_fsm
+# Mesaj tipi : std_msgs/String
+# Değerler   : "SEARCHING" | "LOCKED" | "ALIGNED" | "STANDBY" | "NO_IMAGE" | "STALE_IMAGE"
+TARGETING_STATUS_TOPIC = "/targeting/status"
+
+# Taret hizalama hatası — targeting_node yayınlar (piksel cinsinden)
+# Mesaj tipi : geometry_msgs/Point  (x=hata_x_px, y=hata_y_px, z=0)
+TARGETING_ERROR_TOPIC = "/targeting/error"
 
 # Atış sonucu
 # Mesaj tipi : std_msgs/Bool  (True = ateş edildi)
 SHOOT_RESULT_TOPIC = "/shoot/result"
+
+# ─────────────────────────────────────────────
+# GÖRÜNTÜ ÖN İŞLEME TOPIC'LERİ
+# Üretici: preprocessing_node
+# Tüketen: yolo_detection_node, targeting_node, lane_detection_node
+# ─────────────────────────────────────────────
+
+# preprocessing_node çıkışı — normalize edilmiş, boyutlandırılmış kamera görüntüsü
+# Mesaj tipi : sensor_msgs/Image
+CAMERA_PROCESSED_TOPIC = "/camera/image_processed"
+
+# Debug görüntüsü — targeting_node overlay
+# Mesaj tipi : sensor_msgs/Image
+TARGETING_DEBUG_TOPIC = "/targeting/debug"
 
 # ─────────────────────────────────────────────
 # GÜVENLİK TOPIC'LERİ
@@ -180,26 +214,6 @@ E_STOP_TOPIC = "/e_stop"
 # Mesaj tipi : sensor_msgs/BatteryState
 # Frekans    : 1 Hz
 BATTERY_TOPIC = "/battery/status"
-
-# Sensör arıza bildirimi
-# Mesaj tipi : std_msgs/String
-# İçerik     : "IMU" | "ENC" | "BMS" | "LASER" | "SERVO" | "LIDAR"
-SENSOR_FAULT_TOPIC = "/sensor/fault"
-
-# Eğim güvenlik durumu (yan eğim + engebeli arazi)
-# Mesaj tipi : std_msgs/Bool  (True = güvensiz, yavaşla)
-SLOPE_SAFETY_TOPIC = "/slope_safety"
-
-# ─────────────────────────────────────────────
-# KAYIT TOPIC'LERİ  §6.14
-# Üretici: Otomasyon (kayıt servisi)
-# Tüketen: Gömülü Sistemler (LED göstergesi)
-# ─────────────────────────────────────────────
-
-# Kayıt başlat/durdur servisi
-# Servis tipi : std_srvs/SetBool
-RECORD_START_SERVICE = "/record/start"
-RECORD_STOP_SERVICE  = "/record/stop"
 
 # ─────────────────────────────────────────────
 # SERİ PORT ADRESLERI (udev kurallarıyla sabit)
@@ -225,39 +239,46 @@ FRAME_IMU        = "imu_link"
 # YOLO SINIF İSİMLERİ (tabela sınıfları)
 # ─────────────────────────────────────────────
 
-CLASS_SU_GECISI   = "su_gecisi"
-CLASS_TASLI_YOL   = "tasli_yol"
-CLASS_YAN_EGIM    = "yan_egim"
-CLASS_DIK_ENGEL   = "dik_engel"
-CLASS_TRAFIK_KON  = "trafik_konisi"
-CLASS_KAYAR_ENGEL = "kayar_engel"
-CLASS_DIK_EGIM    = "dik_egim"
-CLASS_ATIS        = "atis"
-CLASS_HIZLANMA    = "hizlanma"
+# Tabela numarası → class_id (class_id = Tabela_N - 1)
+CLASS_SULU_YOL       = "Tabela_1"   # class_id=0
+CLASS_TASLI_YOL      = "Tabela_2"   # class_id=1
+CLASS_YAN_EGIM       = "Tabela_3"   # class_id=2
+CLASS_DIK_ENGEL      = "Tabela_4"   # class_id=3
+CLASS_KONILI_YOL     = "Tabela_5"   # class_id=4
+CLASS_KAYAR_ENGEL    = "Tabela_6"   # class_id=5
+CLASS_ENGEBELI_ARAZI = "Tabela_7"   # class_id=6
+CLASS_DIK_EGIM       = "Tabela_8"   # class_id=7
+CLASS_ATIS_BOLGESI   = "Tabela_9"   # class_id=8
+CLASS_YAN_EGIM_2     = "Tabela_10"  # class_id=9
+CLASS_TRAFIK_HUNI    = "trafik_huni"    # class_id=13
+CLASS_HEDEF_TAHTASI  = "hedef_tahtasi"  # class_id=14
 
+# class_id sırası (0-9) — yolo_adapter_node ve terrain_adapter ile uyumlu
 YOLO_CLASSES = [
-    CLASS_SU_GECISI,
-    CLASS_TASLI_YOL,
-    CLASS_YAN_EGIM,
-    CLASS_DIK_ENGEL,
-    CLASS_TRAFIK_KON,
-    CLASS_KAYAR_ENGEL,
-    CLASS_DIK_EGIM,
-    CLASS_ATIS,
-    CLASS_HIZLANMA,
+    CLASS_SULU_YOL,       # 0
+    CLASS_TASLI_YOL,      # 1
+    CLASS_YAN_EGIM,       # 2
+    CLASS_DIK_ENGEL,      # 3
+    CLASS_KONILI_YOL,     # 4
+    CLASS_KAYAR_ENGEL,    # 5
+    CLASS_ENGEBELI_ARAZI, # 6
+    CLASS_DIK_EGIM,       # 7
+    CLASS_ATIS_BOLGESI,   # 8
+    CLASS_YAN_EGIM_2,     # 9
 ]
 
-# YOLO → FSM state eşleme tablosu
+# Tabela sınıfı → FSM waypoint label eşlemesi
 YOLO_TO_FSM = {
-    CLASS_SU_GECISI   : "SU_GECISI",
-    CLASS_TASLI_YOL   : "TASLI_YOL",
-    CLASS_YAN_EGIM    : "YAN_EGIM",
-    CLASS_DIK_ENGEL   : "DIK_ENGEL",
-    CLASS_TRAFIK_KON  : "TRAFIK_KON",
-    CLASS_KAYAR_ENGEL : "KAYAR_ENGEL",
-    CLASS_DIK_EGIM    : "DIK_EGIM",
-    CLASS_ATIS        : "ATIS",
-    CLASS_HIZLANMA    : "HIZLANMA",
+    CLASS_SULU_YOL       : "SULU_YOL",
+    CLASS_TASLI_YOL      : "TASLI_YOL",
+    CLASS_YAN_EGIM       : "YAN_EGIM",
+    CLASS_DIK_ENGEL      : "DIK_ENGEL",
+    CLASS_KONILI_YOL     : "KONİLİ_YOL",
+    CLASS_KAYAR_ENGEL    : "KAYAR_ENGEL",
+    CLASS_ENGEBELI_ARAZI : "ENGEBELİ_ARAZİ",
+    CLASS_DIK_EGIM       : "DIK_EGIM",
+    CLASS_ATIS_BOLGESI   : "ATIS_BOLGESI",
+    CLASS_YAN_EGIM_2     : "YAN_EGIM_2",
 }
 
 # ─────────────────────────────────────────────
@@ -281,6 +302,8 @@ IMU_PITCH_ENGEL_THRESHOLD = 5.0   # Dik engel — tork artışı
 IMU_PITCH_RAMP_THRESHOLD  = 15.0  # Rampa — yüksek tork
 IMU_ROLL_WARN_THRESHOLD   = 8.0   # Yan eğim — hız düşür
 IMU_ROLL_STOP_THRESHOLD   = 15.0  # Yan eğim — dur
+IMU_ROLL_ESTOP_THRESHOLD  = 20.0  # Devrilme — E-STOP
+IMU_PITCH_DOWN_THRESHOLD  = 15.0  # Yokuş aşağı fren modu
 
 # Batarya eşikleri (%)
 BATTERY_WARN_SOC     = 20.0  # Uyarı
@@ -296,3 +319,40 @@ RAMP_STOP_DURATION = 2.0
 YOLO_CLASS_ID_TOPIC = "/yolo/class_id"  # std_msgs/UInt8
 
 ACKERMANN_CMD_TOPIC = "/ackermann_cmd"  # AckermannDriveStamped
+
+# ─────────────────────────────────────────────
+# KONTROL TOPIC'LERİ (node'lar arası iç protokol)
+# ─────────────────────────────────────────────
+
+# E-STOP besleme (çok kaynak → e_stop_node toplayıcısına)
+E_STOP_FORCE_TOPIC = "/e_stop/force"
+
+# Mod yönetimi
+MOD_KOMUT_TOPIC   = "/mod/komut"    # yazılımsal/GCS mod değiştirme (UInt8)
+MOD_AKTIF_TOPIC   = "/mod/aktif"    # geçerli mod (UInt8)
+MUX_CMD_VEL_TOPIC = "/mux/cmd_vel"  # muxlanmış Twist → ackermann_converter
+
+# Misyon akışı
+MISSION_START_TOPIC  = "/mission_start"   # FSM tetikleyici (Bool)
+MISSION_STATUS_TOPIC = "/mission_status"  # görev sonucu (String)
+MISYON_AKTIF_TOPIC   = "/misyon/aktif"   # kayıt + durum göstergesi (Bool)
+SHOOT_CMD_TOPIC      = "/shoot_command"   # lazer tetikleyici (Bool)
+MISYON_WP_INDEX_TOPIC = "/misyon/wp_index"  # mevcut waypoint indeksi (UInt8)
+
+# RC kumanda kanalları
+RC_INPUT_TOPIC = "/rc_input"   # Float32MultiArray [ch1,ch2,ch5,ch3] µs
+
+# Anti-rollback override
+ANTI_ROLLBACK_CMD_TOPIC   = "/anti_rollback/cmd"    # Twist — override komutu
+ANTI_ROLLBACK_AKTIF_TOPIC = "/anti_rollback/aktif"  # Bool — override aktif mi
+
+# Kayar engel iç topic'leri
+MOVING_OBS_DIR_TOPIC   = "/moving_obs/direction"  # String ('sol'/'sag'/'bilinmiyor')
+MOVING_OBS_CLOUD_TOPIC = "/moving_obs_cloud"       # PointCloud2 → Nav2 ObstacleLayer
+
+# Koni costmap çıkışı
+CONE_CLOUD_TOPIC = "/cone_cloud"   # PointCloud2 → Nav2 ObstacleLayer
+
+# Veri paketi kayıt kontrolü
+KAYIT_BASLAT_TOPIC = "/veri_paketi/kayit_baslat"  # Bool (True=başlat)
+KAYIT_DURUMU_TOPIC = "/veri_paketi/kayit_durumu"  # Bool (True=devam ediyor)

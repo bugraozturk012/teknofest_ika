@@ -29,6 +29,8 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import PoseArray
 from sensor_msgs.msg import PointCloud2, PointField
 
+from teknofest_ika.otonomi.topics import CONE_POSITIONS_TOPIC, CONE_CLOUD_TOPIC
+
 
 def _build_cloud(poses, frame_id: str, stamp) -> PointCloud2:
     """PoseArray → XYZ PointCloud2 (12 byte/nokta: float32 x,y,z)."""
@@ -70,9 +72,9 @@ class KoniCostmap(Node):
         qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
 
         self.create_subscription(
-            PoseArray, '/cone_positions', self._cb, qos)
+            PoseArray, CONE_POSITIONS_TOPIC, self._cb, qos)
 
-        self._pub = self.create_publisher(PointCloud2, '/cone_cloud', 10)
+        self._pub = self.create_publisher(PointCloud2, CONE_CLOUD_TOPIC, 10)
 
         self.get_logger().info(
             f'KoniCostmap hazır | '

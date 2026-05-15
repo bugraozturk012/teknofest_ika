@@ -44,10 +44,12 @@ try:
 except ImportError:
     CV_OK = False
 
-# ─── Ayarlanabilir Sabitler ─────────────────────────────────────────────────
-TOPIC_ILERI = '/camera/image_raw'          # URDF: kamera_link → libgazebo_ros_camera.so
-TOPIC_GERI  = '/camera/rear/image_raw'    # Gerçek araç: arka kamera (simülasyonda yok)
-TOPIC_NISAN = '/camera/taret/image_raw'   # Gerçek araç: taret kamerası (simülasyonda yok)
+from teknofest_ika.otonomi.topics import (
+    CAMERA_FRONT_TOPIC as TOPIC_ILERI,
+    CAMERA_REAR_TOPIC  as TOPIC_GERI,
+    CAMERA_TARET_TOPIC as TOPIC_NISAN,
+    MISYON_AKTIF_TOPIC, KAYIT_BASLAT_TOPIC, KAYIT_DURUMU_TOPIC,
+)
 
 KAYIT_DIZIN = os.path.expanduser('~/ika_kayitlar')  # Kayıt ana dizini
 VIDEO_FPS   = 30                                     # Kamera topic frekansıyla eşleşmeli
@@ -150,17 +152,17 @@ class VeriPaketi(Node):
 
         # Kayıt başlat/durdur komutu
         self._sub_kontrol = self.create_subscription(
-            Bool, '/veri_paketi/kayit_baslat',
+            Bool, KAYIT_BASLAT_TOPIC,
             self._kontrol_cb, 10
         )
 
         # Durum yayıncısı (1 Hz)
-        self._pub_durum = self.create_publisher(Bool, '/veri_paketi/kayit_durumu', 10)
+        self._pub_durum = self.create_publisher(Bool, KAYIT_DURUMU_TOPIC, 10)
         self.create_timer(1.0, self._durum_yayinla)
 
         # Misyon FSM'den otomatik başlatma — /misyon/aktif dinle
         self._sub_misyon = self.create_subscription(
-            Bool, '/misyon/aktif',
+            Bool, MISYON_AKTIF_TOPIC,
             self._misyon_cb, 10
         )
 

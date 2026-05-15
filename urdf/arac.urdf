@@ -102,7 +102,7 @@
   <joint name="sol_on_joint" type="continuous">
     <parent link="base_link"/>
     <child link="sol_on_teker"/>
-    <origin xyz="0.50 0.320 -0.10" rpy="0 0 0"/>
+    <origin xyz="0.50 0.335 -0.10" rpy="0 0 0"/>
     <axis xyz="0 -1 0"/>
     <dynamics damping="0.5" friction="0.5"/>
   </joint>
@@ -135,7 +135,7 @@
   <joint name="sol_arka_joint" type="continuous">
     <parent link="base_link"/>
     <child link="sol_arka_teker"/>
-    <origin xyz="-0.60 0.320 -0.10" rpy="0 0 0"/>
+    <origin xyz="-0.60 0.335 -0.10" rpy="0 0 0"/>
     <axis xyz="0 -1 0"/>
     <dynamics damping="0.5" friction="0.5"/>
   </joint>
