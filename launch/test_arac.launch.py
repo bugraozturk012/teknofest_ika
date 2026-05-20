@@ -174,21 +174,6 @@ def generate_launch_description():
         parameters=[{'use_sim_time': False}]
     )
 
-    # ── IMU Güvenlik (devrilme koruması) ─────────────────────────────────────
-    # Test araçta da devrilme olabilir; imu_guvenlik /e_stop/force'a yazar
-    imu_guvenlik = Node(
-        package='teknofest_ika',
-        executable='imu_guvenlik',
-        name='imu_guvenlik',
-        output='screen',
-        parameters=[{
-            'use_sim_time':  False,
-            'roll_uyari':    45.0,
-            'roll_dur':      70.0,
-            'roll_estop':    85.0,
-        }]
-    )
-
     return LaunchDescription([
         rsp,
         TimerAction(period=0.5,  actions=[e_stop]),
@@ -196,5 +181,5 @@ def generate_launch_description():
         TimerAction(period=3.0,  actions=[ekf]),
         TimerAction(period=5.0,  actions=[slam]),
         TimerAction(period=8.0,  actions=[nav2]),
-        TimerAction(period=10.0, actions=[mod_yoneticisi, imu_guvenlik]),
+        TimerAction(period=10.0, actions=[mod_yoneticisi]),
     ])
