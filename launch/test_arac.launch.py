@@ -147,11 +147,8 @@ def generate_launch_description():
     )
 
     # ── Nav2 ──────────────────────────────────────────────────────────────────
-    # NOT: Test araç için robot_radius ve max hız düşürülmeli.
-    # nav2_params.yaml'da veya aşağıdaki launch arg'larla override et:
-    #   robot_radius: 0.10   (test araç ~10cm)
-    #   max_vel_x:    0.30   (iç mekan güvenli hız)
-    nav2_params = os.path.join(pkg_share, 'config', 'nav2_params.yaml')
+    # nav2_params_test.yaml: test araç için optimize (robot_radius=0.12, DiffDrive, 0.20m/s)
+    nav2_params = os.path.join(pkg_share, 'config', 'nav2_params_test.yaml')
     nav2 = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(nav2_pkg, 'launch', 'navigation_launch.py')
@@ -161,17 +158,6 @@ def generate_launch_description():
             'params_file':     nav2_params,
             'use_composition': 'False',
         }.items()
-    )
-
-    # ── Mod Yöneticisi ────────────────────────────────────────────────────────
-    # /rc_input [ch5=1800µs] → FULL_AUTO modu okur → /mux/cmd_vel yayınlar
-    # test_arac_koprusu zaten ch5=1800 dummy yayınlıyor → FULL_AUTO otomatik
-    mod_yoneticisi = Node(
-        package='teknofest_ika',
-        executable='mod_yoneticisi',
-        name='mod_yoneticisi',
-        output='screen',
-        parameters=[{'use_sim_time': False}]
     )
 
     return LaunchDescription([

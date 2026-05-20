@@ -36,7 +36,7 @@ from tf2_ros import TransformBroadcaster
 import serial
 
 from teknofest_ika.otonomi.topics import (
-    MUX_CMD_VEL_TOPIC, ODOM_TOPIC, IMU_TOPIC, RC_INPUT_TOPIC,
+    ODOM_TOPIC, IMU_TOPIC, RC_INPUT_TOPIC,
     E_STOP_FORCE_TOPIC, E_STOP_TOPIC,
 )
 
@@ -190,8 +190,8 @@ class TestAracKoprusu(Node):
                          durability=DurabilityPolicy.VOLATILE)
 
         # ── Abonelikler ─────────────────────────────────────────────────────
-        # /mux/cmd_vel: mod_yoneticisi çıkışı (RC+Nav2 mux sonrası Twist)
-        self.create_subscription(Twist, MUX_CMD_VEL_TOPIC, self._cmd_cb, qos)
+        # /cmd_vel: Nav2 doğrudan (test stack'ta mod_yoneticisi yok)
+        self.create_subscription(Twist, '/cmd_vel', self._cmd_cb, qos)
         self.create_subscription(Bool,  E_STOP_TOPIC,       self._estop_cb, 10)
 
         # ── Yayıncılar ──────────────────────────────────────────────────────
