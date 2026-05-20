@@ -181,7 +181,12 @@ def generate_launch_description():
         executable='imu_guvenlik',
         name='imu_guvenlik',
         output='screen',
-        parameters=[{'use_sim_time': False}]
+        parameters=[{
+            'use_sim_time':  False,
+            'roll_uyari':    45.0,
+            'roll_dur':      70.0,
+            'roll_estop':    85.0,
+        }]
     )
 
     return LaunchDescription([
