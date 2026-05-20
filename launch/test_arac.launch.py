@@ -77,6 +77,28 @@ def generate_launch_description():
         }]
     )
 
+    # ── OS30A Derinlik Kamerası (eYs3D BMVM0S30A) ────────────────────────────
+    # /apc/points/data_raw → Nav2 costmap obstacle layer
+    # dm_preview paketi kurulu değilse: launch hata verir, kurulum için:
+    #   git clone https://github.com/eYs3D/HD-DM-ROS2-SDK-Release.git ~/eys3d_ws/src/dm_preview
+    #   cd ~/eys3d_ws && colcon build --symlink-install
+    #   source ~/eys3d_ws/install/setup.bash
+    os30a = Node(
+        package='dm_preview',
+        executable='dm_preview_node',
+        name='os30a_node',
+        output='screen',
+        parameters=[{
+            'frame_id':          'os30a_link',
+            'color_width':       640,
+            'color_height':      360,
+            'depth_width':       640,
+            'depth_height':      360,
+            'fps':               30,
+            'enable_pointcloud': True,
+        }]
+    )
+
     # ── E-STOP Node — GPIO'SUZ (test bilgisayarı) ────────────────────────────
     # gpio_mod=False: donanım butonu yok, sadece /e_stop/force yazılımsal kanal
     e_stop = Node(
@@ -163,7 +185,7 @@ def generate_launch_description():
     return LaunchDescription([
         rsp,
         TimerAction(period=0.5,  actions=[e_stop]),
-        TimerAction(period=1.0,  actions=[lidar, test_kopru]),
+        TimerAction(period=1.0,  actions=[lidar, os30a, test_kopru]),
         TimerAction(period=3.0,  actions=[ekf]),
         TimerAction(period=5.0,  actions=[slam]),
         TimerAction(period=8.0,  actions=[nav2]),

@@ -164,7 +164,7 @@ global_costmap:
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
-        observation_sources: scan
+        observation_sources: scan os30a_cloud
         scan:
           topic: /scan
           max_obstacle_height: 2.0
@@ -175,6 +175,17 @@ global_costmap:
           raytrace_min_range: 0.0
           obstacle_max_range: 5.5
           obstacle_min_range: 0.0
+        os30a_cloud:
+          topic: /apc/points/data_raw
+          min_obstacle_height: 0.05
+          max_obstacle_height: 1.50
+          clearing: true
+          marking: true
+          data_type: "PointCloud2"
+          raytrace_max_range: 6.0
+          raytrace_min_range: 0.1
+          obstacle_max_range: 5.0
+          obstacle_min_range: 0.1
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
@@ -206,7 +217,7 @@ local_costmap:
         z_voxels: 16
         max_obstacle_height: 2.0
         mark_threshold: 0
-        observation_sources: scan
+        observation_sources: scan os30a_cloud
         scan:
           topic: /scan
           max_obstacle_height: 2.0
@@ -217,6 +228,17 @@ local_costmap:
           raytrace_min_range: 0.0
           obstacle_max_range: 3.5
           obstacle_min_range: 0.0
+        os30a_cloud:
+          topic: /apc/points/data_raw
+          min_obstacle_height: 0.05
+          max_obstacle_height: 1.50
+          clearing: true
+          marking: true
+          data_type: "PointCloud2"
+          raytrace_max_range: 4.0
+          raytrace_min_range: 0.1
+          obstacle_max_range: 3.5
+          obstacle_min_range: 0.1
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
