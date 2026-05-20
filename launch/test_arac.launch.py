@@ -181,5 +181,4 @@ def generate_launch_description():
         TimerAction(period=3.0,  actions=[ekf]),
         TimerAction(period=5.0,  actions=[slam]),
         TimerAction(period=8.0,  actions=[nav2]),
-        TimerAction(period=10.0, actions=[mod_yoneticisi]),
     ])
