@@ -74,7 +74,17 @@ def generate_launch_description():
             'range_min':       0.1,
             'frequency':       10.0,
             'invalid_range_is_inf': False,
-        }]
+        }],
+        remappings=[('/scan', '/scan_raw')]
+    )
+
+    # ── Scan Relay — timestamp ve frame_id düzeltici ──────────────────────────
+    # Lidar [0x202] hatasında scan'lere timestamp=0 atıyor. SLAM bunu işleyemiyor.
+    scan_relay = Node(
+        package='teknofest_ika',
+        executable='scan_relay',
+        name='scan_relay',
+        output='screen',
     )
 
     # ── E-STOP Node — GPIO'SUZ (test bilgisayarı) ────────────────────────────
@@ -163,7 +173,7 @@ def generate_launch_description():
     return LaunchDescription([
         rsp,
         TimerAction(period=0.5,  actions=[e_stop]),
-        TimerAction(period=1.0,  actions=[lidar, test_kopru]),
+        TimerAction(period=1.0,  actions=[lidar, test_kopru, scan_relay]),
         TimerAction(period=3.0,  actions=[ekf]),
         TimerAction(period=5.0,  actions=[slam]),
         TimerAction(period=8.0,  actions=[nav2]),

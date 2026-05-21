@@ -1,0 +1,42 @@
+"""
+scan_relay.py — Lidar Scan Timestamp ve Frame Düzeltici
+========================================================
+YDLidar iç hata [0x202] durumunda scan'lere timestamp=0 ve
+frame_id='laser_frame' atıyor. SLAM bu scan'leri işleyemiyor.
+
+Bu node:
+  - /scan_raw dinler (lidar çıkışı)
+  - timestamp=0 ise sistem saatini yazar
+  - frame_id'yi 'lidar_link' olarak düzeltir
+  - /scan yayınlar (SLAM girişi)
+"""
+
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import LaserScan
+
+
+class ScanRelay(Node):
+
+    def __init__(self):
+        super().__init__('scan_relay')
+        self._sub = self.create_subscription(
+            LaserScan, '/scan_raw', self._cb, 10)
+        self._pub = self.create_publisher(LaserScan, '/scan', 10)
+        self.get_logger().info('ScanRelay hazır: /scan_raw → /scan')
+
+    def _cb(self, msg: LaserScan):
+        if msg.header.stamp.sec == 0 and msg.header.stamp.nanosec == 0:
+            msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = 'lidar_link'
+        self._pub.publish(msg)
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = ScanRelay()
+    try:
+        rclpy.spin(node)
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
