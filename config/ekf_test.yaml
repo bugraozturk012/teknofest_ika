@@ -1,88 +1,48 @@
-### ekf.yaml — LYDİA EKF Konfigürasyonu
-# robot_localization paketi — EKF node
-#
-# Füzyon kaynakları:
-#   odom0 : /odom          → diferansiyel enkoder odometrisi (AS5600 analog)
-#   imu0  : /imu/data      → MPU9250 + Madgwick AHRS (Nano üzerinden)
-#
-# Çıkış:
-#   /odometry/filtered     → EKF füzyon çıkışı
-#   TF: odom → base_link   → Nav2 ve SLAM için
-#
-# Araç parametreleri:
-#   Dingil arası : 0.55 m
-#   İz genişliği : 0.67 m
-#   Kinematik    : Ackermann (yer aracı, 2D hareket)
-#
-# KURULUM:
-#   sudo apt install ros-humble-robot-localization
-#
-# ÇALIŞTIRMA:
-#   ros2 run robot_localization ekf_node --ros-args \
-#        --params-file config/ekf.yaml
-#
-# SAHTE TOPIC TESTİ (donanım olmadan):
-#   ros2 topic pub /odom nav_msgs/msg/Odometry \
-#        "{header: {frame_id: 'odom'}, child_frame_id: 'base_link',
-#          pose: {pose: {position: {x: 0.0}, orientation: {w: 1.0}}},
-#          twist: {twist: {linear: {x: 0.2}}}}" --rate 50
-#   ros2 topic pub /imu/data sensor_msgs/msg/Imu \
-#        "{header: {frame_id: 'imu_link'}, orientation: {w: 1.0},
-#          orientation_covariance: [0.005,0,0, 0,0.005,0, 0,0,0.02]}" --rate 50
+### ekf_test.yaml — Test Aracı EKF Konfigürasyonu
+# Lydia'nın ekf.yaml'ından FARKLARI:
+#   - IMU devre dışı: breadboard IMU gürültülü, SLAM'ı bozuyor
+#   - two_d_mode: true (diferansiyel test aracı, düz zemin)
+#   - Sadece odometry kullanılır
 
 ekf_filter_node:
   ros__parameters:
 
-    # ── Frekans ve zamanlama ───────────────────────────────────────────────
-    frequency: 50.0            # EKF güncelleme frekansı [Hz] — IMU'dan yüksek olmamalı
-    sensor_timeout: 0.1        # Sensör sessiz kalırsa [s] — zaman damgası güncellenir
+    frequency: 50.0
+    sensor_timeout: 0.1
     transform_time_offset: 0.0
     transform_timeout: 0.05
 
-    # ── Frame tanımları ───────────────────────────────────────────────────
     map_frame:       map
     odom_frame:      odom
     base_link_frame: base_footprint
-    world_frame:     odom       # Lokal EKF: odom referans alır (map değil)
+    world_frame:     odom
 
-    # ── 2D mod (yer aracı — z/roll/pitch yok) ────────────────────────────
-    two_d_mode: false   # eğimde 3D harekete izin ver
+    two_d_mode: true   # Diferansiyel test aracı, düz zemin
 
     print_diagnostics: true
     debug: false
 
-    # ── Kaynak 0: Enkoder odometrisi ─────────────────────────────────────
-    # /odom mesajı → seri_kopru.py'dan geliyor
-    # Nano'dan gelen ODO:linear,angular,x,y,theta parse edilecek (protokol güncellenince)
+    # ── Kaynak 0: Dead reckoning odometrisi (test_arac_koprusu) ─────────
     odom0: /odom
     #                    x      y      z      roll   pitch  yaw    vx     vy     vz     vroll  vpitch vyaw
     odom0_config:     [true,  true,  false,  false, false, true,  true,  false, false, false, false, true,
-    #                    ax     ay     az
                        false, false, false]
     odom0_queue_size:    10
     odom0_nodelay:       false
-    odom0_differential:  false   # Mutlak konum veriyoruz (kümülatif ticks)
+    odom0_differential:  false
     odom0_relative:      false
 
-    # ── Kaynak 1: IMU (MPU9250 + Madgwick) ───────────────────────────────
-    # Mevcut durumda sadece orientation geliyor (angular_velocity_cov[0]=-1)
-    # Protokol güncellenince ax, ay, gx, gy, gz de eklenebilir
+    # ── IMU devre dışı — breadboard IMU gürültüsü SLAM'ı bozuyor ────────
     imu0: /imu/data
     #                    x      y      z      roll   pitch  yaw    vx     vy     vz     vroll  vpitch vyaw
-    imu0_config:      [false, false, false,  true,  true,  true,  false, false, false, false, false, true,
-    #                    ax     ay     az      ^ roll ^ pitch kullan (eğim algılama)
+    imu0_config:      [false, false, false,  false, false, false,  false, false, false, false, false, false,
                        false, false, false]
     imu0_queue_size:     10
     imu0_nodelay:        false
-    imu0_differential:   false
+    imu0_differential:   true
     imu0_relative:       false
     imu0_remove_gravitational_acceleration: true
 
-    # ── Süreç gürültüsü kovaryansı (Q matrisi, 15×15) ────────────────────
-    # Sıra: x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az
-    # Değerler deneysel olarak araçta ayarlanacak.
-    # Büyük Q → modele az güven, sensöre çok güven (salınım riski)
-    # Küçük Q → modele çok güven, yavaş adaptasyon
     process_noise_covariance: [
       0.05,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
       0.0,   0.05,  0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,
@@ -101,8 +61,6 @@ ekf_filter_node:
       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.015
     ]
 
-    # ── Başlangıç durum kovaryansı (P0 matrisi) ───────────────────────────
-    # Başlangıçta konumdan emin değiliz, hız sıfır varsayımı daha güvenilir
     initial_estimate_covariance: [
       0.5,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
       0.0,    0.5,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,

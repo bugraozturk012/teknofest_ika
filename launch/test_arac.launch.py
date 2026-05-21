@@ -108,14 +108,14 @@ def generate_launch_description():
         }]
     )
 
-    # ── EKF (odom + IMU füzyon) ───────────────────────────────────────────────
+    # ── EKF (sadece odometri — IMU breadboard gürültüsü nedeniyle devre dışı) ─
     ekf = Node(
         package='robot_localization',
         executable='ekf_node',
         name='ekf_filter_node',
         output='screen',
         parameters=[
-            os.path.join(pkg_share, 'config', 'ekf.yaml'),
+            os.path.join(pkg_share, 'config', 'ekf_test.yaml'),
             {'use_sim_time': False}
         ]
     )
