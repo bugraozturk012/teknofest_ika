@@ -799,7 +799,6 @@ class ErrorRecoveryState(smach.State):
             userdata.wp_index -= 1
 
         time.sleep(2.0)
-        self._retry_count = 0   # başarılı kurtarma → sayacı sıfırla
         return 'recovered'
 
 

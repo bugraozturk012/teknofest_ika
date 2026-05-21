@@ -8,7 +8,7 @@ Nav2 / FSM / mod_yoneticisi hiç değişmez.
 
 Farklar (seri_kopru'ya göre):
   - Baud rate   : 500 000 bps (Kürşat firmware'i)
-  - Giriş topic : /mux/cmd_vel (Twist) — ackermann_converter atlanır
+  - Giriş topic : /cmd_vel (Twist) — mod_yoneticisi/ackermann_converter atlanır
   - Çıkış paket : PKT_SURUCU → v1 = angular.z rad/s → centideg (Kürşat kinematiği)
   - Telemetri   : 29 byte blok [AA 55 | 14B MPU9250 | 12B BMI160 | 1B CRC]
   - Odometri    : enkoder yok → cmd_vel integrasyon (dead reckoning)
@@ -236,7 +236,7 @@ class TestAracKoprusu(Node):
 
         self.get_logger().info('TestAracKoprusu başlatıldı.')
 
-    # ── /mux/cmd_vel callback ────────────────────────────────────────────────
+    # ── /cmd_vel callback ────────────────────────────────────────────────────
     def _cmd_cb(self, msg: Twist):
         self._son_cmd = time.monotonic()
 
