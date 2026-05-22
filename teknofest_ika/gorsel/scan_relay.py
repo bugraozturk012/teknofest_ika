@@ -13,7 +13,14 @@ Bu node:
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import LaserScan
+
+_BEST_EFFORT = QoSProfile(
+    depth=10,
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE,
+)
 
 
 class ScanRelay(Node):
@@ -21,7 +28,7 @@ class ScanRelay(Node):
     def __init__(self):
         super().__init__('scan_relay')
         self._sub = self.create_subscription(
-            LaserScan, '/scan_raw', self._cb, 10)
+            LaserScan, '/scan_raw', self._cb, _BEST_EFFORT)
         self._pub = self.create_publisher(LaserScan, '/scan', 10)
         self.get_logger().info('ScanRelay hazır: /scan_raw → /scan')
 
