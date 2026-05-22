@@ -174,7 +174,7 @@ def generate_launch_description():
         rsp,
         TimerAction(period=0.5,  actions=[e_stop]),
         TimerAction(period=1.0,  actions=[lidar, test_kopru, scan_relay]),
-        TimerAction(period=3.0,  actions=[ekf]),
+        TimerAction(period=2.0,  actions=[ekf]),
         TimerAction(period=5.0,  actions=[slam]),
         TimerAction(period=8.0,  actions=[nav2]),
     ])
