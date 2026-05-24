@@ -18,9 +18,12 @@ bt_navigator:
     navigators: ['navigate_to_pose']
     navigate_to_pose:
       plugin: "nav2_bt_navigator/NavigateToPoseNavigator"
-    default_nav_through_poses_bt_xml: /opt/ros/humble/share/nav2_bt_navigator/behavior_trees/navigate_to_pose_w_replanning_and_recovery.xml
+    default_nav_to_pose_bt_xml: /opt/ros/humble/share/nav2_bt_navigator/behavior_trees/navigate_w_replanning_only_if_path_becomes_invalid.xml
+    default_nav_through_poses_bt_xml: /opt/ros/humble/share/nav2_bt_navigator/behavior_trees/navigate_through_poses_w_replanning_and_recovery.xml
     plugin_lib_names:
       - nav2_compute_path_to_pose_action_bt_node
+      - nav2_compute_path_through_poses_action_bt_node
+      - nav2_spin_action_bt_node
       - nav2_follow_path_action_bt_node
       - nav2_wait_action_bt_node
       - nav2_back_up_action_bt_node
