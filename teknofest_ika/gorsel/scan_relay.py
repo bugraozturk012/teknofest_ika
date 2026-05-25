@@ -14,6 +14,7 @@ Bu node:
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+from rclpy.clock import Clock, ClockType
 from sensor_msgs.msg import LaserScan
 
 _BEST_EFFORT = QoSProfile(
@@ -27,14 +28,14 @@ class ScanRelay(Node):
 
     def __init__(self):
         super().__init__('scan_relay')
+        self._wall = Clock(clock_type=ClockType.SYSTEM_TIME)
         self._sub = self.create_subscription(
             LaserScan, '/scan_raw', self._cb, _BEST_EFFORT)
         self._pub = self.create_publisher(LaserScan, '/scan', 10)
         self.get_logger().info('ScanRelay hazır: /scan_raw → /scan')
 
     def _cb(self, msg: LaserScan):
-        if msg.header.stamp.sec == 0 and msg.header.stamp.nanosec == 0:
-            msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.stamp = self._wall.now().to_msg()
         msg.header.frame_id = 'lidar_link'
         self._pub.publish(msg)
 

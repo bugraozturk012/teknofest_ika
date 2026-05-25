@@ -260,6 +260,7 @@ class TestAracKoprusu(Node):
         v0 = max(-_MAX_VEL_MMS, min(_MAX_VEL_MMS, v0))
         v1 = max(-_MAX_WZ_CD,   min(_MAX_WZ_CD,   v1))
 
+        self.get_logger().info(f'PKT_SURUCU → v0={v0}mm/s v1={v1}cd', throttle_duration_sec=1.0)
         self._paket_gonder(_PKT_SURUCU, v0, v1)
 
     # ── E-STOP callback ──────────────────────────────────────────────────────
