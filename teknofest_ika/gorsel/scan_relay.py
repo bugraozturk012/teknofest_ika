@@ -31,8 +31,8 @@ class ScanRelay(Node):
         self._wall = Clock(clock_type=ClockType.SYSTEM_TIME)
         self._sub = self.create_subscription(
             LaserScan, '/scan_raw', self._cb, _BEST_EFFORT)
-        self._pub = self.create_publisher(LaserScan, '/scan', 10)
-        self.get_logger().info('ScanRelay hazır: /scan_raw → /scan')
+        self._pub = self.create_publisher(LaserScan, '/scan_lidar', 10)
+        self.get_logger().info('ScanRelay hazır: /scan_raw → /scan_lidar')
 
     def _cb(self, msg: LaserScan):
         msg.header.stamp = self._wall.now().to_msg()
