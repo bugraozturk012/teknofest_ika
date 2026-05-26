@@ -35,6 +35,8 @@ class ScanRelay(Node):
         self.get_logger().info('ScanRelay hazır: /scan_raw → /scan_lidar')
 
     def _cb(self, msg: LaserScan):
+        if not (300 <= len(msg.ranges) <= 1500):
+            return
         msg.header.stamp = self._wall.now().to_msg()
         msg.header.frame_id = 'lidar_link'
         self._pub.publish(msg)
