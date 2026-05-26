@@ -89,7 +89,7 @@ controller_server:
       use_rotate_to_heading: true       # Diferansiyel: yerinde dönebilir
       rotate_to_heading_angular_vel: 1.0
       rotate_to_heading_min_angle: 0.785  # 45° — büyük açı farkında önce döner
-      transform_tolerance: 0.2
+      transform_tolerance: 0.5
       use_velocity_scaled_lookahead_dist: true
       min_approach_linear_velocity: 0.05
       approach_velocity_scaling_dist: 0.5
