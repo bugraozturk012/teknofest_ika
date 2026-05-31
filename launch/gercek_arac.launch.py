@@ -85,7 +85,6 @@ def generate_launch_description():
         executable='scan_relay',
         name='scan_relay',
         output='screen',
-        remappings=[('/scan_lidar', '/scan')],
     )
 
     # ── OS30A Derinlik Kamerası (eYs3D BMVM0S30A) ────────────────────────────
@@ -258,6 +257,7 @@ def generate_launch_description():
         remappings=[
             ('/ileri_kamera/image_raw',    '/camera/image_raw'),
             ('/yardimci_kamera/image_raw', '/camera/front/image_raw'),
+            ('/scan',                      '/scan_lidar'),
         ]
     )
 
