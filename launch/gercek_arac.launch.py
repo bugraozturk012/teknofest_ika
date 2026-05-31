@@ -75,7 +75,17 @@ def generate_launch_description():
             'range_min':      0.1,
             'frequency':      10.0,
             'invalid_range_is_inf': False,
-        }]
+        }],
+        remappings=[('/scan', '/scan_raw')]
+    )
+
+    # ── Scan Relay — timestamp ve frame_id düzeltici ──────────────────────────
+    scan_relay = Node(
+        package='teknofest_ika',
+        executable='scan_relay',
+        name='scan_relay',
+        output='screen',
+        remappings=[('/scan_lidar', '/scan')],
     )
 
     # ── OS30A Derinlik Kamerası (eYs3D BMVM0S30A) ────────────────────────────
@@ -441,7 +451,7 @@ def generate_launch_description():
     return LaunchDescription([
         rsp,
         TimerAction(period=0.5,  actions=[e_stop]),
-        TimerAction(period=1.0,  actions=[seri_kopru, lidar, os30a,
+        TimerAction(period=1.0,  actions=[seri_kopru, lidar, scan_relay, os30a,
                                           webcam_taret, webcam_ileri, webcam_geri,
                                           lora]),
         TimerAction(period=2.0,  actions=[preprocessing]),
