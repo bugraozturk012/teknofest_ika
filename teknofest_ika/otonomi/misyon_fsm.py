@@ -99,7 +99,7 @@ class DetectionsStore:
         'fps':              0.0,
         'e_stop':           False,
         'manual_mod':       False,
-        'hizlanma_bitti':   False,   # Tabela_11_son (class_id=11) tespit edildi
+        'hizlanma_bitti':   False,   # Tabela_11_son (class_id=3) tespit edildi
         'stop_var':         False,   # §6.10 STOP işareti (class_id=12) tespit edildi
     }
 
@@ -529,9 +529,10 @@ class ShootState(smach.State):
     MAX_DENEME = 3       # Şartname: en fazla 3 deneme
     TIMEOUT_S  = 8.0     # Her deneme için max bekleme
 
-    def __init__(self, node: Node):
+    def __init__(self, node: Node, det_store: DetectionsStore):
         smach.State.__init__(self, outcomes=['shot_fired'])
         self.node       = node
+        self.det_store  = det_store
         self._confirmed = False
 
         self._shoot_pub = node.create_publisher(Bool, SHOOT_CMD_TOPIC, 10)
@@ -572,9 +573,11 @@ class ShootState(smach.State):
                     f'[SHOOT] Deneme {deneme} onayı gelmedi (timeout).'
                 )
 
-            # Son deneme değilse ShootApproach'a dönmek yerine
-            # kısa bir bekleme sonrası tekrar dene
+            # Son deneme değilse kısa bekleme sonrası tekrar dene
             if deneme < self.MAX_DENEME:
+                if self.det_store.get_field('e_stop', False):
+                    self.node.get_logger().error('[SHOOT] E-STOP — atış iptal.')
+                    break
                 time.sleep(1.0)
 
         if basarili_deneme > 0:
@@ -639,8 +642,8 @@ class HizlanmaState(smach.State):
         with self._lock:
             if self._pos is None:
                 return 0.0
-        dx = self._pos[0] - baslangic[0]
-        dy = self._pos[1] - baslangic[1]
+            dx = self._pos[0] - baslangic[0]
+            dy = self._pos[1] - baslangic[1]
         return math.sqrt(dx * dx + dy * dy)
 
     def execute(self, userdata):
@@ -964,7 +967,7 @@ def main():
 
         smach.StateMachine.add(
             'SHOOT',
-            ShootState(node),
+            ShootState(node, det_store),
             transitions={
                 'shot_fired': 'NAVIGATE',
             }

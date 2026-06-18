@@ -21,12 +21,6 @@ KURAL: Topic adı değiştirilecekse bu dosyada değiştirilir,
 # Tüketen: Otomasyon (EKF, SLAM, Nav2)
 # ─────────────────────────────────────────────
 
-# YDLidar Tmini Pro — 360° LaserScan (ham çıkış)
-# Mesaj tipi : sensor_msgs/LaserScan
-# Frekans    : ~10 Hz
-# Frame      : laser_frame
-SCAN_TOPIC = "/scan"
-
 # scan_relay çıkışı — timestamp/frame_id düzeltilmiş ham LiDAR
 # Üretici: scan_relay  |  Tüketen: preprocessing_node
 SCAN_LIDAR_TOPIC = "/scan_lidar"
@@ -252,7 +246,7 @@ FRAME_IMU        = "imu_link"
 #   4=Tabela_12      9=Tabela_6      14=hedef_tahtasi  15=trafik_huni
 
 CLASS_SULU_YOL       = "Tabela_1"   # class_id= 0
-CLASS_YAN_EGIM_2     = "Tabela_10"  # class_id= 1  (DIK_EGIM_CIKIS)
+CLASS_DIK_EGIM_CIKIS = "Tabela_10"  # class_id= 1
 CLASS_TASLI_YOL      = "Tabela_2"   # class_id= 5
 CLASS_YAN_EGIM       = "Tabela_3"   # class_id= 6
 CLASS_DIK_ENGEL      = "Tabela_4"   # class_id= 7
@@ -296,7 +290,7 @@ YOLO_TO_FSM = {
     "Tabela_7"   : "ENGEBELİ_ARAZİ",
     "Tabela_8"   : "DIK_EGIM",
     "Tabela_9"   : "ATIS_BOLGESI",
-    "Tabela_10"  : "YAN_EGIM_2",
+    "Tabela_10"  : "DIK_EGIM_CIKIS",
 }
 
 # ─────────────────────────────────────────────

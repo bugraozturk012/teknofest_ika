@@ -34,6 +34,7 @@ bt_navigator:
     navigators: ['navigate_to_pose']
     navigate_to_pose:
       plugin: "nav2_bt_navigator/NavigateToPoseNavigator"
+    default_nav_to_pose_bt_xml: "navigate_to_pose_w_replanning_and_recovery.xml"
     plugin_lib_names:
       - nav2_compute_path_to_pose_action_bt_node
       - nav2_compute_path_through_poses_action_bt_node
@@ -102,10 +103,10 @@ controller_server:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
 
       # Hız parametreleri
-      desired_linear_vel: 0.8           # Nominal hız [m/s] — araçta artırılacak
-      lookahead_dist: 1.5               # [m] — lookahead başlangıç mesafesi
-      min_lookahead_dist: 0.8           # [m] — minimum lookahead
-      max_lookahead_dist: 3.0           # [m] — maksimum lookahead
+      desired_linear_vel: 3.0            # Nominal hız [m/s]
+      lookahead_dist: 2.0               # [m] — lookahead başlangıç mesafesi
+      min_lookahead_dist: 1.2           # [m] — minimum lookahead
+      max_lookahead_dist: 4.0           # [m] — maksimum lookahead
       lookahead_time: 1.5               # [s] — hızla ölçeklenen lookahead
 
       use_rotate_to_heading: false          # Ackermann yerinde dönemez — kapalı
@@ -115,7 +116,7 @@ controller_server:
       # Hız düzenleme
       use_velocity_scaled_lookahead_dist: true
       min_approach_linear_velocity: 0.05
-      approach_velocity_scaling_dist: 1.0
+      approach_velocity_scaling_dist: 2.5
 
       # Eğrilik bazlı hız sınırlama
       # Ackermann aracın maksimum dönüş yarıçapı: ~0.95 m
@@ -133,7 +134,7 @@ controller_server:
       # Ackermann kısıtı
       # max angular = v * tan(delta_max) / L = 3.0 * tan(30°) / 0.55 ≈ 3.14 rad/s
       # Güvenlik için 1.0 rad/s ile başla, araçta artır
-      max_angular_vel: 1.0             # [rad/s]
+      max_angular_vel: 1.8             # [rad/s]
       max_robot_pose_search_dist: 10.0
 
       use_interpolation: false

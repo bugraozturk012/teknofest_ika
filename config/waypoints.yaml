@@ -13,17 +13,23 @@
 # pas_gecilir : true → aşama timeout'ta otomatik atlanır
 #               false → aşama zorunlu, timeout'ta hata kurtarmaya düşer
 #
-# Tabela → class_id eşlemesi (yolo_adapter_node.py ile aynı):
-#   Tabela_1 (class_id=0)  → SULU_YOL
-#   Tabela_2 (class_id=1)  → TASLI_YOL
-#   Tabela_3 (class_id=2)  → YAN_EGIM
-#   Tabela_4 (class_id=3)  → DIK_ENGEL
-#   Tabela_5 (class_id=4)  → KONİLİ_YOL
-#   Tabela_6 (class_id=5)  → KAYAR_ENGEL
-#   Tabela_7 (class_id=6)  → ENGEBELİ_ARAZİ
-#   Tabela_8 (class_id=7)  → DIK_EGIM
-#   Tabela_9 (class_id=8)  → ATIS_BOLGESI
-#   Tabela_10 (class_id=9) → YAN_EGIM_2
+# Tabela → class_id eşlemesi (ALFABETİK model sırası — topics.py ile aynı):
+#   Tabela_1     (class_id= 0) → SULU_YOL
+#   Tabela_10    (class_id= 1) → DIK_EGIM_CIKIS
+#   Tabela_11    (class_id= 2) → HIZLANMA başlangıcı
+#   Tabela_11_son(class_id= 3) → HIZLANMA sonu
+#   Tabela_12    (class_id= 4) → (netleştirilecek)
+#   Tabela_2     (class_id= 5) → TASLI_YOL
+#   Tabela_3     (class_id= 6) → YAN_EGIM
+#   Tabela_4     (class_id= 7) → DIK_ENGEL
+#   Tabela_5     (class_id= 8) → KONİLİ_YOL
+#   Tabela_6     (class_id= 9) → KAYAR_ENGEL
+#   Tabela_7     (class_id=10) → ENGEBELİ_ARAZİ
+#   Tabela_8     (class_id=11) → DIK_EGIM
+#   Tabela_9     (class_id=12) → ATIS_BOLGESI
+#   Tabela_stop  (class_id=13) → STOP işareti
+#   hedef_tahtasi(class_id=14) → atış hedefi
+#   trafik_huni  (class_id=15) → trafik konisi
 
 asamalar:
 
@@ -103,7 +109,7 @@ asamalar:
       araç 2s durur, 3s cooldown, rampa çıkışına devam.
 
   - isim: DIK_EGIM_CIKIS
-    yolo_sinifi: Tabela_8
+    yolo_sinifi: Tabela_10
     waypoint:
       x: 0.0   # ⚠️ PLACEHOLDER — rampa çıkış noktası (iniş sonrası düz zemin)
       y: 0.0

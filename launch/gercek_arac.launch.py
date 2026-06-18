@@ -194,8 +194,7 @@ def generate_launch_description():
         package='teknofest_ika', executable='ackermann_converter',
         name='ackermann_converter', output='screen',
         parameters=[{'use_sim_time': False, 'wheelbase': 0.55,
-                     'max_steering_angle': 0.5236, 'max_speed': 3.0}],
-        remappings=[('/cmd_vel', '/mux/cmd_vel')]
+                     'max_steering_angle': 0.5236, 'max_speed': 12.0}]
     )
     veri_paketi = Node(
         package='teknofest_ika', executable='veri_paketi',
@@ -314,7 +313,7 @@ def generate_launch_description():
             'target_label':      '15',   # 15 = trafik_huni (alfabetik model sırası)
         }],
         remappings=[
-            ('/ileri_kamera/camera_info', '/camera/front/camera_info'),
+            ('/ileri_kamera/camera_info', '/camera/camera_info'),
         ]
     )
 
