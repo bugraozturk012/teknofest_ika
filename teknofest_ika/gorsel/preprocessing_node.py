@@ -20,6 +20,12 @@ from sensor_msgs.msg import Image, LaserScan, PointCloud2, PointField
 from cv_bridge import CvBridge
 import struct
 
+from teknofest_ika.otonomi.topics import (
+    SCAN_LIDAR_TOPIC,
+    SCAN_FILTERED_TOPIC,
+    CAMERA_PROCESSED_TOPIC,
+)
+
 
 class PreprocessingNode(Node):
     def __init__(self):
@@ -52,9 +58,9 @@ class PreprocessingNode(Node):
         self.lidar_buffer = []
 
         # Publishers
-        self.pub_main = self.create_publisher(Image, "/camera/image_processed", 10)
+        self.pub_main = self.create_publisher(Image, CAMERA_PROCESSED_TOPIC, 10)
         self.pub_aux = self.create_publisher(Image, "/camera_aux/image_processed", 10)
-        self.pub_scan = self.create_publisher(LaserScan, "/scan/filtered", 10)
+        self.pub_scan = self.create_publisher(LaserScan, SCAN_FILTERED_TOPIC, 10)
         self.pub_depth = self.create_publisher(PointCloud2, "/depth/points/filtered", 10)
 
         # Subscribers
@@ -65,7 +71,7 @@ class PreprocessingNode(Node):
             Image, "/yardimci_kamera/image_raw",
             self.cb_aux_camera, qos_profile_sensor_data)
         self.sub_scan = self.create_subscription(
-            LaserScan, "/scan",
+            LaserScan, SCAN_LIDAR_TOPIC,
             self.cb_scan, qos_profile_sensor_data)
         self.sub_depth = self.create_subscription(
             PointCloud2, "/depth/points",

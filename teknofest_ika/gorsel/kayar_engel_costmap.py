@@ -113,7 +113,7 @@ class KayarEngelCostmap(Node):
         xs = r_sel * np.cos(a_sel)
         ys = r_sel * np.sin(a_sel)
 
-        frame = msg.header.frame_id if msg.header.frame_id else 'laser'
+        frame = msg.header.frame_id if msg.header.frame_id else 'lidar_link'
         self._pub.publish(_xyz_cloud(xs, ys, frame, msg.header.stamp))
 
         self.get_logger().debug(

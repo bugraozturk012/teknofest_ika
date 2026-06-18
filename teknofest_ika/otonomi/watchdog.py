@@ -11,11 +11,15 @@ GOREVLERI:
      timeout'ta /sensor/fault yayinlar.
 
 DENETLENEN TOPIC'LER:
-  /scan               -> LiDAR      (timeout: 2.0s)
+  /scan_lidar          -> LiDAR      (timeout: 2.0s)
+  /scan/filtered       -> LiDARFiltre(timeout: 3.0s)
   /odom                -> Enkoder    (timeout: 1.0s)
   /imu/data            -> IMU        (timeout: 1.0s)
   /battery/status      -> Batarya    (timeout: 5.0s)
   /odometry/filtered   -> EKF        (timeout: 2.0s)
+  /camera/image_processed -> Kamera  (timeout: 2.0s)
+  /detections/yolo     -> YOLO       (timeout: 3.0s)
+  /ika/detections      -> YOLOAdapter(timeout: 3.0s)
 
 NOT: AnyMsg kullanir — mesaj tipinden bagimsiz, sadece topic
      canliligini kontrol eder. Deserialization yapmaz.
@@ -32,13 +36,15 @@ from rclpy.msg import AnyMsg
 from std_msgs.msg import String
 
 from teknofest_ika.otonomi.topics import (
-    SCAN_TOPIC, SCAN_FILTERED_TOPIC, ODOM_TOPIC, IMU_TOPIC,
+    SCAN_LIDAR_TOPIC, SCAN_FILTERED_TOPIC, ODOM_TOPIC, IMU_TOPIC,
     BATTERY_TOPIC, EKF_ODOM_TOPIC, CAMERA_PROCESSED_TOPIC,
-    YOLO_RAW_TOPIC, DETECTIONS_TOPIC, CONE_FUSION_CLOUD_TOPIC,
+    YOLO_RAW_TOPIC, DETECTIONS_TOPIC,
 )
 
 CRITICAL_TOPICS = {
-    SCAN_TOPIC:              ('LiDAR',          2.0),
+    # /scan (/scan_raw → scan_relay → /scan_lidar) — SCAN_TOPIC ("/scan") KALDIRILDI:
+    # Hiçbir node /scan'e doğrudan yayın yapmıyor; scan_relay /scan_lidar'a yayınlıyor.
+    SCAN_LIDAR_TOPIC:        ('LiDAR',          2.0),
     SCAN_FILTERED_TOPIC:     ('LiDARFiltre',    3.0),
     ODOM_TOPIC:              ('Enkoder',        1.0),
     IMU_TOPIC:               ('IMU',            1.0),
@@ -47,13 +53,14 @@ CRITICAL_TOPICS = {
     CAMERA_PROCESSED_TOPIC:  ('KameraOnIsleme', 2.0),
     YOLO_RAW_TOPIC:          ('YOLO',           3.0),
     DETECTIONS_TOPIC:        ('YOLOAdapter',    3.0),
-    CONE_FUSION_CLOUD_TOPIC: ('ConeFusion',     5.0),
-    # /targeting/error KASITLI OLARAK ÇIKARILDI:
+    # CONE_FUSION_CLOUD_TOPIC KASITLI OLARAK ÇIKARILDI:
+    # cone_fusion_node yalnızca koni tespit edilince yayın yapar.
+    # Parkurun büyük bölümünde koni yok → sürekli yanlış alarm üretir.
+    # /targeting/error DA ÇIKARILDI:
     # targeting_node sadece misyon_fsm SHOOT_APPROACH state'inde aktif.
-    # Navigasyon boyunca (~14 dk) bu topic sessiz kalır → sürekli yanlış alarm üretir.
 }
 
-STARTUP_GRACE_S = 15.0   # Bu surede tum topic'ler en az 1 kez gelmeli
+STARTUP_GRACE_S = 30.0   # YOLO TensorRT engine yükleme süresi (~5-10s) dahil
 
 
 class Watchdog(Node):

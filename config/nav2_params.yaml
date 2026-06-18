@@ -7,7 +7,7 @@
 #   Max direksiyon açısı: 30°
 #   Min dönüş yarıçapı : L / tan(delta_max) = 0.55 / tan(30°) ≈ 0.95 m
 #
-# Planner  : SmacPlannerHybrid (Reeds-Shepp — Ackermann uyumlu)
+# Planner  : SmacPlannerHybrid (DUBIN — sadece ileri hareket, Ackermann uyumlu)
 # Controller: RegulatedPurePursuitController (RPP — Ackermann uyumlu)
 #
 # KURULUM:
@@ -145,7 +145,7 @@ planner_server:
     planner_plugins: ["GridBased"]
 
     # ── SmacPlannerHybrid — Ackermann kinematik kısıtları destekler ──────
-    # Reeds-Shepp eğrisi: hem ileri hem geri manevra
+    # DUBIN eğrisi: sadece ileri hareket, Ackermann kinematik için uygun
     GridBased:
       plugin: "nav2_smac_planner/SmacPlannerHybrid"
       downsample_costmap: false
@@ -442,5 +442,6 @@ lifecycle_manager:
       - planner_server
       - behavior_server
       - bt_navigator
+      - velocity_smoother
 
 # lifecycle_manager_localization kaldırıldı — SLAM_Toolbox kullanılıyor, AMCL aktif değil.

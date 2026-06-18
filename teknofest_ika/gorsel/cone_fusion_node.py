@@ -31,7 +31,7 @@ class ConeFusionNode(Node):
         self.declare_parameter("lidar_window", 8)
         # yolo_detection_node class_id'yi integer string olarak yayınlar: str(13) = "13"
         # "trafik_huni" string karşılaştırması YANLIŞ — hiç eşleşmez.
-        self.declare_parameter("target_label", "13")
+        self.declare_parameter("target_label", "15")
         self.declare_parameter("safety_sphere_points", 20)
 
         self.fov_deg = self.get_parameter("camera_fov_deg").value
@@ -129,7 +129,14 @@ class ConeFusionNode(Node):
             all_points.extend(self._generate_safety_sphere(center))
 
         points = np.array(all_points, dtype=np.float32)
-        cloud = self._create_cloud(det_msg.header, points)
+
+        # Noktalar base_footprint koordinat sisteminde hesaplandı (x ileri, y sol).
+        # det_msg.header kamera frame'i taşır — Nav2'nin costmap'e doğru yerleştirmesi
+        # için frame_id 'base_footprint' olarak üzerine yazılır.
+        base_header = Header()
+        base_header.stamp = det_msg.header.stamp
+        base_header.frame_id = 'base_footprint'
+        cloud = self._create_cloud(base_header, points)
         self.pub.publish(cloud)
 
     def _generate_safety_sphere(self, center, z_levels=3):

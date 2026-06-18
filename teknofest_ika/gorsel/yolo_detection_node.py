@@ -22,11 +22,24 @@ from teknofest_ika.utils.tensorrt_inferer import TensorRTInferer, HAS_TRT
 from teknofest_ika.otonomi.topics import CAMERA_PROCESSED_TOPIC, YOLO_RAW_TOPIC, YOLO_RAW_DEBUG_TOPIC
 
 
+# Alfabetik model sırası — topics.py YOLO_CLASSES ile birebir uyumlu
 CLASS_NAMES = {
-    0: "Tabela_1", 1: "Tabela_2", 2: "Tabela_3", 3: "Tabela_4",
-    4: "Tabela_5", 5: "Tabela_6", 6: "Tabela_7", 7: "Tabela_8",
-    8: "Tabela_9", 9: "Tabela_10", 10: "Tabela_11", 11: "Tabela_11_son",
-    12: "Tabela_stop", 13: "trafik_huni", 14: "hedef_tahtasi"
+    0:  "Tabela_1",       # SULU_YOL
+    1:  "Tabela_10",      # DIK_EGIM_CIKIS
+    2:  "Tabela_11",      # HIZLANMA başlangıcı
+    3:  "Tabela_11_son",  # HIZLANMA sonu
+    4:  "Tabela_12",
+    5:  "Tabela_2",       # TASLI_YOL
+    6:  "Tabela_3",       # YAN_EGIM
+    7:  "Tabela_4",       # DIK_ENGEL
+    8:  "Tabela_5",       # KONİLİ_YOL
+    9:  "Tabela_6",       # KAYAR_ENGEL
+    10: "Tabela_7",       # ENGEBELİ_ARAZİ
+    11: "Tabela_8",       # DIK_EGIM
+    12: "Tabela_9",       # ATIS_BOLGESI
+    13: "Tabela_stop",    # STOP işareti
+    14: "hedef_tahtasi",
+    15: "trafik_huni",
 }
 
 

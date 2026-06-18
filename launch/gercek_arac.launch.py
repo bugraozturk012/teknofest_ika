@@ -151,7 +151,7 @@ def generate_launch_description():
 
     # ── SLAM Toolbox — harita varsa localization, yoksa mapping ───────────────
     slam_params = os.path.join(pkg_share, 'config', 'mapper_params_online_sync.yaml')
-    gercek_harita = os.path.join(pkg_share, 'maps', 'gercek_harita.pgm')
+    gercek_harita = os.path.join(pkg_share, 'maps', 'teknofest_harita.pgm')
 
     if os.path.exists(gercek_harita):
         # Harita var → localization modu (haritayı yükle, yeni alan haritalama)
@@ -247,9 +247,35 @@ def generate_launch_description():
     )
 
 
+    # ── WaveShare IMX258 Ana Kamera (13MP CSI) ───────────────────────────────
+    # Jetson'da CSI kamera v4l2_camera veya gscam2 ile açılır.
+    # Udev (bir kez): /dev/video_imx258 symlink oluştur
+    #   ls /dev/video* ile CSI device'ı bul, ardından:
+    #   echo 'SUBSYSTEM=="video4linux", ATTR{name}=="vi-output...", SYMLINK+="video_imx258"' \
+    #       | sudo tee /etc/udev/rules.d/99-imx258.rules
+    #   sudo udevadm control --reload-rules && sudo udevadm trigger
+    imx258 = Node(
+        package='v4l2_camera',
+        executable='v4l2_camera_node',
+        name='imx258',
+        output='screen',
+        parameters=[{
+            'video_device':  '/dev/video_imx258',
+            'image_size':    [1280, 720],
+            'pixel_format':  'YUYV',
+            'camera_frame_id': 'camera_link',
+        }],
+        remappings=[
+            ('image_raw',   '/camera/image_raw'),
+            ('camera_info', '/camera/camera_info'),
+        ]
+    )
+
     # ── Görüntü Ön İşleme ─────────────────────────────────────────────────────
     # /ileri_kamera/image_raw → IMX258 ana kameradan (/camera/image_raw)
     # /yardimci_kamera/image_raw → ön webcam'den (/camera/front/image_raw)
+    # /depth/points → OS30A derinlik kamerasından (/apc/points/data_raw)
+    # /scan_lidar → preprocessing_node.py SCAN_LIDAR_TOPIC ile direkt abone, remap gerekmez
     preprocessing = Node(
         package='teknofest_ika', executable='preprocessing_node',
         name='preprocessing_node', output='screen',
@@ -257,7 +283,7 @@ def generate_launch_description():
         remappings=[
             ('/ileri_kamera/image_raw',    '/camera/image_raw'),
             ('/yardimci_kamera/image_raw', '/camera/front/image_raw'),
-            ('/scan',                      '/scan_lidar'),
+            ('/depth/points',              '/apc/points/data_raw'),
         ]
     )
 
@@ -285,7 +311,7 @@ def generate_launch_description():
             'image_width':       1280,
             'cone_safety_radius_m': 0.4,
             'cone_min_confidence':  0.45,
-            'target_label':      '13',   # yolo_detection_node str(class_id) yayınlar
+            'target_label':      '15',   # 15 = trafik_huni (alfabetik model sırası)
         }],
         remappings=[
             ('/ileri_kamera/camera_info', '/camera/front/camera_info'),
@@ -452,6 +478,7 @@ def generate_launch_description():
         rsp,
         TimerAction(period=0.5,  actions=[e_stop]),
         TimerAction(period=1.0,  actions=[seri_kopru, lidar, scan_relay, os30a,
+                                          imx258,
                                           webcam_taret, webcam_ileri, webcam_geri,
                                           lora]),
         TimerAction(period=2.0,  actions=[preprocessing]),
@@ -461,8 +488,10 @@ def generate_launch_description():
         TimerAction(period=10.0, actions=[ackermann, imu_guvenlik,
                                           anti_rollback, mod_yoneticisi]),
         TimerAction(period=11.5, actions=[veri_paketi, terrain_adapter,
-                                          kayar_kalman, koni_costmap,
-                                          kayar_costmap]),
+                                          kayar_kalman, kayar_costmap,
+                                          # koni_costmap: /cone_positions topic üreticisi yok,
+                                          # cone_fusion_node /costmap/cone_cloud ile Nav2'ye doğrudan yazar
+                                          ]),
         TimerAction(period=12.0, actions=[watchdog]),
         TimerAction(period=13.0, actions=[yolo_detection, cone_fusion,
                                           targeting, servo_controller]),

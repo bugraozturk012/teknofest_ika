@@ -27,6 +27,10 @@ KURAL: Topic adı değiştirilecekse bu dosyada değiştirilir,
 # Frame      : laser_frame
 SCAN_TOPIC = "/scan"
 
+# scan_relay çıkışı — timestamp/frame_id düzeltilmiş ham LiDAR
+# Üretici: scan_relay  |  Tüketen: preprocessing_node
+SCAN_LIDAR_TOPIC = "/scan_lidar"
+
 # preprocessing_node filtrelenmiş LaserScan
 # Açı kırpma + geçersiz okuma temizleme + hareketli ortalama uygulanmış
 # Nav2 costmap ve kayar_engel_* bu topic'i kullanır
@@ -238,47 +242,61 @@ FRAME_IMU        = "imu_link"
 # ─────────────────────────────────────────────
 # YOLO SINIF İSİMLERİ (tabela sınıfları)
 # ─────────────────────────────────────────────
+#
+# Model ALFABETİK sırayla eğitildi — class_id Tabela numarasıyla örtüşmüyor!
+# Gerçek eşleme (m.names çıktısından doğrulandı 2026-05-16):
+#   0=Tabela_1       5=Tabela_2      10=Tabela_7
+#   1=Tabela_10      6=Tabela_3      11=Tabela_8
+#   2=Tabela_11      7=Tabela_4      12=Tabela_9
+#   3=Tabela_11_son  8=Tabela_5      13=Tabela_stop
+#   4=Tabela_12      9=Tabela_6      14=hedef_tahtasi  15=trafik_huni
 
-# Tabela numarası → class_id (class_id = Tabela_N - 1)
-CLASS_SULU_YOL       = "Tabela_1"   # class_id=0
-CLASS_TASLI_YOL      = "Tabela_2"   # class_id=1
-CLASS_YAN_EGIM       = "Tabela_3"   # class_id=2
-CLASS_DIK_ENGEL      = "Tabela_4"   # class_id=3
-CLASS_KONILI_YOL     = "Tabela_5"   # class_id=4
-CLASS_KAYAR_ENGEL    = "Tabela_6"   # class_id=5
-CLASS_ENGEBELI_ARAZI = "Tabela_7"   # class_id=6
-CLASS_DIK_EGIM       = "Tabela_8"   # class_id=7
-CLASS_ATIS_BOLGESI   = "Tabela_9"   # class_id=8
-CLASS_YAN_EGIM_2     = "Tabela_10"  # class_id=9
-CLASS_TRAFIK_HUNI    = "trafik_huni"    # class_id=13
+CLASS_SULU_YOL       = "Tabela_1"   # class_id= 0
+CLASS_YAN_EGIM_2     = "Tabela_10"  # class_id= 1  (DIK_EGIM_CIKIS)
+CLASS_TASLI_YOL      = "Tabela_2"   # class_id= 5
+CLASS_YAN_EGIM       = "Tabela_3"   # class_id= 6
+CLASS_DIK_ENGEL      = "Tabela_4"   # class_id= 7
+CLASS_KONILI_YOL     = "Tabela_5"   # class_id= 8
+CLASS_KAYAR_ENGEL    = "Tabela_6"   # class_id= 9
+CLASS_ENGEBELI_ARAZI = "Tabela_7"   # class_id=10
+CLASS_DIK_EGIM       = "Tabela_8"   # class_id=11
+CLASS_ATIS_BOLGESI   = "Tabela_9"   # class_id=12
+CLASS_TRAFIK_HUNI    = "trafik_huni"    # class_id=15
 CLASS_HEDEF_TAHTASI  = "hedef_tahtasi"  # class_id=14
 
-# class_id sırası (0-9) — yolo_adapter_node ve terrain_adapter ile uyumlu
+# class_id → label (alfabetik model sırası) — referans tablo
+# yolo_adapter_node ve terrain_adapter kendi dict'lerini kullanır
 YOLO_CLASSES = [
-    CLASS_SULU_YOL,       # 0
-    CLASS_TASLI_YOL,      # 1
-    CLASS_YAN_EGIM,       # 2
-    CLASS_DIK_ENGEL,      # 3
-    CLASS_KONILI_YOL,     # 4
-    CLASS_KAYAR_ENGEL,    # 5
-    CLASS_ENGEBELI_ARAZI, # 6
-    CLASS_DIK_EGIM,       # 7
-    CLASS_ATIS_BOLGESI,   # 8
-    CLASS_YAN_EGIM_2,     # 9
+    "Tabela_1",       # 0  → SULU_YOL
+    "Tabela_10",      # 1  → DIK_EGIM_CIKIS
+    "Tabela_11",      # 2  → HIZLANMA başlangıcı
+    "Tabela_11_son",  # 3  → HIZLANMA sonu
+    "Tabela_12",      # 4  → görüntü ekibinden netleştirilecek
+    "Tabela_2",       # 5  → TASLI_YOL
+    "Tabela_3",       # 6  → YAN_EGIM
+    "Tabela_4",       # 7  → DIK_ENGEL
+    "Tabela_5",       # 8  → KONİLİ_YOL
+    "Tabela_6",       # 9  → KAYAR_ENGEL
+    "Tabela_7",       # 10 → ENGEBELİ_ARAZİ
+    "Tabela_8",       # 11 → DIK_EGIM
+    "Tabela_9",       # 12 → ATIS_BOLGESI
+    "Tabela_stop",    # 13 → STOP işareti
+    "hedef_tahtasi",  # 14 → atış hedefi
+    "trafik_huni",    # 15 → trafik konisi
 ]
 
-# Tabela sınıfı → FSM waypoint label eşlemesi
+# Tabela label → FSM waypoint eşlemesi
 YOLO_TO_FSM = {
-    CLASS_SULU_YOL       : "SULU_YOL",
-    CLASS_TASLI_YOL      : "TASLI_YOL",
-    CLASS_YAN_EGIM       : "YAN_EGIM",
-    CLASS_DIK_ENGEL      : "DIK_ENGEL",
-    CLASS_KONILI_YOL     : "KONİLİ_YOL",
-    CLASS_KAYAR_ENGEL    : "KAYAR_ENGEL",
-    CLASS_ENGEBELI_ARAZI : "ENGEBELİ_ARAZİ",
-    CLASS_DIK_EGIM       : "DIK_EGIM",
-    CLASS_ATIS_BOLGESI   : "ATIS_BOLGESI",
-    CLASS_YAN_EGIM_2     : "YAN_EGIM_2",
+    "Tabela_1"   : "SULU_YOL",
+    "Tabela_2"   : "TASLI_YOL",
+    "Tabela_3"   : "YAN_EGIM",
+    "Tabela_4"   : "DIK_ENGEL",
+    "Tabela_5"   : "KONİLİ_YOL",
+    "Tabela_6"   : "KAYAR_ENGEL",
+    "Tabela_7"   : "ENGEBELİ_ARAZİ",
+    "Tabela_8"   : "DIK_EGIM",
+    "Tabela_9"   : "ATIS_BOLGESI",
+    "Tabela_10"  : "YAN_EGIM_2",
 }
 
 # ─────────────────────────────────────────────

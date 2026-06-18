@@ -23,6 +23,7 @@ from std_msgs.msg import Bool
 
 from teknofest_ika.otonomi.topics import (
     IMU_TOPIC, ODOM_TOPIC, ANTI_ROLLBACK_CMD_TOPIC, ANTI_ROLLBACK_AKTIF_TOPIC,
+    E_STOP_TOPIC,
 )
 
 RAMP_PITCH_THRESHOLD   = math.radians(10.0)
@@ -39,12 +40,14 @@ class AntiRollback(Node):
         self._pitch    = 0.0
         self._velocity = 0.0
         self._aktif    = False
+        self._e_stop   = False
 
         qos_be  = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
         qos_rel = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
 
-        self.create_subscription(Imu,      IMU_TOPIC,  self._imu_cb,  qos_be)
-        self.create_subscription(Odometry, ODOM_TOPIC, self._odom_cb, qos_be)
+        self.create_subscription(Imu,      IMU_TOPIC,    self._imu_cb,   qos_be)
+        self.create_subscription(Odometry, ODOM_TOPIC,   self._odom_cb,  qos_be)
+        self.create_subscription(Bool,     E_STOP_TOPIC, self._estop_cb, 10)
 
         # Twist komutu → ackermann_converter override eder (tek yazıcı garantisi)
         self._cmd_pub   = self.create_publisher(Twist, ANTI_ROLLBACK_CMD_TOPIC,   qos_rel)
@@ -58,6 +61,9 @@ class AntiRollback(Node):
             f'recovery={RECOVERY_SPEED} m/s'
         )
 
+    def _estop_cb(self, msg: Bool):
+        self._e_stop = msg.data
+
     def _imu_cb(self, msg: Imu):
         q    = msg.orientation
         sinp = 2.0 * (q.w * q.y - q.z * q.x)
@@ -68,6 +74,9 @@ class AntiRollback(Node):
         self._velocity = msg.twist.twist.linear.x
 
     def _kontrol(self):
+        if self._e_stop:
+            return
+
         rollback = (self._pitch > RAMP_PITCH_THRESHOLD and
                     self._velocity < -ROLLBACK_VEL_THRESHOLD)
 
