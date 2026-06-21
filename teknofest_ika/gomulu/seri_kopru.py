@@ -51,6 +51,9 @@ from teknofest_ika.otonomi.topics import (
     ODOM_TOPIC, IMU_TOPIC, BATTERY_TOPIC, RC_INPUT_TOPIC,
     E_STOP_FORCE_TOPIC, E_STOP_TOPIC, SHOOT_CMD_TOPIC,
 )
+from teknofest_ika.otonomi.pure_logic import (
+    paket_olustur, paket_dogrula, encoder_delta, batarya_yuzdesi,
+)
 
 
 # ─── Binary Protokol Tanımları (ika_iletisim.h ile eşleşmeli) ─────────────
@@ -80,32 +83,12 @@ PKT_RC2       = 0x21   # MEGA→Jetson: RC ch5 + ch3 (mode switch + aux, µs)
 PKT_ESTOP_IN  = 0x22   # MEGA→Jetson: Arduino E-STOP butonu algıladı
 
 
-def _crc(komut: int, veri: bytes) -> int:
-    """CRC = XOR(komut ^ veri[0] ^ veri[1] ^ veri[2] ^ veri[3])"""
-    return komut ^ veri[0] ^ veri[1] ^ veri[2] ^ veri[3]
-
-
-def _paket_olustur(komut: int, v0: int, v1: int) -> bytes:
-    """
-    8 byte binary paket oluşturur.
-    v0, v1: int16 değerler (-32768 .. 32767), big-endian yerleştirilir.
-    """
-    v0 = max(-32768, min(32767, v0))
-    v1 = max(-32768, min(32767, v1))
-    # '>' = big-endian, 'hh' = iki adet int16
-    veri = struct.pack('>hh', v0, v1)
-    crc  = _crc(komut, veri)
-    return struct.pack('BB4sBB', PKT_BASLA, komut, veri, crc, PKT_BITIS)
-
-
-def _paket_dogrula(ham: bytes) -> bool:
-    """Başlangıç, bitiş ve CRC kontrolü."""
-    if len(ham) != PKT_BOYUT:
-        return False
-    if ham[0] != PKT_BASLA or ham[7] != PKT_BITIS:
-        return False
-    beklenen_crc = _crc(ham[1], ham[2:6])
-    return ham[6] == beklenen_crc
+# _paket_olustur / _paket_dogrula → pure_logic.py'ye taşındı (DRY + rclpy
+# bağımsız test edilebilirlik). Burada sadece isim uyumluluğu için yeniden
+# bağlanır; PKT_BASLA/PKT_BITIS/PKT_BOYUT sabitleri pure_logic'teki
+# değerlerle birebir aynıdır (ikisi de [0xAA]...[0x55], 8 byte).
+_paket_olustur  = paket_olustur
+_paket_dogrula  = paket_dogrula
 
 
 def _v0_oku(ham: bytes) -> int:
@@ -130,10 +113,16 @@ def _v1_oku(ham: bytes) -> int:
 # TICKS_PER_REV    : AS5600 10-bit ADC → 0–1023 (1024 tick/tur)
 # MAX_DIREKSIYON   : Donanım güvenlik kısıtı [derece] — servo fiziksel limiti
 #                    ackermann_converter zaten kırpar; bu son savunma hattıdır.
+# MAX_HIZ_MS       : Donanım güvenlik kısıtı [m/s] — VESC akım/hız limiti.
+#                    ackermann_converter zaten kırpar (max_speed parametresi);
+#                    bu da aynı şekilde son savunma hattıdır — üst akış (Nav2,
+#                    HizlanmaState, manuel override) hatalı/aşırı bir hız
+#                    gönderirse dahi binary pakete bu değerin üstü yazılamaz.
 TEKERLEK_ARALIGI  = 0.670   # [m] — ölçüp güncelle
 TEKERLEK_YARICI   = 0.180   # [m] — NEMA23 + dişli kutusu çıkış yarıçapı
 TICKS_PER_REV     = 1024    # AS5600 10-bit (sabit, değiştirme)
 MAX_DIREKSIYON    = 30.0    # [derece] — donanım güvenlik limiti
+MAX_HIZ_MS        = 3.0     # [m/s] — donanım güvenlik limiti (VESC sınırı)
 
 METRE_PER_TICK = (2.0 * math.pi * TEKERLEK_YARICI) / TICKS_PER_REV
 
@@ -267,12 +256,23 @@ class SeriKopru(Node):
             self._paket_gonder(PKT_DUR, 0, 0)
             return
 
-        v         = msg.drive.speed           # m/s
-        delta_deg = math.degrees(msg.drive.steering_angle)  # rad → derece
+        # Ayrılık ilkesi (Şartname §6.13/§7.8): güvenlik/timeout mantığı
+        # (_guvenlik_kontrol) ile sürüş komutu işleme aynı node içinde
+        # olsa da, burada beklenmeyen bir istisna (örn. bozuk mesaj alanı)
+        # sessizce yutulup hareketin "son bilinen" hızda takılı kalmasına
+        # izin verilmez — hata anında açıkça PKT_DUR gönderilir.
+        try:
+            v         = msg.drive.speed           # m/s
+            delta_deg = math.degrees(msg.drive.steering_angle)  # rad → derece
 
-        # Donanım güvenlik kısıtı — ackermann_converter zaten kırpar,
-        # bu son savunma hattıdır (servo mekanik limit).
-        delta_deg = max(-MAX_DIREKSIYON, min(MAX_DIREKSIYON, delta_deg))
+            # Donanım güvenlik kısıtı — ackermann_converter zaten kırpar,
+            # bu son savunma hattıdır (servo mekanik limit / VESC hız limiti).
+            delta_deg = max(-MAX_DIREKSIYON, min(MAX_DIREKSIYON, delta_deg))
+            v         = max(-MAX_HIZ_MS, min(MAX_HIZ_MS, v))
+        except Exception as exc:
+            self.get_logger().error(f'_cmd_cb hata: {exc} — PKT_DUR gönderildi.')
+            self._paket_gonder(PKT_DUR, 0, 0)
+            return
 
         # Ölçekleme:
         #   hiz_mms : m/s × 1000 → mm/s  (int16: −32.768 … +32.767 m/s)
@@ -390,10 +390,7 @@ class SeriKopru(Node):
             voltaj     = batarya_mv / 1000.0     # V
             akim       = motor_ma   / 1000.0     # A
 
-            yuzdesi = max(0.0, min(1.0,
-                (voltaj - self._BATARYA_V_MIN) /
-                (self._BATARYA_V_MAX - self._BATARYA_V_MIN)
-            ))
+            yuzdesi = batarya_yuzdesi(voltaj, self._BATARYA_V_MIN, self._BATARYA_V_MAX)
 
             bat = BatteryState()
             bat.header.stamp    = now.to_msg()
@@ -584,13 +581,10 @@ class SeriKopru(Node):
 
 
 # ─── Yardımcılar ──────────────────────────────────────────────────────────
-def _delta(yeni: int, eski: int, maks: int = 1024) -> int:
-    """Analog AS5600: 0–(maks-1) döngüsünde overflow'u yakala."""
-    d = yeni - eski
-    yarim = maks // 2
-    if d >  yarim: d -= maks
-    if d < -yarim: d += maks
-    return d
+# _delta (enkoder overflow) → pure_logic.encoder_delta (DRY + test_birim.py
+# bu fonksiyonu doğrudan import edip test eder).
+_delta = encoder_delta
+
 
 def _normalize(a: float) -> float:
     return math.remainder(a, 2.0 * math.pi)

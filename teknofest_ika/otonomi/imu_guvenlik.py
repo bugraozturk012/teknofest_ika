@@ -14,8 +14,6 @@ Kurallar:
 Eşikler topics.IMU_ROLL_WARN/STOP/ESTOP_THRESHOLD ile tanımlı.
 """
 
-import math
-
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
@@ -28,6 +26,7 @@ from teknofest_ika.otonomi.topics import (
     IMU_ROLL_WARN_THRESHOLD, IMU_ROLL_STOP_THRESHOLD,
     IMU_ROLL_ESTOP_THRESHOLD, IMU_PITCH_DOWN_THRESHOLD,
 )
+from teknofest_ika.otonomi.pure_logic import quat_to_roll_pitch_deg, imu_guvenlik_hiz
 
 NORMAL_MAX_HIZ    = 2.0   # [m/s]
 FRENLEME_HIZ      = 0.4   # [m/s]
@@ -69,16 +68,7 @@ class ImuGuvenlik(Node):
 
     def _imu_cb(self, msg: Imu):
         q = msg.orientation
-
-        # Quaternion → roll (ZYX Euler, X ekseni)
-        sinr = 2.0 * (q.w * q.x + q.y * q.z)
-        cosr = 1.0 - 2.0 * (q.x * q.x + q.y * q.y)
-        self._roll = math.degrees(math.atan2(sinr, cosr))
-
-        # Quaternion → pitch (Y ekseni)
-        sinp = 2.0 * (q.w * q.y - q.z * q.x)
-        sinp = max(-1.0, min(1.0, sinp))
-        self._pitch = math.degrees(math.asin(sinp))
+        self._roll, self._pitch = quat_to_roll_pitch_deg(q.w, q.x, q.y, q.z)
 
     def _yayinla(self):
         roll_abs    = abs(self._roll)
@@ -92,41 +82,38 @@ class ImuGuvenlik(Node):
                 throttle_duration_sec=1.0,
             )
 
-        # ── Hız sınırı hesabı ───────────────────────────────────────────────
-        if devrilme:
-            hiz = 0.0
-        elif roll_abs >= IMU_ROLL_STOP_THRESHOLD:
-            hiz = 0.0
+        # ── Hız sınırı hesabı (pure_logic.imu_guvenlik_hiz — tek doğruluk
+        #    kaynağı, test_birim.py bu fonksiyonu doğrudan test eder) ────────
+        hiz = imu_guvenlik_hiz(
+            self._roll, self._pitch, self._batarya_yuzde,
+            IMU_ROLL_WARN_THRESHOLD, IMU_ROLL_STOP_THRESHOLD,
+            IMU_ROLL_ESTOP_THRESHOLD, IMU_PITCH_DOWN_THRESHOLD,
+            NORMAL_MAX_HIZ, FRENLEME_HIZ,
+            BATARYA_DUSUK_YUZDE, BATARYA_KRITIK_YUZDE, BATARYA_DUSUK_HIZ,
+        )
+
+        if roll_abs >= IMU_ROLL_STOP_THRESHOLD and not devrilme:
             self.get_logger().warn(
                 f'[ImuGuvenlik] DUR — roll={self._roll:.1f}°',
                 throttle_duration_sec=1.0,
             )
         elif roll_abs >= IMU_ROLL_WARN_THRESHOLD:
-            oran = 1.0 - (roll_abs - IMU_ROLL_WARN_THRESHOLD) / (
-                IMU_ROLL_STOP_THRESHOLD - IMU_ROLL_WARN_THRESHOLD)
-            hiz = NORMAL_MAX_HIZ * 0.5 * max(0.0, oran)
             self.get_logger().warn(
                 f'[ImuGuvenlik] Yan eğim — roll={self._roll:.1f}° → {hiz:.2f} m/s',
                 throttle_duration_sec=2.0,
             )
         elif self._pitch <= -IMU_PITCH_DOWN_THRESHOLD:
-            hiz = FRENLEME_HIZ
             self.get_logger().warn(
                 f'[ImuGuvenlik] Yokuş aşağı — pitch={self._pitch:.1f}° → {hiz} m/s',
                 throttle_duration_sec=2.0,
             )
-        else:
-            hiz = NORMAL_MAX_HIZ
 
-        # ── Batarya hız kısıtı ──────────────────────────────────────────────
         if self._batarya_yuzde < BATARYA_KRITIK_YUZDE:
-            hiz = min(hiz, 0.0)
             self.get_logger().error(
                 f'[ImuGuvenlik] KRİTİK BATARYA %{self._batarya_yuzde} → dur',
                 throttle_duration_sec=5.0,
             )
         elif self._batarya_yuzde < BATARYA_DUSUK_YUZDE:
-            hiz = min(hiz, BATARYA_DUSUK_HIZ)
             self.get_logger().warn(
                 f'[ImuGuvenlik] Düşük batarya %{self._batarya_yuzde} → max {BATARYA_DUSUK_HIZ} m/s',
                 throttle_duration_sec=10.0,

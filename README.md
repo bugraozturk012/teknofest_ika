@@ -401,6 +401,14 @@ sudo apt install \
 
 pip3 install pyserial smbus2 ultralytics --break-system-packages
 
+# OS30A derinlik kamerası (eYs3D BMVM0S30A) — AYRI bir workspace'te kurulur,
+# rosdep ile çözümlenemeyen üçüncü parti bir paket olduğu için package.xml'e
+# <depend> olarak eklenmemiştir (eklenirse rosdep install hata verir):
+git clone https://github.com/eYs3D/HD-DM-ROS2-SDK-Release.git ~/eys3d_ws/src/dm_preview
+cd ~/eys3d_ws && rosdep install -i --from-path src -y
+colcon build --symlink-install
+echo "source ~/eys3d_ws/install/setup.bash" >> ~/.bashrc
+
 # Workspace build
 cd ~/ika_ws
 colcon build --packages-select teknofest_ika --symlink-install

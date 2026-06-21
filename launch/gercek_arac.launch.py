@@ -194,7 +194,7 @@ def generate_launch_description():
         package='teknofest_ika', executable='ackermann_converter',
         name='ackermann_converter', output='screen',
         parameters=[{'use_sim_time': False, 'wheelbase': 0.55,
-                     'max_steering_angle': 0.5236, 'max_speed': 12.0}]
+                     'max_steering_angle': 0.5236, 'max_speed': 3.0}]
     )
     veri_paketi = Node(
         package='teknofest_ika', executable='veri_paketi',
@@ -227,12 +227,14 @@ def generate_launch_description():
         name='mod_yoneticisi', output='screen',
         parameters=[{'use_sim_time': False}]
     )
-    # Koni Costmap — görüntü ekibinden gelen koni pozisyonlarını Nav2'ye iletir
-    koni_costmap = Node(
-        package='teknofest_ika', executable='koni_costmap',
-        name='koni_costmap', output='screen',
-        parameters=[{'use_sim_time': False}]
-    )
+    # NOT: koni_costmap.py kasıtlı olarak başlatılmıyor — /cone_positions
+    # (PoseArray) üreticisi yok, koni tespiti cone_fusion_node tarafından
+    # LiDAR+YOLO füzyonuyla doğrudan /costmap/cone_cloud'a yazılıyor (aşağıda
+    # 'cone_fusion'). koni_costmap.py, ileride ayrı bir PoseArray tabanlı
+    # koni kaynağı eklenirse kullanılabilecek bağımsız/yedek bir araç olarak
+    # repo'da bırakıldı; Node nesnesi burada OLUŞTURULMUYOR (önceden
+    # oluşturulup hiç launch edilmeyen, kafa karıştırıcı bir kalıntıydı).
+
     # Kayar Engel Costmap — Kalman aktifken /scan → Nav2 ObstacleLayer
     kayar_costmap = Node(
         package='teknofest_ika', executable='kayar_engel_costmap',
@@ -271,8 +273,10 @@ def generate_launch_description():
     )
 
     # ── Görüntü Ön İşleme ─────────────────────────────────────────────────────
-    # /ileri_kamera/image_raw → IMX258 ana kameradan (/camera/image_raw)
-    # /yardimci_kamera/image_raw → ön webcam'den (/camera/front/image_raw)
+    # preprocessing_node artık topics.py sabitleriyle doğrudan /camera/image_raw,
+    # /camera/front/image_raw ve /camera/taret/image_raw'a abone olur — remap
+    # gerekmez (önceki remap-bağımlı tasarım, nişan kamerasının hiç remap
+    # edilmemesi nedeniyle hiç işlenmemesine yol açmıştı).
     # /depth/points → OS30A derinlik kamerasından (/apc/points/data_raw)
     # /scan_lidar → preprocessing_node.py SCAN_LIDAR_TOPIC ile direkt abone, remap gerekmez
     preprocessing = Node(
@@ -280,9 +284,7 @@ def generate_launch_description():
         name='preprocessing_node', output='screen',
         parameters=[{'use_sim_time': False}],
         remappings=[
-            ('/ileri_kamera/image_raw',    '/camera/image_raw'),
-            ('/yardimci_kamera/image_raw', '/camera/front/image_raw'),
-            ('/depth/points',              '/apc/points/data_raw'),
+            ('/depth/points', '/apc/points/data_raw'),
         ]
     )
 
@@ -294,7 +296,7 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time':        False,
             'model_path':          'models/best.engine',
-            'conf_thres':          0.45,
+            'conf_thres':          0.75,  # topics.py YOLO_CONFIDENCE_THRESHOLD ile uyumlu
             'iou_thres':           0.45,
             'publish_debug_image': True,
         }]
@@ -361,7 +363,7 @@ def generate_launch_description():
             'use_sim_time':   False,
             'img_cx':         320.0,
             'img_cy':         320.0,
-            'conf_threshold': 0.45,
+            'conf_threshold': 0.75,  # topics.py YOLO_CONFIDENCE_THRESHOLD ile uyumlu
         }]
     )
 
@@ -487,10 +489,7 @@ def generate_launch_description():
         TimerAction(period=10.0, actions=[ackermann, imu_guvenlik,
                                           anti_rollback, mod_yoneticisi]),
         TimerAction(period=11.5, actions=[veri_paketi, terrain_adapter,
-                                          kayar_kalman, kayar_costmap,
-                                          # koni_costmap: /cone_positions topic üreticisi yok,
-                                          # cone_fusion_node /costmap/cone_cloud ile Nav2'ye doğrudan yazar
-                                          ]),
+                                          kayar_kalman, kayar_costmap]),
         TimerAction(period=12.0, actions=[watchdog]),
         TimerAction(period=13.0, actions=[yolo_detection, cone_fusion,
                                           targeting, servo_controller]),

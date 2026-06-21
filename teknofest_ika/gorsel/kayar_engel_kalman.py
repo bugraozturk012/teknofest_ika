@@ -37,6 +37,14 @@ ENGEL_MAX_MESAFE = 4.0
 ENGEL_ACI_MIN    = -math.radians(60)
 ENGEL_ACI_MAX    =  math.radians(60)
 
+# Şartname §6.8: engel sürekli git-gel yapar; sadece anlık konuma (±10cm
+# eşik) bakmak engel merkezden (y≈0) geçerken "bilinmiyor" durumuna düşer
+# — engel her an yön değiştirebileceğinden bu güvensizdir. Bunun yerine
+# Kalman'ın tahmin ettiği hıza (self._x[1]) göre LOOKAHEAD_S sonraki
+# konum öngörülür; engel 20 cm/s sabit hızda olduğundan 1s'de ±20cm
+# hareket eder, bu da merkezdeki belirsizliği çözmeye yeter.
+YON_LOOKAHEAD_S = 1.0
+
 
 class KayarEngelKalman(Node):
 
@@ -119,9 +127,13 @@ class KayarEngelKalman(Node):
         out.z = 0.0
         self._pub.publish(out)
 
-        # Yön string'i — misyon_fsm KAYAR_ENGEL state'i bu topic'i kullanır
+        # Yön string'i — misyon_fsm KAYAR_ENGEL state'i bu topic'i kullanır.
+        # Sadece anlık konum değil, hız işaretiyle öngörülen (lookahead)
+        # konum kullanılır — engel merkezden geçerken de doğru yön kararı
+        # verebilmek için (bkz. YON_LOOKAHEAD_S açıklaması).
         # y > 0 → engel solda (araç sağdan geçer), y < 0 → sağda (soldan geçer)
-        yon = 'sol' if self._x[0] > 0.1 else ('sag' if self._x[0] < -0.1 else 'bilinmiyor')
+        ongoru = self._x[0] + self._x[1] * YON_LOOKAHEAD_S
+        yon = 'sol' if ongoru > 0.1 else ('sag' if ongoru < -0.1 else 'bilinmiyor')
         self._dir_pub.publish(String(data=yon))
 
         self.get_logger().debug(

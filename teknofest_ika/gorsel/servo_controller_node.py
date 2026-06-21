@@ -12,7 +12,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
 from geometry_msgs.msg import Vector3
-from std_msgs.msg import Int16
+from std_msgs.msg import Int16, Bool
 
 try:
     from smbus2 import SMBus
@@ -20,7 +20,9 @@ try:
 except ImportError:
     HAS_SMBUS = False
 
-from teknofest_ika.otonomi.topics import TURRET_CMD_TOPIC, TARET_PAN_TOPIC, TARET_TILT_TOPIC
+from teknofest_ika.otonomi.topics import (
+    TURRET_CMD_TOPIC, TARET_PAN_TOPIC, TARET_TILT_TOPIC, SHOOT_CMD_TOPIC,
+)
 
 
 class PCA9685:
@@ -96,6 +98,12 @@ class ServoControllerNode(Node):
         self._yaw   = self.yaw_home
         self._pitch = self.pitch_home
         self._pca   = None
+        # Şartname §6.10: lazer aktifken araca/lazer yönlendiriciye (taret)
+        # hareket verilemez. Bu bayrak, seri_kopru'daki kilidin yanında
+        # ikinci (bağımsız) bir savunma katmanı olarak cb_cmd'yi bloklar —
+        # tek hata noktasının (sadece Arduino/MCU tarafı) önüne geçer.
+        self._lazer_aktif = False
+        self.create_subscription(Bool, SHOOT_CMD_TOPIC, self._shoot_cb, 10)
 
         if use_pca and HAS_SMBUS:
             try:
@@ -121,7 +129,16 @@ class ServoControllerNode(Node):
 
         self.get_logger().info("ServoControllerNode başlatıldı — ateşleme /shoot_command üzerinden yapılır.")
 
+    def _shoot_cb(self, msg: Bool):
+        self._lazer_aktif = msg.data
+
     def cb_cmd(self, msg: Vector3):
+        if self._lazer_aktif:
+            # Lazer aktif — taret hareketi tamamen yok sayılır (§6.10).
+            self.get_logger().debug(
+                "Lazer aktif — taret komutu yok sayıldı.", throttle_duration_sec=1.0)
+            return
+
         target_yaw   = max(0.0, min(180.0, self.yaw_home   + float(msg.x)))
         target_pitch = max(0.0, min(180.0, self.pitch_home + float(msg.y)))
 

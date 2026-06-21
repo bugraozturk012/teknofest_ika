@@ -94,6 +94,7 @@ from teknofest_ika.otonomi.topics import (
     MUX_CMD_VEL_TOPIC, ACKERMANN_CMD_TOPIC, E_STOP_TOPIC,
     ANTI_ROLLBACK_AKTIF_TOPIC, ANTI_ROLLBACK_CMD_TOPIC,
 )
+from teknofest_ika.otonomi.pure_logic import ackermann_steering
 
 
 class AckermannConverter(Node):
@@ -216,29 +217,13 @@ class AckermannConverter(Node):
         v = twist.linear.x      # İleri hız [m/s]
         ω = twist.angular.z     # Açısal hız [rad/s]
 
-        # ── Direksiyon açısı hesabı ───────────────────────────────────────────
-        #
-        # δ = arctan(L × ω / v)
-        #
-        # v ≈ 0 durumu (duran araç, dönme komutu):
-        #   Ackermann yerinde dönemez. Direksiyon maksimuma alınır,
-        #   hız sıfır bırakılır. Nav2 recovery ile yeniden plan üretir.
-        #
-        # v küçük ama sıfır değil (yavaş hareket):
-        #   arctan kararlı çalışır, klamplama ile sınırlandırılır.
-
-        if abs(v) < 1e-4:
-            # Araç neredeyse duruyorken dönme komutu — Ackermann için imkansız
-            # Direksiyon açısı korunur (son değer), hız sıfırlanır
-            steering = math.copysign(self._delta_max, ω) if abs(ω) > 1e-4 else 0.0
-        else:
-            # Bisiklet modeli formülü: δ = arctan(L × ω / v)
-            # atan2 yerine atan kullanılır — atan2(L*w, v) geri gidişte (v<0, w=0)
-            # 180° hesaplar. atan(L*w/v) her yönde doğru sonuç verir.
-            steering = math.atan(self._L * ω / v)
-
-        # ── Fiziksel sınırlama (servo mekanik limiti) ─────────────────────────
-        steering = max(-self._delta_max, min(self._delta_max, steering))
+        # ── Direksiyon açısı hesabı — δ = arctan(L × ω / v) ───────────────────
+        # v ≈ 0 durumunda (Ackermann yerinde dönemez) direksiyon ω işaretine
+        # göre maksimuma alınır (Nav2 recovery/spin davranışı için bilinçli
+        # bir karar — "son değer korunur" DEĞİLDİR). Klamplama (servo mekanik
+        # limiti) dahil tüm mantık pure_logic.ackermann_steering()'dedir;
+        # test_birim.py bu fonksiyonu doğrudan test eder.
+        steering = ackermann_steering(v, ω, self._L, self._delta_max)
 
         # ── Hız sınırlaması (VESC akım limiti) ───────────────────────────────
         speed = max(-self._v_max, min(self._v_max, v))

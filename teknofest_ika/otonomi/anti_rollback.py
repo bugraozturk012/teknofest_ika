@@ -3,14 +3,12 @@
 anti_rollback.py — Geri Kayma Önleme Kontrolcüsü
 
 Dik eğimde aracın geri kaymasını tespit eder ve önler.
-Tespit: IMU pitch > 10° VE odom hız < -0.05 m/s
+Tespit: IMU pitch > topics.IMU_PITCH_RAMP_THRESHOLD VE odom hız < -0.05 m/s
 
 Komut mimarisi (race condition yoktur):
   /anti_rollback/cmd   (Twist) → ackermann_converter okur, aktifken override yapar
   /anti_rollback/aktif (Bool)  → ackermann_converter bu flag'e göre karar verir
 """
-
-import math
 
 import rclpy
 from rclpy.node import Node
@@ -23,10 +21,14 @@ from std_msgs.msg import Bool
 
 from teknofest_ika.otonomi.topics import (
     IMU_TOPIC, ODOM_TOPIC, ANTI_ROLLBACK_CMD_TOPIC, ANTI_ROLLBACK_AKTIF_TOPIC,
-    E_STOP_TOPIC,
+    E_STOP_TOPIC, IMU_PITCH_RAMP_THRESHOLD,
 )
+from teknofest_ika.otonomi.pure_logic import quat_to_roll_pitch_deg, rollback_riskli
 
-RAMP_PITCH_THRESHOLD   = math.radians(10.0)
+# topics.py IMU_PITCH_RAMP_THRESHOLD ile uyumlu — önceden burada bağımsız
+# olarak 10.0° hardcode edilmişti, merkezi sabit güncellenirse bu dosya
+# senkronize değildi (DRY ihlali).
+RAMP_PITCH_THRESHOLD_DEG = IMU_PITCH_RAMP_THRESHOLD
 ROLLBACK_VEL_THRESHOLD = 0.05
 RECOVERY_SPEED         = 0.3
 KONTROL_HZ             = 20.0
@@ -56,7 +58,7 @@ class AntiRollback(Node):
         self.create_timer(1.0 / KONTROL_HZ, self._kontrol)
         self.get_logger().info(
             f'AntiRollback hazır | '
-            f'pitch_esik={math.degrees(RAMP_PITCH_THRESHOLD):.0f}° | '
+            f'pitch_esik={RAMP_PITCH_THRESHOLD_DEG:.0f}° | '
             f'vel_esik={ROLLBACK_VEL_THRESHOLD} m/s | '
             f'recovery={RECOVERY_SPEED} m/s'
         )
@@ -65,10 +67,8 @@ class AntiRollback(Node):
         self._e_stop = msg.data
 
     def _imu_cb(self, msg: Imu):
-        q    = msg.orientation
-        sinp = 2.0 * (q.w * q.y - q.z * q.x)
-        sinp = max(-1.0, min(1.0, sinp))
-        self._pitch = math.asin(sinp)
+        q = msg.orientation
+        _, self._pitch = quat_to_roll_pitch_deg(q.w, q.x, q.y, q.z)
 
     def _odom_cb(self, msg: Odometry):
         self._velocity = msg.twist.twist.linear.x
@@ -77,13 +77,17 @@ class AntiRollback(Node):
         if self._e_stop:
             return
 
-        rollback = (self._pitch > RAMP_PITCH_THRESHOLD and
-                    self._velocity < -ROLLBACK_VEL_THRESHOLD)
+        # pure_logic.rollback_riskli — test_birim.py bu fonksiyonu doğrudan
+        # test eder (önceden bu mantık testte ayrı yazılmıştı).
+        rollback = rollback_riskli(
+            self._pitch, self._velocity,
+            RAMP_PITCH_THRESHOLD_DEG, ROLLBACK_VEL_THRESHOLD,
+        )
 
         if rollback and not self._aktif:
             self.get_logger().warn(
                 f'[AntiRollback] GERİ KAYMA! '
-                f'pitch={math.degrees(self._pitch):.1f}° '
+                f'pitch={self._pitch:.1f}° '
                 f'vel={self._velocity:.3f} m/s → {RECOVERY_SPEED} m/s override'
             )
         elif not rollback and self._aktif:

@@ -19,7 +19,10 @@ from std_msgs.msg import Header
 
 from cv_bridge import CvBridge
 from teknofest_ika.utils.tensorrt_inferer import TensorRTInferer, HAS_TRT
-from teknofest_ika.otonomi.topics import CAMERA_PROCESSED_TOPIC, YOLO_RAW_TOPIC, YOLO_RAW_DEBUG_TOPIC
+from teknofest_ika.otonomi.topics import (
+    CAMERA_PROCESSED_TOPIC, YOLO_RAW_TOPIC, YOLO_RAW_DEBUG_TOPIC,
+    YOLO_CONFIDENCE_THRESHOLD,
+)
 
 
 # Alfabetik model sırası — topics.py YOLO_CLASSES ile birebir uyumlu
@@ -49,7 +52,9 @@ class YoloDetectionNode(Node):
 
         self.declare_parameter("model_path", "models/best.engine")
         self.declare_parameter("input_shape", [1, 3, 640, 640])
-        self.declare_parameter("conf_thres", 0.45)
+        # topics.py YOLO_CONFIDENCE_THRESHOLD ile uyumlu — yanlış pozitif
+        # tabela/koni tespitini azaltmak için resmi eşik kullanılır (Şartname §7).
+        self.declare_parameter("conf_thres", YOLO_CONFIDENCE_THRESHOLD)
         self.declare_parameter("iou_thres", 0.45)
         self.declare_parameter("publish_debug_image", True)
 

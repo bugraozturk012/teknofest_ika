@@ -194,6 +194,12 @@ SHOOT_RESULT_TOPIC = "/shoot/result"
 # Mesaj tipi : sensor_msgs/Image
 CAMERA_PROCESSED_TOPIC = "/camera/image_processed"
 
+# preprocessing_node çıkışı — nişan kamerası (CAMERA_TARET_TOPIC) işlenmiş hâli.
+# targeting_node bu topic'i kullanır — ana sürüş kamerasının taretle birlikte
+# hareket etmemesi nedeniyle paralaks hatasını önler (Şartname §6.10/§7).
+# Mesaj tipi : sensor_msgs/Image
+CAMERA_TARET_PROCESSED_TOPIC = "/camera/taret/image_processed"
+
 # Debug görüntüsü — targeting_node overlay
 # Mesaj tipi : sensor_msgs/Image
 TARGETING_DEBUG_TOPIC = "/targeting/debug"
@@ -321,8 +327,10 @@ IMU_PITCH_DOWN_THRESHOLD  = 15.0  # Yokuş aşağı fren modu
 BATTERY_WARN_SOC     = 20.0  # Uyarı
 BATTERY_CRITICAL_SOC = 10.0  # Güvenli durdurma
 
-# Lazer ateşleme süresi (saniye)
-LASER_FIRE_DURATION = 0.5
+# Lazer ateşleme süresi (saniye) — Şartname §6.10: lazer aktif olduktan sonra
+# EN AZ 1 saniye hedefte sabit kalmalı. ShootState bu süreyi yazılım
+# seviyesinde de garanti eder (donanım/Nano zamanlamasına tek başına güvenilmez).
+LASER_FIRE_DURATION = 1.0
 
 # Dik eğim bekleme süresi — §6.10 (saniye)
 RAMP_STOP_DURATION = 2.0
@@ -338,6 +346,11 @@ ACKERMANN_CMD_TOPIC = "/ackermann_cmd"  # AckermannDriveStamped
 
 # E-STOP besleme (çok kaynak → e_stop_node toplayıcısına)
 E_STOP_FORCE_TOPIC = "/e_stop/force"
+
+# GPIO kurulumu/fiziksel buton donanımı başarısız olduğunda True yayınlanır.
+# Ayrılık ilkesi (Şartname §6.13/§7.8): güvenlik alt sisteminin kendi iç hata
+# durumu artık sadece log'da kalmıyor, ROS2 üzerinden gözlemlenebilir.
+E_STOP_GPIO_FAULT_TOPIC = "/e_stop/gpio_fault"
 
 # Mod yönetimi
 MOD_KOMUT_TOPIC   = "/mod/komut"    # yazılımsal/GCS mod değiştirme (UInt8)

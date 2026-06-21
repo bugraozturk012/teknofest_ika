@@ -41,12 +41,13 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
-from std_msgs.msg import UInt8, Bool, Float32MultiArray
+from std_msgs.msg import UInt8, Bool, Float32MultiArray, Float32
 from geometry_msgs.msg import Twist
 
 from teknofest_ika.otonomi.topics import (
     RC_INPUT_TOPIC, MOD_KOMUT_TOPIC, CMD_VEL_TOPIC, E_STOP_TOPIC,
     MOD_AKTIF_TOPIC, MUX_CMD_VEL_TOPIC, MISSION_START_TOPIC, SHOOT_CMD_TOPIC,
+    SPEED_LIMIT_TOPIC,
 )
 
 # ─── Mod Sabitleri ─────────────────────────────────────────────────────────
@@ -103,6 +104,12 @@ class ModYoneticisi(Node):
         self._mod_bekleyen_zaman = 0.0   # debounce: ne zaman değişmeye başladı
 
         self._e_stop_aktif = False
+        # imu_guvenlik'ten gelen hız sınırı — önceden FULL_AUTO'da Nav2
+        # parametreleri üzerinden uygulanıyordu ama MANUAL/SEMI_AUTO'da RC
+        # komutuna hiç yansımıyordu (devrilme/düşük batarya gibi durumlarda
+        # manuel sürüşte de hız kısıtlanmalı — Şartname §7.8 "araç en yüksek
+        # hızı güvenlik tehdidi oluşturmayacak şekilde sınırlandırılmalı").
+        self._speed_limit  = float('inf')
 
         qos_rel = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         qos_be  = QoSProfile(depth=5,  reliability=ReliabilityPolicy.BEST_EFFORT)
@@ -115,6 +122,8 @@ class ModYoneticisi(Node):
             Twist, CMD_VEL_TOPIC, self._nav2_cb, qos_rel)
         self.create_subscription(
             Bool, E_STOP_TOPIC, self._e_stop_cb, 10)
+        self.create_subscription(
+            Float32, SPEED_LIMIT_TOPIC, self._speed_limit_cb, 10)
 
         self._mod_pub   = self.create_publisher(UInt8,  MOD_AKTIF_TOPIC,     10)
         self._mux_pub   = self.create_publisher(Twist,  MUX_CMD_VEL_TOPIC,   qos_rel)
@@ -169,6 +178,11 @@ class ModYoneticisi(Node):
         with self._lock:
             self._nav2_twist = msg
 
+    # ── Hız Sınırı Callback (imu_guvenlik) ───────────────────────────────────
+    def _speed_limit_cb(self, msg: Float32):
+        with self._lock:
+            self._speed_limit = float(msg.data)
+
     # ── E-STOP Callback ──────────────────────────────────────────────────────
     def _e_stop_cb(self, msg: Bool):
         with self._lock:
@@ -208,13 +222,14 @@ class ModYoneticisi(Node):
             self._mod_degistir(mod_uygulanacak)
 
         with self._lock:
-            e_stop    = self._e_stop_aktif
-            mod       = self._mod
-            ch1       = self._ch1
-            ch2       = self._ch2
-            ch3       = self._ch3
-            rc_gecmis = time.time() - self._rc_son
-            nav2      = self._nav2_twist
+            e_stop      = self._e_stop_aktif
+            mod         = self._mod
+            ch1         = self._ch1
+            ch2         = self._ch2
+            ch3         = self._ch3
+            rc_gecmis   = time.time() - self._rc_son
+            nav2        = self._nav2_twist
+            speed_limit = self._speed_limit
 
         # E-STOP: tüm modlarda sıfır Twist yayınla
         if e_stop:
@@ -242,6 +257,12 @@ class ModYoneticisi(Node):
 
         else:   # FULL_AUTO
             out = nav2
+
+        # imu_guvenlik hız sınırı (devrilme/düşük batarya vb.) — FULL_AUTO'da
+        # zaten terrain_adapter→Nav2 yolundan da uygulanır, ama MANUAL/
+        # SEMI_AUTO'da bu son savunma hattı olmadan RC komutu sınırsız geçerdi.
+        if speed_limit < float('inf'):
+            out.linear.x = max(-speed_limit, min(speed_limit, out.linear.x))
 
         self._mux_pub.publish(out)
 

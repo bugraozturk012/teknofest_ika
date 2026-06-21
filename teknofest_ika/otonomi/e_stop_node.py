@@ -45,7 +45,9 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Bool
 
-from teknofest_ika.otonomi.topics import E_STOP_TOPIC, E_STOP_FORCE_TOPIC
+from teknofest_ika.otonomi.topics import (
+    E_STOP_TOPIC, E_STOP_FORCE_TOPIC, E_STOP_GPIO_FAULT_TOPIC,
+)
 
 _GPIO_MEVCUT = False
 try:
@@ -71,13 +73,17 @@ class EStopNode(Node):
         self.declare_parameter('publish_hz', 20.0)
 
         self._gpio_pin = self.get_parameter('gpio_pin').value
-        self._gpio_mod = self.get_parameter('gpio_mod').value and _GPIO_MEVCUT
+        self._gpio_istenen = self.get_parameter('gpio_mod').value
+        self._gpio_mod = self._gpio_istenen and _GPIO_MEVCUT
 
         # OR mantığı: her kaynak bağımsız takip edilir
         # Herhangi biri True → _aktif True
         self._lock = threading.Lock()
         self._gpio_aktif   = False   # fiziksel GPIO butonu
         self._force_aktif  = False   # /e_stop/force'tan gelen yazılımsal E-STOP
+
+        self._gpio_fault = False
+        self._gpio_fault_pub = self.create_publisher(Bool, E_STOP_GPIO_FAULT_TOPIC, 10)
 
         self._gpio_kur()
 
@@ -99,7 +105,11 @@ class EStopNode(Node):
     # ── GPIO kurulumu ────────────────────────────────────────────────────────
     def _gpio_kur(self):
         if not self._gpio_mod:
-            if not _GPIO_MEVCUT:
+            if self._gpio_istenen and not _GPIO_MEVCUT:
+                # Fiziksel buton istenmiş ama kütüphane yok — operatör bunu
+                # bilmeli, sadece log'da kalırsa fiziksel buton sessizce
+                # işlevsiz kalır (ayrılık ilkesi ihlali riski).
+                self._gpio_fault = True
                 self.get_logger().warn(
                     'Jetson.GPIO bulunamadı. Yükle: sudo pip3 install Jetson.GPIO\n'
                     'GPIO olmadan yalnızca /e_stop/force çalışır.'
@@ -121,6 +131,7 @@ class EStopNode(Node):
         except Exception as exc:
             self.get_logger().error(f'GPIO kur hatası: {exc} — GPIO devre dışı bırakıldı.')
             self._gpio_mod = False
+            self._gpio_fault = True
 
     # ── GPIO edge callback ───────────────────────────────────────────────────
     def _gpio_cb(self, channel):
@@ -167,6 +178,7 @@ class EStopNode(Node):
         with self._lock:
             aktif = self._aktif
         self._pub.publish(Bool(data=aktif))
+        self._gpio_fault_pub.publish(Bool(data=self._gpio_fault))
 
     # ── Temizlik ─────────────────────────────────────────────────────────────
     def destroy_node(self):

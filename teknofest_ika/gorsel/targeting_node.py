@@ -21,7 +21,7 @@ from teknofest_ika.utils.pid_controller import PIDController
 from teknofest_ika.otonomi.topics import (
     TARGETING_ENABLE_TOPIC, TARGETING_STATUS_TOPIC,
     TARGETING_ERROR_TOPIC, TURRET_CMD_TOPIC,
-    CAMERA_PROCESSED_TOPIC, TARGETING_DEBUG_TOPIC,
+    CAMERA_TARET_PROCESSED_TOPIC, TARGETING_DEBUG_TOPIC,
 )
 
 
@@ -105,8 +105,12 @@ class TargetingNode(Node):
         if self.publish_debug:
             self.pub_dbg = self.create_publisher(Image, TARGETING_DEBUG_TOPIC, 10)
 
+        # Nişan, taretin gerçek görüş açısını veren nişan kamerasından
+        # (CAMERA_TARET_PROCESSED_TOPIC) alınır — ana sürüş kamerası taretle
+        # birlikte dönmediği için onu kullanmak paralaks/hassasiyet hatası
+        # yaratırdı (Şartname §6.10: lazer nokta hassasiyeti).
         self.sub = self.create_subscription(
-            Image, CAMERA_PROCESSED_TOPIC,
+            Image, CAMERA_TARET_PROCESSED_TOPIC,
             self.cb_image, qos_profile_sensor_data)
 
         # misyon_fsm SHOOT_APPROACH state'i True gönderir, bitince False

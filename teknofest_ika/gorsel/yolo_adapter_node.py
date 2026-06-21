@@ -36,7 +36,11 @@ from rclpy.qos import qos_profile_sensor_data
 from vision_msgs.msg import Detection2DArray
 from std_msgs.msg import String, UInt8
 
-from teknofest_ika.otonomi.topics import YOLO_CLASS_ID_TOPIC, DETECTIONS_TOPIC, YOLO_RAW_TOPIC
+from teknofest_ika.otonomi.topics import (
+    YOLO_CLASS_ID_TOPIC, DETECTIONS_TOPIC, YOLO_RAW_TOPIC,
+    YOLO_CONFIDENCE_THRESHOLD,
+)
+from teknofest_ika.otonomi.pure_logic import ConsecutiveFrameFilter
 
 # class_id → parkur aşama adı (sadece loglama için)
 # Model alfabetik sırayla eğitildi:
@@ -65,6 +69,10 @@ NO_DETECTION        = 255
 # Yanlış pozitife karşı: STOP art arda bu kadar frame gelmeden tetiklenmez
 STOP_CONSECUTIVE_FRAMES = 2
 
+# Yanlış pozitife karşı: parkur-aşaması tabelaları (TABELA_SINIF) da art arda
+# bu kadar frame aynı sınıfı vermeden FSM'e onaylı olarak iletilmez.
+TABELA_CONSECUTIVE_FRAMES = 2
+
 
 class YoloAdapterNode(Node):
 
@@ -73,7 +81,7 @@ class YoloAdapterNode(Node):
 
         self.declare_parameter("img_cx",         320.0)
         self.declare_parameter("img_cy",         320.0)
-        self.declare_parameter("conf_threshold",   0.45)
+        self.declare_parameter("conf_threshold",   YOLO_CONFIDENCE_THRESHOLD)
 
         self._img_cx          = self.get_parameter("img_cx").value
         self._img_cy          = self.get_parameter("img_cy").value
@@ -81,7 +89,15 @@ class YoloAdapterNode(Node):
 
         self._pub_json  = self.create_publisher(String, DETECTIONS_TOPIC,    10)
         self._pub_class = self.create_publisher(UInt8,  YOLO_CLASS_ID_TOPIC, 10)
-        self._stop_sayac = 0   # ardışık STOP frame sayacı
+
+        # Ardışık-frame doğrulayıcılar (pure_logic.ConsecutiveFrameFilter) —
+        # Şartname §7 yanlış pozitife karşı tedbir. Önceden sadece STOP
+        # tabelası bu şekilde doğrulanıyordu, diğer 9 parkur-aşaması tabelası
+        # (SULU_YOL, TASLI_YOL, ...) tek kare ile anında kabul ediliyordu.
+        self._stop_filter   = ConsecutiveFrameFilter(
+            STOP_CONSECUTIVE_FRAMES, bos_deger=False, sticky=False)
+        self._tabela_filter = ConsecutiveFrameFilter(
+            TABELA_CONSECUTIVE_FRAMES, bos_deger=NO_DETECTION, sticky=True)
 
         self.create_subscription(
             Detection2DArray,
@@ -154,21 +170,19 @@ class YoloAdapterNode(Node):
                     throttle_duration_sec=5.0,
                 )
 
-        # Ardışık frame filtresi: STOP_CONSECUTIVE_FRAMES kez üst üste görülmeden tetiklenme
-        if stop_goruldu:
-            self._stop_sayac += 1
-            if self._stop_sayac >= STOP_CONSECUTIVE_FRAMES:
-                self.get_logger().info(
-                    f'§6.10 STOP işareti tespit ({self._stop_sayac} frame) → FSM durdurma.',
-                    throttle_duration_sec=1.0,
-                )
-        else:
-            self._stop_sayac = 0
+        # Ardışık frame filtreleri (pure_logic.ConsecutiveFrameFilter) —
+        # test_birim.py bu sınıfı doğrudan test eder.
+        stop_var = self._stop_filter.isle(stop_goruldu)
+        if stop_var:
+            self.get_logger().info(
+                '§6.10 STOP işareti onaylandı → FSM durdurma.',
+                throttle_duration_sec=1.0,
+            )
 
-        stop_var = self._stop_sayac >= STOP_CONSECUTIVE_FRAMES
+        tabela_confirmed = self._tabela_filter.isle(tabela_id)
 
         payload = {
-            "tabela":           tabela_id,
+            "tabela":           tabela_confirmed,
             "hedef_var":        hedef_var,
             "hedef_hata_x":     round(hedef_hata_x, 1),
             "hedef_hata_y":     round(hedef_hata_y, 1),

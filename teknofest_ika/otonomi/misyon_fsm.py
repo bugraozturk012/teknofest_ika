@@ -68,60 +68,21 @@ from teknofest_ika.otonomi.topics import (
     MOVING_OBS_DIR_TOPIC, E_STOP_TOPIC, MOD_AKTIF_TOPIC,
     MISSION_START_TOPIC, MISYON_AKTIF_TOPIC,
     TARGETING_ENABLE_TOPIC, TARGETING_STATUS_TOPIC,
-    SHOOT_CMD_TOPIC, SHOOT_RESULT_TOPIC,
+    SHOOT_CMD_TOPIC, SHOOT_RESULT_TOPIC, LASER_FIRE_DURATION,
     MISSION_STATUS_TOPIC, MISYON_WP_INDEX_TOPIC,
-    CMD_VEL_TOPIC, ODOM_TOPIC,
+    CMD_VEL_TOPIC, ODOM_TOPIC, RAMP_STOP_DURATION,
+)
+from teknofest_ika.otonomi.pure_logic import (
+    DetectionsStore, stop_check as _stop_check_pure, hizlanma_hiz_profili,
 )
 
+# §6.10: dik eğim çıkış/iniş noktalarında STOP tabelası kaçırılsa bile
+# zorunlu 2s bekleme uygulanması gereken waypoint etiketleri.
+DIK_EGIM_ETIKETLERI = ('DIK_EGIM_GIRIS', 'DIK_EGIM_CIKIS', 'DIK_EGIM')
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# DETECTIONS STORE — görüntü ekibinden gelen son paketi thread-safe tutar
-# ═══════════════════════════════════════════════════════════════════════════════
 
-class DetectionsStore:
-    """
-    /ika/detections topic'inden gelen son JSON paketini saklar.
-    SMACH state'leri bu store'dan okur — doğrudan topic callback'e bağımlı değiller.
-    threading.Lock ile thread-safe erişim sağlanır.
-    """
-
-    _DEFAULT = {
-        'tabela':           255,
-        'koni_var':         False,
-        'koni_hata_x':      0.0,
-        'kayar_engel_x':    0.5,
-        'kayar_yon':        'bilinmiyor',
-        'hedef_var':        False,
-        'hedef_hata_x':     0.0,
-        'hedef_hata_y':     0.0,
-        'bariyer_sol_m':    1.5,
-        'bariyer_sag_m':    1.5,
-        'fps':              0.0,
-        'e_stop':           False,
-        'manual_mod':       False,
-        'hizlanma_bitti':   False,   # Tabela_11_son (class_id=3) tespit edildi
-        'stop_var':         False,   # §6.10 STOP işareti (class_id=12) tespit edildi
-    }
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._data = dict(self._DEFAULT)
-
-    def update(self, data: dict):
-        with self._lock:
-            self._data = {**self._DEFAULT, **data}
-
-    def update_field(self, key: str, value):
-        with self._lock:
-            self._data[key] = value
-
-    def get(self) -> dict:
-        with self._lock:
-            return dict(self._data)
-
-    def get_field(self, key, default=None):
-        with self._lock:
-            return self._data.get(key, default)
+# DetectionsStore → teknofest_ika.otonomi.pure_logic (rclpy bağımsız, DRY +
+# test_birim.py gerçek sınıfı doğrudan import edip test eder).
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -318,9 +279,11 @@ class NavigateState(smach.State):
 
     def _stop_check(self) -> bool:
         """Nav2Client.go_to() callback'i: True dönünce goal iptal edilir (§6.10 STOP)."""
-        if time.time() < self._stop_cooldown_bitis:
-            return False
-        return self.det_store.get_field('stop_var', False)
+        return _stop_check_pure(
+            self.det_store.get_field('stop_var', False),
+            self._stop_cooldown_bitis,
+            time.time(),
+        )
 
     def execute(self, userdata):
         if hasattr(self.node, '_fsm_state_pub'):
@@ -355,6 +318,7 @@ class NavigateState(smach.State):
         )
 
         # Nav2'ye git — STOP işareti görülürse ortada kesilir, 2s beklenir, tekrar gönderilir
+        stop_uygulandi = False
         while True:
             result = self.nav.go_to(
                 wp['x'], wp['y'], wp.get('yaw', 0.0),
@@ -370,7 +334,8 @@ class NavigateState(smach.State):
                 # 3s: rampada üst-STOP ile alt-STOP arası için yeterli
                 self._stop_cooldown_bitis = time.time() + 3.0
                 self.det_store.update_field('stop_var', False)
-                deadline_stop = time.time() + 2.0
+                stop_uygulandi = True
+                deadline_stop = time.time() + RAMP_STOP_DURATION
                 while time.time() < deadline_stop:
                     if self.det_store.get_field('e_stop', False):
                         self.node.get_logger().error('[NAVIGATE] E-STOP — STOP bekleme iptal.')
@@ -397,6 +362,28 @@ class NavigateState(smach.State):
                 return 'failed'
 
         # ── Varış sonrası özel mantık ─────────────────────────────────
+
+        # §6.10 yedek tetikleyici: dik eğim giriş/çıkış waypoint'ine
+        # YOLO'nun STOP tabelasını kaçırması nedeniyle hiç STOP
+        # tetiklenmeden varılmışsa, zorunlu 2s bekleme burada mesafe/
+        # konum tabanlı olarak (waypoint varışı = tetikleyici) uygulanır.
+        # Tek bir görüntü tespitine bağımlılığı ortadan kaldırır.
+        if label in DIK_EGIM_ETIKETLERI and not stop_uygulandi:
+            self.node.get_logger().warn(
+                f'[NAVIGATE] {label}: STOP tabelası tespit edilmeden hedefe '
+                'varıldı — §6.10 yedek (konum tabanlı) 2s bekleme uygulanıyor.'
+            )
+            deadline_stop = time.time() + RAMP_STOP_DURATION
+            while time.time() < deadline_stop:
+                if self.det_store.get_field('e_stop', False):
+                    self.node.get_logger().error(
+                        '[NAVIGATE] E-STOP — yedek STOP bekleme iptal.'
+                    )
+                    return 'failed'
+                time.sleep(0.1)
+            self.node.get_logger().info(
+                '[NAVIGATE] §6.10 yedek STOP bekleme tamam — devam ediliyor.'
+            )
 
         if label == 'KAYAR_ENGEL':
             # Kayar engelin hangi tarafa geçtiğini bekle (max 10s)
@@ -556,12 +543,24 @@ class ShootState(smach.State):
             self._confirmed = False
 
             # Ateş komutu — seri_kopru PKT_LAZER=1 → MEGA → NANO → Lazer
+            # NOT: seri_kopru bu True yayınını aldığı an _lazer_aktif=True
+            # yapar ve TÜM hareket komutlarını PKT_DUR'a çevirir (movement
+            # lock). Bu kilit, aşağıda False yayınlanana kadar açık kalır.
             self._shoot_pub.publish(Bool(data=True))
+            ates_baslangic = time.time()
 
             # Onay bekle (seri_kopru PKT_LAZER=0 echo'sunda publish eder)
-            start = time.time()
-            while not self._confirmed and (time.time() - start) < self.TIMEOUT_S:
+            while not self._confirmed and (time.time() - ates_baslangic) < self.TIMEOUT_S:
                 time.sleep(0.05)
+
+            # Şartname §6.10: lazer aktif olduktan sonra EN AZ 1 saniye
+            # (LASER_FIRE_DURATION) hedefte/aktif kalmalı. Donanım (Nano)
+            # zamanlamasına tek başına güvenmek yerine yazılım seviyesinde
+            # de minimum süreyi garanti ediyoruz — hareket kilidi bu süre
+            # boyunca kesinlikle açık kalır.
+            gecen = time.time() - ates_baslangic
+            if gecen < LASER_FIRE_DURATION:
+                time.sleep(LASER_FIRE_DURATION - gecen)
 
             if self._confirmed:
                 basarili_deneme = deneme
@@ -572,6 +571,12 @@ class ShootState(smach.State):
                 self.node.get_logger().warn(
                     f'[SHOOT] Deneme {deneme} onayı gelmedi (timeout).'
                 )
+
+            # Hareket kilidini aç — bir sonraki deneme/parkura geçiş için
+            # seri_kopru._lazer_aktif'i False'a çeker. Bu çağrı yapılmazsa
+            # kilit kalıcı olarak açık kalır ve araç bir daha hiç hareket
+            # edemez (kritik güvenlik/görev hatası).
+            self._shoot_pub.publish(Bool(data=False))
 
             # Son deneme değilse kısa bekleme sonrası tekrar dene
             if deneme < self.MAX_DENEME:
@@ -702,14 +707,11 @@ class HizlanmaState(smach.State):
                 )
                 break
 
-            # Hız profili
-            if dist < self.FREN_BASI_MESAFE:
-                hiz = self.MAX_HIZ
-            else:
-                kalan         = self.TOPLAM_MESAFE - dist
-                fren_uzunlugu = self.TOPLAM_MESAFE - self.FREN_BASI_MESAFE
-                hiz = self.MAX_HIZ * (kalan / fren_uzunlugu)
-                hiz = max(0.3, hiz)   # seri_kopru heartbeat timeout'unu engelle
+            # Hız profili — pure_logic.hizlanma_hiz_profili (test_birim.py
+            # bu fonksiyonu doğrudan test eder).
+            hiz = hizlanma_hiz_profili(
+                dist, self.MAX_HIZ, self.TOPLAM_MESAFE, self.FREN_BASI_MESAFE,
+            )
 
             twist.linear.x  = hiz
             twist.angular.z = 0.0

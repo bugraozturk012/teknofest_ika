@@ -1,4 +1,19 @@
 <?xml version="1.0"?>
+<!--
+  NOT (kapsam/sınırlama):
+  Bu URDF, robot_state_publisher + RViz2 görselleştirme/TF amaçlıdır.
+  Gazebo simülasyon plugin'leri (diff_drive, kamera/lidar/imu sensörleri)
+  KASITLI OLARAK KALDIRILDI — proje artık Gazebo simülasyonu kullanmıyor
+  (bkz. git log: "simulasyon dosyalari kaldirildi").
+
+  ÖNEMLİ: Tekerlek geometrisi (4× continuous joint, diferansiyel iz/wheelbase)
+  DİFERANSİYEL SÜRÜŞLÜ TEST ARACINI yansıtır — gerçek yarışma aracının
+  Ackermann (otomobil tipi direksiyon) kinematiğini TEMSİL ETMEZ. Gerçek
+  araç için ayrı bir Ackermann URDF'i (ön direksiyon mafsallı tekerlekler)
+  henüz oluşturulmadı; wheelbase/track ölçüleri config/*.yaml ve
+  ackermann_converter.py parametreleriyle çapraz kontrol edilmeden
+  gerçek araç tasarımı için referans alınmamalıdır.
+-->
 <robot name="teknofest_ika">
 
   <material name="sari"><color rgba="1.0 0.76 0.03 1"/></material>
@@ -40,7 +55,11 @@
 
   <!-- ═══════════════════════════════════════════════
        SAĞ ÖN TEKERLEK
-       X: +0.50  (öne doğru)
+       X: +0.275 (öne doğru) — wheelbase=0.55m, config/ekf.yaml,
+                  nav2_params.yaml ve ackermann_converter.py'deki
+                  wheelbase=0.55 parametresiyle TUTARLI tutulur
+                  (ikisi de "ölçülecek" placeholder; gerçek ölçüm
+                  yapıldığında HER İKİSİ birlikte güncellenmeli).
        Y: -0.335 (sağa doğru, negatif)
        Z: -0.10  (gövdenin altına iner, base_joint Z=0.28 ile birlikte net 0.18 → yere değer)
        Görsel: rpy="0 0 1.5708"  → STL sağ taraf için 90° döndürülmüş
@@ -68,14 +87,14 @@
   <joint name="sag_on_joint" type="continuous">
     <parent link="base_link"/>
     <child link="sag_on_teker"/>
-    <origin xyz="0.50 -0.335 -0.10" rpy="0 0 0"/>
+    <origin xyz="0.275 -0.335 -0.10" rpy="0 0 0"/>
     <axis xyz="0 -1 0"/>
     <dynamics damping="0.5" friction="0.5"/>
   </joint>
 
   <!-- ═══════════════════════════════════════════════
        SOL ÖN TEKERLEK
-       X: +0.50  (sağ ön ile aynı — simetrik)
+       X: +0.275 (sağ ön ile aynı — simetrik, wheelbase=0.55m)
        Y: +0.335 (sola doğru, pozitif)
        Görsel: rpy="0 0 -1.5708" → sol taraf için ters döndürülmüş
   ════════════════════════════════════════════════ -->
@@ -102,14 +121,14 @@
   <joint name="sol_on_joint" type="continuous">
     <parent link="base_link"/>
     <child link="sol_on_teker"/>
-    <origin xyz="0.50 0.335 -0.10" rpy="0 0 0"/>
+    <origin xyz="0.275 0.335 -0.10" rpy="0 0 0"/>
     <axis xyz="0 -1 0"/>
     <dynamics damping="0.5" friction="0.5"/>
   </joint>
 
   <!-- ═══════════════════════════════════════════════
        SOL ARKA TEKERLEK
-       X: -0.60  (arkaya doğru)
+       X: -0.275 (arkaya doğru, wheelbase=0.55m — bkz. ön teker notu)
        Y: +0.335 (sol taraf — ön ile aynı genişlik)
   ════════════════════════════════════════════════ -->
   <link name="sol_arka_teker">
@@ -135,14 +154,14 @@
   <joint name="sol_arka_joint" type="continuous">
     <parent link="base_link"/>
     <child link="sol_arka_teker"/>
-    <origin xyz="-0.60 0.335 -0.10" rpy="0 0 0"/>
+    <origin xyz="-0.275 0.335 -0.10" rpy="0 0 0"/>
     <axis xyz="0 -1 0"/>
     <dynamics damping="0.5" friction="0.5"/>
   </joint>
 
   <!-- ═══════════════════════════════════════════════
        SAĞ ARKA TEKERLEK
-       X: -0.60  (sol arka ile aynı — simetrik)
+       X: -0.275 (sol arka ile aynı — simetrik)
        Y: -0.335 (sağ taraf)
   ════════════════════════════════════════════════ -->
   <link name="sag_arka_teker">
@@ -168,34 +187,11 @@
   <joint name="sag_arka_joint" type="continuous">
     <parent link="base_link"/>
     <child link="sag_arka_teker"/>
-    <origin xyz="-0.60 -0.335 -0.10" rpy="0 0 0"/>
+    <origin xyz="-0.275 -0.335 -0.10" rpy="0 0 0"/>
     <axis xyz="0 -1 0"/>
     <dynamics damping="0.5" friction="0.5"/>
   </joint>
 
-  <!-- ═══════════════════════════════════════════════
-       DIFF DRIVE PLUGIN
-       wheel_separation = 0.335 * 2 = 0.670
-       wheel_diameter   = 0.18  * 2 = 0.360
-  ════════════════════════════════════════════════ -->
-  <gazebo>
-    <plugin name="diff_drive" filename="libgazebo_ros_diff_drive.so">
-      <ros><namespace>/</namespace></ros>
-      <update_rate>50</update_rate>
-      <num_wheel_pairs>2</num_wheel_pairs>
-      <left_joint>sol_on_joint</left_joint>
-      <right_joint>sag_on_joint</right_joint>
-      <left_joint>sol_arka_joint</left_joint>
-      <right_joint>sag_arka_joint</right_joint>
-      <wheel_separation>0.670</wheel_separation>
-      <wheel_diameter>0.360</wheel_diameter>
-      <max_wheel_torque>200</max_wheel_torque>
-      <max_wheel_acceleration>3.0</max_wheel_acceleration>
-      <publish_odom>true</publish_odom>
-      <publish_odom_tf>true</publish_odom_tf>
-      <robot_base_frame>base_footprint</robot_base_frame>
-    </plugin>
-  </gazebo>
 <!-- ═══════════════════════════════════════════════
        KAMERA LİNKİ — base_link'e bağlı, aracın önünde
   ════════════════════════════════════════════════ -->
@@ -273,83 +269,4 @@
     <origin xyz="0.30 0 0.20" rpy="0 0 0"/>
   </joint>
 
-  <!-- ═══════════════════════════════════════════════
-       KAMERA PLUGIN → /camera/image_raw
-  ════════════════════════════════════════════════ -->
-  <gazebo reference="camera_link">
-    <sensor type="camera" name="ileri_kamera">
-      <update_rate>30</update_rate>
-      <camera name="ileri_kamera">
-        <horizontal_fov>1.3962634</horizontal_fov>
-        <image>
-          <width>640</width>
-          <height>480</height>
-          <format>R8G8B8</format>
-        </image>
-        <clip><near>0.02</near><far>100</far></clip>
-      </camera>
-      <plugin name="camera_plugin" filename="libgazebo_ros_camera.so">
-        <ros>
-          <remapping>~/image_raw:=/camera/image_raw</remapping>
-          <remapping>~/camera_info:=/camera/camera_info</remapping>
-        </ros>
-        <camera_name>ileri_kamera</camera_name>
-        <frame_name>camera_link</frame_name>
-        <hack_baseline>0.0</hack_baseline>
-      </plugin>
-    </sensor>
-  </gazebo>
-
-  <!-- ═══════════════════════════════════════════════
-       LİDAR PLUGIN → /scan
-  ════════════════════════════════════════════════ -->
-  <gazebo reference="lidar_link">
-    <sensor type="ray" name="lidar_sensor">
-      <pose>0 0 0 0 0 0</pose>
-      <visualize>true</visualize>
-      <update_rate>10</update_rate>
-      <ray>
-        <scan>
-          <horizontal>
-            <samples>360</samples>
-            <resolution>1</resolution>
-            <min_angle>-3.14159</min_angle>
-            <max_angle>3.14159</max_angle>
-          </horizontal>
-        </scan>
-        <range>
-          <min>0.10</min>
-          <max>30.0</max>
-          <resolution>0.01</resolution>
-        </range>
-        <noise>
-          <type>gaussian</type>
-          <mean>0.0</mean>
-          <stddev>0.01</stddev>
-        </noise>
-      </ray>
-      <plugin name="lidar_plugin" filename="libgazebo_ros_ray_sensor.so">
-        <ros>
-          <remapping>~/out:=/scan</remapping>
-        </ros>
-        <output_type>sensor_msgs/LaserScan</output_type>
-        <frame_name>lidar_link</frame_name>
-      </plugin>
-    </sensor>
-  </gazebo>
-
-  <!-- ═══════════════════════════════════════════════
-       IMU PLUGIN → /imu/data
-  ════════════════════════════════════════════════ -->
-  <gazebo reference="imu_link">
-    <sensor type="imu" name="imu_sensor">
-      <update_rate>100</update_rate>
-      <plugin name="imu_plugin" filename="libgazebo_ros_imu_sensor.so">
-        <ros>
-          <remapping>~/out:=/imu/data</remapping>
-        </ros>
-        <initial_orientation_as_reference>false</initial_orientation_as_reference>
-      </plugin>
-    </sensor>
-  </gazebo>
 </robot>

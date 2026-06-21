@@ -232,7 +232,12 @@ global_costmap:
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
-        observation_sources: scan koni_cloud yolo_cone_cloud moving_obs_cloud os30a_cloud
+        # koni_cloud (/cone_cloud, koni_costmap.py) kasıtlı olarak ÇIKARILDI:
+        # bu topic'in tek üreticisi /cone_positions PoseArray'i bekleyen
+        # koni_costmap.py'dir ve /cone_positions'a hiçbir node yayın yapmıyor
+        # — kaynak hep boş kalıyordu. Gerçek koni engeli yolo_cone_cloud
+        # (cone_fusion_node, LiDAR+YOLO füzyonu) üzerinden geliyor.
+        observation_sources: scan yolo_cone_cloud moving_obs_cloud os30a_cloud
         scan:
           topic: /scan/filtered
           max_obstacle_height: 2.0
@@ -243,16 +248,6 @@ global_costmap:
           raytrace_min_range: 0.0
           obstacle_max_range: 4.0
           obstacle_min_range: 0.50
-        koni_cloud:
-          topic: /cone_cloud
-          max_obstacle_height: 2.0
-          clearing: false
-          marking: true
-          data_type: "PointCloud2"
-          raytrace_max_range: 8.0
-          raytrace_min_range: 0.0
-          obstacle_max_range: 8.0
-          obstacle_min_range: 0.0
         yolo_cone_cloud:
           topic: /costmap/cone_cloud
           max_obstacle_height: 2.0
@@ -313,7 +308,8 @@ local_costmap:
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
-        observation_sources: scan koni_cloud yolo_cone_cloud moving_obs_cloud os30a_cloud
+        # koni_cloud çıkarıldı — bkz. global_costmap'teki açıklama (üreticisi yok).
+        observation_sources: scan yolo_cone_cloud moving_obs_cloud os30a_cloud
         scan:
           topic: /scan/filtered
           max_obstacle_height: 2.0
@@ -324,16 +320,6 @@ local_costmap:
           raytrace_min_range: 0.0
           obstacle_max_range: 1.5
           obstacle_min_range: 0.50
-        koni_cloud:
-          topic: /cone_cloud
-          max_obstacle_height: 2.0
-          clearing: false
-          marking: true
-          data_type: "PointCloud2"
-          raytrace_max_range: 5.0
-          raytrace_min_range: 0.0
-          obstacle_max_range: 5.0
-          obstacle_min_range: 0.0
         yolo_cone_cloud:
           topic: /costmap/cone_cloud
           max_obstacle_height: 2.0
@@ -404,7 +390,10 @@ amcl:
     recovery_alpha_fast: 0.0
     recovery_alpha_slow: 0.0
     resample_interval: 1
-    robot_model_type: nav2_amcl::DifferentialMotionModel
+    # Ackermann kinematikli gerçek araç — DifferentialMotionModel YANLIŞTI
+    # (bu dosya gercek_arac için; test_arac diferansiyel sürüşlü olduğundan
+    # nav2_params_test.yaml'da Differential doğru kalır).
+    robot_model_type: nav2_amcl::AckermannMotionModel
     save_pose_rate: 0.5
     sigma_hit: 0.2
     tf_broadcast: true

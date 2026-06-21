@@ -38,7 +38,7 @@ from std_msgs.msg import String
 from teknofest_ika.otonomi.topics import (
     SCAN_LIDAR_TOPIC, SCAN_FILTERED_TOPIC, ODOM_TOPIC, IMU_TOPIC,
     BATTERY_TOPIC, EKF_ODOM_TOPIC, CAMERA_PROCESSED_TOPIC,
-    YOLO_RAW_TOPIC, DETECTIONS_TOPIC,
+    YOLO_RAW_TOPIC, DETECTIONS_TOPIC, E_STOP_TOPIC,
 )
 
 CRITICAL_TOPICS = {
@@ -53,6 +53,11 @@ CRITICAL_TOPICS = {
     CAMERA_PROCESSED_TOPIC:  ('KameraOnIsleme', 2.0),
     YOLO_RAW_TOPIC:          ('YOLO',           3.0),
     DETECTIONS_TOPIC:        ('YOLOAdapter',    3.0),
+    # Güvenlik alt sisteminin kendi canlılığı da izlenir (Şartname §6.13/§7.8
+    # ayrılık ilkesi): e_stop_node 20Hz yayın yapar (bkz. e_stop_node.py),
+    # bu yayın kesilirse mod_yoneticisi/seri_kopru "son bilinen False" ile
+    # sessizce çalışmaya devam edebilir — watchdog bunu /sensor/fault ile açığa çıkarır.
+    E_STOP_TOPIC:            ('EStopNode',      0.5),
     # CONE_FUSION_CLOUD_TOPIC KASITLI OLARAK ÇIKARILDI:
     # cone_fusion_node yalnızca koni tespit edilince yayın yapar.
     # Parkurun büyük bölümünde koni yok → sürekli yanlış alarm üretir.

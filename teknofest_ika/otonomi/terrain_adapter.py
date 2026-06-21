@@ -243,6 +243,8 @@ class TerrainAdapter(Node):
         self._last_class_id     = NO_DETECTION
         self._consecutive       = 0
         self._speed_limit       = float('inf')   # imu_guvenlik'ten gelir
+        self._last_applied_speed_limit = float('inf')
+        self._last_speed_limit_apply_t = 0.0
         self._consecutive_frames = self._load_consecutive_frames()
         self._baslangic_yapildi = False
 
@@ -308,8 +310,32 @@ class TerrainAdapter(Node):
             return 3
 
     def _on_speed_limit(self, msg: Float32) -> None:
-        """imu_guvenlik'ten gelen hız sınırını saklar; profil uygulamada kullanılır."""
-        self._speed_limit = float(msg.data)
+        """
+        imu_guvenlik'ten gelen hız sınırını saklar.
+
+        Önceden bu değer yalnızca _apply_profile() çağrıldığında (yani
+        terrain DEĞİŞTİĞİNDE) Nav2'ye iletiliyordu — terrain aynı kalıp
+        roll açısı/batarya durumu kötüleşirse (örn. devrilmeye giderken)
+        yeni, daha düşük hız sınırı Nav2'ye HİÇ ulaşmıyordu. Artık her
+        kısıtlama sıkılaşmasında (hız düşüşünde) anında yeniden uygulanır;
+        gevşemelerde (iyileşme) RPC spam'ini önlemek için 0.5s rate-limit
+        uygulanır — imu_guvenlik 10Hz yayın yapar, her örnekte Nav2'ye
+        servis çağrısı yapmak gereksizdir.
+        """
+        yeni_limit = float(msg.data)
+        onceki_limit = self._speed_limit
+        self._speed_limit = yeni_limit
+
+        onemli_dusus = yeni_limit < onceki_limit - 0.05
+        now = self.get_clock().now().nanoseconds / 1e9
+        rate_limit_gecti = (now - self._last_speed_limit_apply_t) > 0.5
+
+        if onemli_dusus or (
+            yeni_limit != self._last_applied_speed_limit and rate_limit_gecti
+        ):
+            self._last_applied_speed_limit = yeni_limit
+            self._last_speed_limit_apply_t = now
+            self._apply_profile(self._current_terrain)
 
     # ── Callback: YOLO class_id geldi ────────────────────────────────────────
     def _on_class_id(self, msg: UInt8) -> None:

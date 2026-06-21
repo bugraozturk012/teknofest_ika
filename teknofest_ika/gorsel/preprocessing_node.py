@@ -24,6 +24,10 @@ from teknofest_ika.otonomi.topics import (
     SCAN_LIDAR_TOPIC,
     SCAN_FILTERED_TOPIC,
     CAMERA_PROCESSED_TOPIC,
+    CAMERA_IMAGE_TOPIC,
+    CAMERA_FRONT_TOPIC,
+    CAMERA_TARET_TOPIC,
+    CAMERA_TARET_PROCESSED_TOPIC,
 )
 
 
@@ -36,6 +40,7 @@ class PreprocessingNode(Node):
         self.declare_parameter("temporal_alpha", 0.3)
         self.declare_parameter("enable_rain_inpaint", True)
         self.declare_parameter("rain_inpaint_radius", 3)
+        self.declare_parameter("rain_blob_max_area_px", 120)
         self.declare_parameter("lidar_angle_min_deg", -135.0)
         self.declare_parameter("lidar_angle_max_deg", 135.0)
         self.declare_parameter("lidar_ma_window", 5)
@@ -46,6 +51,7 @@ class PreprocessingNode(Node):
         self.temporal_alpha = self.get_parameter("temporal_alpha").value
         self.enable_rain = self.get_parameter("enable_rain_inpaint").value
         self.rain_radius = self.get_parameter("rain_inpaint_radius").value
+        self.rain_blob_max_area = self.get_parameter("rain_blob_max_area_px").value
         self.lidar_angle_min = math.radians(self.get_parameter("lidar_angle_min_deg").value)
         self.lidar_angle_max = math.radians(self.get_parameter("lidar_angle_max_deg").value)
         self.lidar_ma_window = self.get_parameter("lidar_ma_window").value
@@ -55,21 +61,30 @@ class PreprocessingNode(Node):
         self.bridge = CvBridge()
         self.ema_main = None
         self.ema_aux = None
+        self.ema_taret = None
         self.lidar_buffer = []
 
         # Publishers
         self.pub_main = self.create_publisher(Image, CAMERA_PROCESSED_TOPIC, 10)
         self.pub_aux = self.create_publisher(Image, "/camera_aux/image_processed", 10)
+        # Nişan kamerası (taret üzeri) — şartname §6.10/§6.14: atış/veri paketi
+        # için ayrı bir nişan kamerası gerekli; targeting_node bu çıkışı okur.
+        self.pub_taret = self.create_publisher(Image, CAMERA_TARET_PROCESSED_TOPIC, 10)
         self.pub_scan = self.create_publisher(LaserScan, SCAN_FILTERED_TOPIC, 10)
         self.pub_depth = self.create_publisher(PointCloud2, "/depth/points/filtered", 10)
 
-        # Subscribers
+        # Subscribers — gerçek topic adları doğrudan topics.py'den alınır,
+        # böylece launch dosyasında unutulabilecek bir remap'e bağımlı kalınmaz
+        # (nişan kamerasının önceden hiç işlenmemesi tam olarak bu yüzden olmuştu).
         self.sub_main = self.create_subscription(
-            Image, "/ileri_kamera/image_raw",
+            Image, CAMERA_IMAGE_TOPIC,
             self.cb_main_camera, qos_profile_sensor_data)
         self.sub_aux = self.create_subscription(
-            Image, "/yardimci_kamera/image_raw",
+            Image, CAMERA_FRONT_TOPIC,
             self.cb_aux_camera, qos_profile_sensor_data)
+        self.sub_taret = self.create_subscription(
+            Image, CAMERA_TARET_TOPIC,
+            self.cb_taret_camera, qos_profile_sensor_data)
         self.sub_scan = self.create_subscription(
             LaserScan, SCAN_LIDAR_TOPIC,
             self.cb_scan, qos_profile_sensor_data)
@@ -93,6 +108,12 @@ class PreprocessingNode(Node):
         out = self._process_image(cv_img, self.ema_aux)
         self.ema_aux = out.astype(np.float32)
         self.pub_aux.publish(self.bridge.cv2_to_imgmsg(out, "bgr8"))
+
+    def cb_taret_camera(self, msg: Image):
+        cv_img = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+        out = self._process_image(cv_img, self.ema_taret)
+        self.ema_taret = out.astype(np.float32)
+        self.pub_taret.publish(self.bridge.cv2_to_imgmsg(out, "bgr8"))
 
     def _process_image(self, img: np.ndarray, prev_ema) -> np.ndarray:
         # 1) Gaussian denoising
@@ -118,8 +139,23 @@ class PreprocessingNode(Node):
         _, bright_mask = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY)
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         bright_mask = cv2.morphologyEx(bright_mask, cv2.MORPH_OPEN, kernel)
-        if np.count_nonzero(bright_mask) > 0:
-            img = cv2.inpaint(img, bright_mask, self.rain_radius, cv2.INPAINT_TELEA)
+
+        # Boyut filtresi: yağmur damlaları küçük/izole lekelerdir. Şerit
+        # çizgisi, koni beyaz şeridi veya atış hedefinin beyaz halkaları
+        # gibi GERÇEK nesneler de parlaklık eşiğini (240) geçebilir ama
+        # bunlar büyük/bitişik alanlar oluşturur — sadece küçük bağlı
+        # bileşenler (rain_blob_max_area_px altı) inpaint maskesine alınır,
+        # böylece gerçek nesneler yanlışlıkla bozulmaz.
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+            bright_mask, connectivity=8)
+        filtered_mask = np.zeros_like(bright_mask)
+        for label_id in range(1, num_labels):  # 0 = arka plan
+            area = stats[label_id, cv2.CC_STAT_AREA]
+            if area <= self.rain_blob_max_area:
+                filtered_mask[labels == label_id] = 255
+
+        if np.count_nonzero(filtered_mask) > 0:
+            img = cv2.inpaint(img, filtered_mask, self.rain_radius, cv2.INPAINT_TELEA)
         return img
 
     # ------------------------------------------------------------------

@@ -2,6 +2,15 @@
 """
 koni_costmap.py — Trafik Konisi → Nav2 Costmap Köprüsü
 =======================================================
+DURUM: gercek_arac.launch.py içinde KASITLI OLARAK BAŞLATILMIYOR.
+Gerçek koni engeli algısı cone_fusion_node.py (LiDAR+YOLO füzyonu,
+/costmap/cone_cloud) üzerinden sağlanıyor; bu node'un beklediği
+/cone_positions (PoseArray) kaynağını hiçbir node yayınlamıyor.
+Ayrıca nav2_params.yaml'daki ilgili observation_source ('koni_cloud')
+bu nedenle kaldırıldı. Bu dosya, ileride doğrudan PoseArray üreten
+ayrı bir koni-tespit kaynağı eklenirse kullanılabilecek bağımsız bir
+araç olarak repo'da tutuluyor.
+
 Görüntü ekibinden gelen /cone_positions (PoseArray) topic'ini
 Nav2 ObstacleLayer'ın tüketebileceği sensor_msgs/PointCloud2
 formatına çevirir.
