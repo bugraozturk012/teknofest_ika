@@ -111,6 +111,7 @@ Nav2 → /cmd_vel → mod_yoneticisi → /mux/cmd_vel → ackermann_converter �
 /camera/image_raw → preprocessing_node → yolo_detection_node → /detections/yolo
 /detections/yolo → yolo_adapter_node → /ika/detections (JSON) → misyon_fsm
                                       → /yolo/class_id (UInt8) → terrain_adapter → Nav2 param güncelle
+/camera/taret/image_raw → preprocessing_node → /camera/taret/image_processed → targeting_node → /turret/cmd → servo_controller_node
 misyon_fsm → Nav2 NavigateToPose action → otonom sürüş
 ```
 
@@ -118,9 +119,9 @@ misyon_fsm → Nav2 NavigateToPose action → otonom sürüş
 
 ```
 Schneider GPIO (pin 7)    ──┐
-imu_guvenlik (roll>20°)   ──► e_stop_node → /e_stop (20Hz)
-seri_kopru PKT_ESTOP_IN   ──┘   (OR mantığı)
-lora_gcs GCS komutu       ──┘
+imu_guvenlik (roll>20°)   ──► e_stop_node → /e_stop (20Hz) → watchdog izler
+seri_kopru PKT_ESTOP_IN   ──┘   (OR mantığı)              → /e_stop/gpio_fault
+lora_gcs GCS komutu       ──┘                                (GPIO kurulum hatası)
 ```
 
 ### Mod Sistemi
@@ -148,7 +149,8 @@ lora_gcs GCS komutu       ──┘
 │   │   ├── imu_guvenlik.py         # Roll/pitch e-stop tetikleyici
 │   │   ├── veri_paketi.py          # Kamera video kaydedici
 │   │   ├── e_stop_node.py          # E-stop yöneticisi
-│   │   └── watchdog.py             # 10 kritik topic izleyici
+│   │   ├── watchdog.py             # Kritik topic izleyici (/e_stop dahil)
+│   │   └── pure_logic.py           # rclpy-bağımsız kritik hesaplamalar (test_birim.py bunu kullanır)
 │   ├── gomulu/
 │   │   ├── seri_kopru.py           # Arduino binary seri köprü
 │   │   └── lora_gcs.py             # LoRa GCS telemetri
@@ -303,10 +305,13 @@ map
 | `/ackermann_cmd` | AckermannDriveStamped | ackermann_converter | seri_kopru |
 | `/odometry/filtered` | Odometry | EKF | Nav2, SLAM |
 | `/rc_input` | Joy | seri_kopru | mod_yoneticisi |
-| `/e_stop` | Bool | e_stop_node | mod_yoneticisi, seri_kopru |
+| `/e_stop` | Bool | e_stop_node | mod_yoneticisi, seri_kopru, watchdog |
+| `/e_stop/gpio_fault` | Bool | e_stop_node | (izleme/GCS — fiziksel buton donanım hatası) |
+| `/speed_limit` | Float32 | imu_guvenlik | terrain_adapter, mod_yoneticisi |
 | `/yolo/class_id` | UInt8 | yolo_adapter | terrain_adapter |
 | `/ika/detections` | String (JSON) | yolo_adapter | misyon_fsm |
-| `/shoot_command` | Bool | misyon_fsm | seri_kopru |
+| `/camera/taret/image_processed` | Image | preprocessing_node | targeting_node |
+| `/shoot_command` | Bool | misyon_fsm, mod_yoneticisi (manuel) | seri_kopru, servo_controller_node |
 
 ---
 
@@ -362,9 +367,13 @@ Test aracında IMU devre dışı — yalnızca odometri kullanılır.
 | ERROR_RECOVERY | Nav2 timeout/hata → geri dönüş |
 
 **Özel Durumlar:**
-- `DIK_EGIM_GIRIS/CIKIS`: STOP tabelasında 2s dur (Şartname §6.10)
-- `KAYAR_ENGEL`: Yön tespiti için max 10s bekle
+- `DIK_EGIM_GIRIS/CIKIS`: STOP tabelasında 2s dur (Şartname §6.10). STOP
+  tabelası kaçırılırsa waypoint'e varışta konum-tabanlı yedek 2s bekleme
+  otomatik devreye girer — tek tetikleyici görüntü tespitine bağımlı değildir.
+- `KAYAR_ENGEL`: Yön tespiti için max 10s bekle (hız bileşeniyle öngörülür)
 - `HIZLANMA`: Tabela_11 → max hız, Tabela_11_son → dur (§6.11)
+- `SHOOT`: ateşten sonra hareket kilidi en az `LASER_FIRE_DURATION` (1s)
+  yazılım seviyesinde garanti edilir, ardından kilit açılır
 
 ---
 
@@ -484,12 +493,13 @@ avrdude -p atmega328p -c arduino -P /dev/ttyACM0 -b 115200 -U flash:w:fw.hex:i
 
 | Görev | Dosya | Parametre |
 |---|---|---|
-| Wheelbase ölçümü | `ackermann_converter.py` | `WHEELBASE` |
+| Wheelbase ölçümü | `ackermann_converter.py`, `urdf/arac.urdf`, `config/*.yaml`, `launch/gercek_arac.launch.py` | Şu an hepsi 0.55m placeholder ile senkron — gerçek ölçüm yapıldığında **hepsi birlikte** güncellenmeli |
 | Maks. steer açısı | `ackermann_converter.py` | `MAX_STEER_ANGLE` |
 | Min. dönüş yarıçapı | `nav2_params.yaml` | `minimum_turning_radius` |
 | Parkur waypoint koordinatları | `waypoints.yaml` | Tüm x/y değerleri |
 | Enkoder ölçeği | `seri_kopru.py` | `WHEEL_RADIUS`, `TRACK_WIDTH` |
 | TensorRT engine | `models/best.engine` | `export_tensorrt.py` ile üret |
+| Gerçek Mega/Nano firmware | `arduino/` | Repoda yok — sadece test aracı (UNO) firmware'i var; lazer/servo/e-stop donanım mantığı doğrulanmadı |
 
 ---
 
