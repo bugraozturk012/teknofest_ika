@@ -64,7 +64,7 @@ from nav2_msgs.action import NavigateToPose
 import smach
 
 from teknofest_ika.otonomi.topics import (
-    YOLO_CLASS_ID_TOPIC, FSM_STATE_TOPIC, DETECTIONS_TOPIC,
+    FSM_STATE_TOPIC, DETECTIONS_TOPIC,
     MOVING_OBS_DIR_TOPIC, E_STOP_TOPIC, MOD_AKTIF_TOPIC,
     MISSION_START_TOPIC, MISYON_AKTIF_TOPIC,
     TARGETING_ENABLE_TOPIC, TARGETING_STATUS_TOPIC,
@@ -449,6 +449,7 @@ class ShootApproachState(smach.State):
         self.node      = node
         self.det_store = det_store
 
+        self._targeting_lock   = threading.Lock()
         self._targeting_status = "STANDBY"
         self._targeting_enable_pub = node.create_publisher(
             Bool, TARGETING_ENABLE_TOPIC, 10
@@ -458,14 +459,16 @@ class ShootApproachState(smach.State):
         )
 
     def _on_targeting_status(self, msg: String):
-        self._targeting_status = msg.data
+        with self._targeting_lock:
+            self._targeting_status = msg.data
 
     def execute(self, userdata):
         if hasattr(self.node, '_fsm_state_pub'):
             self.node._fsm_state_pub.publish(String(data='SHOOT_APPROACH'))
         self.node.get_logger().info('[SHOOT_APPROACH] targeting_node aktifleştiriliyor...')
 
-        self._targeting_status = "STANDBY"
+        with self._targeting_lock:
+            self._targeting_status = "STANDBY"
         self._targeting_enable_pub.publish(Bool(data=True))
 
         deadline = time.time() + self.TIMEOUT_S
@@ -475,13 +478,16 @@ class ShootApproachState(smach.State):
                 self._targeting_enable_pub.publish(Bool(data=False))
                 return 'failed'
 
-            if self._targeting_status == 'ALIGNED':
+            with self._targeting_lock:
+                status = self._targeting_status
+
+            if status == 'ALIGNED':
                 self.node.get_logger().info('[SHOOT_APPROACH] Nişan tamam ✓')
                 self._targeting_enable_pub.publish(Bool(data=False))
                 return 'in_position'
 
             self.node.get_logger().debug(
-                f'[SHOOT_APPROACH] targeting={self._targeting_status}',
+                f'[SHOOT_APPROACH] targeting={status}',
                 throttle_duration_sec=2.0,
             )
             time.sleep(0.05)
@@ -518,9 +524,9 @@ class ShootState(smach.State):
 
     def __init__(self, node: Node, det_store: DetectionsStore):
         smach.State.__init__(self, outcomes=['shot_fired'])
-        self.node       = node
-        self.det_store  = det_store
-        self._confirmed = False
+        self.node              = node
+        self.det_store         = det_store
+        self._confirmed_event  = threading.Event()
 
         self._shoot_pub = node.create_publisher(Bool, SHOOT_CMD_TOPIC, 10)
         node.create_subscription(
@@ -529,7 +535,7 @@ class ShootState(smach.State):
 
     def _on_confirmed(self, msg: Bool):
         if msg.data:
-            self._confirmed = True
+            self._confirmed_event.set()
 
     def execute(self, userdata):
         if hasattr(self.node, '_fsm_state_pub'):
@@ -540,7 +546,7 @@ class ShootState(smach.State):
             self.node.get_logger().info(
                 f'[SHOOT] Deneme {deneme}/{self.MAX_DENEME}'
             )
-            self._confirmed = False
+            self._confirmed_event.clear()
 
             # Ateş komutu — seri_kopru PKT_LAZER=1 → MEGA → NANO → Lazer
             # NOT: seri_kopru bu True yayınını aldığı an _lazer_aktif=True
@@ -550,8 +556,8 @@ class ShootState(smach.State):
             ates_baslangic = time.time()
 
             # Onay bekle (seri_kopru PKT_LAZER=0 echo'sunda publish eder)
-            while not self._confirmed and (time.time() - ates_baslangic) < self.TIMEOUT_S:
-                time.sleep(0.05)
+            # threading.Event.wait — spin thread'den gelen set() atomik olarak yakalanır
+            onaylandi = self._confirmed_event.wait(timeout=self.TIMEOUT_S)
 
             # Şartname §6.10: lazer aktif olduktan sonra EN AZ 1 saniye
             # (LASER_FIRE_DURATION) hedefte/aktif kalmalı. Donanım (Nano)
@@ -562,7 +568,7 @@ class ShootState(smach.State):
             if gecen < LASER_FIRE_DURATION:
                 time.sleep(LASER_FIRE_DURATION - gecen)
 
-            if self._confirmed:
+            if onaylandi:
                 basarili_deneme = deneme
                 self.node.get_logger().info(
                     f'[SHOOT] Deneme {deneme} onaylandı ✓'
@@ -618,7 +624,7 @@ class HizlanmaState(smach.State):
               'failed'    → ErrorRecoveryState
     """
 
-    MAX_HIZ          = 10.0   # m/s — istersen değiştir
+    MAX_HIZ          = 3.0    # m/s — seri_kopru.MAX_HIZ_MS ile eşleşmeli
     TOPLAM_MESAFE    = 30.0   # m
     FREN_BASI_MESAFE = 25.0   # m — son 5m'de yavaşla
     TIMEOUT_S        = 15.0   # s — donanım arızasına karşı üst limit
@@ -865,8 +871,6 @@ def main():
     # ── Detections Store ──────────────────────────────────────────────
     det_store = DetectionsStore()
 
-    # /yolo/class_id köprüsü: görüntü ekibinin tabela integer'ı terrain_adapter'a iletilir
-    class_id_pub = node.create_publisher(UInt8, YOLO_CLASS_ID_TOPIC, 10)
     # FSM durum yayını: tüm ekiplerin izleyebileceği string durum
     fsm_state_pub = node.create_publisher(String, FSM_STATE_TOPIC, 10)
     # node üzerinden state'lerin erişmesi için referans
@@ -876,10 +880,6 @@ def main():
         try:
             data = json.loads(msg.data)
             det_store.update(data)
-            # tabela alanını UInt8 olarak terrain_adapter'a ilet
-            # Görüntü ekibi 0-8 arası integer yayınlar; 255 = tespit yok
-            tabela_id = int(data.get('tabela', 255))
-            class_id_pub.publish(UInt8(data=tabela_id))
         except (json.JSONDecodeError, ValueError):
             pass
 

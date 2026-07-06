@@ -494,5 +494,5 @@ def generate_launch_description():
         TimerAction(period=13.0, actions=[yolo_detection, cone_fusion,
                                           targeting, servo_controller]),
         TimerAction(period=13.5, actions=[yolo_adapter]),
-        TimerAction(period=14.0, actions=[misyon_fsm]),
+        TimerAction(period=16.0, actions=[misyon_fsm]),
     ])
