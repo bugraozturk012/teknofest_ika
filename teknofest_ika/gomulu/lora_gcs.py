@@ -55,7 +55,7 @@ except ImportError:
     _SERIAL_MEVCUT = False
 
 from teknofest_ika.otonomi.topics import (
-    E_STOP_FORCE_TOPIC, MOD_KOMUT_TOPIC, MOD_AKTIF_TOPIC,
+    E_STOP_FORCE_GCS_TOPIC, MOD_KOMUT_TOPIC, MOD_AKTIF_TOPIC,
     FSM_STATE_TOPIC, BATTERY_TOPIC, E_STOP_TOPIC, ODOM_TOPIC,
     MISYON_WP_INDEX_TOPIC,
 )
@@ -91,7 +91,7 @@ class LoraGCS(Node):
         self._baslangic = time.time()
 
         # GCS komutlarından gelen publisher'lar
-        self._e_stop_pub = self.create_publisher(Bool,  E_STOP_FORCE_TOPIC, 10)
+        self._e_stop_pub = self.create_publisher(Bool,  E_STOP_FORCE_GCS_TOPIC, 10)
         self._mod_pub    = self.create_publisher(UInt8, MOD_KOMUT_TOPIC,    10)
 
         # Abonelikler

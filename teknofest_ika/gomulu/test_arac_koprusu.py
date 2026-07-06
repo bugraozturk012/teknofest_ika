@@ -37,7 +37,7 @@ import serial
 
 from teknofest_ika.otonomi.topics import (
     ODOM_TOPIC, IMU_TOPIC, RC_INPUT_TOPIC,
-    E_STOP_FORCE_TOPIC, E_STOP_TOPIC,
+    E_STOP_FORCE_SERIAL_TOPIC, E_STOP_TOPIC,
 )
 
 # ─── Protokol Tanımları (Kürşat firmware ile eşleşmeli) ───────────────────────
@@ -198,7 +198,7 @@ class TestAracKoprusu(Node):
         self._odom_pub   = self.create_publisher(Odometry,         ODOM_TOPIC,        qos)
         self._imu_pub    = self.create_publisher(Imu,              IMU_TOPIC,         qos)
         self._rc_pub     = self.create_publisher(Float32MultiArray, RC_INPUT_TOPIC,    10)
-        self._estop_pub  = self.create_publisher(Bool,             E_STOP_FORCE_TOPIC, 10)
+        self._estop_pub  = self.create_publisher(Bool,             E_STOP_FORCE_SERIAL_TOPIC, 10)
         self._tf         = TransformBroadcaster(self)
 
         # ── Durum ────────────────────────────────────────────────────────────

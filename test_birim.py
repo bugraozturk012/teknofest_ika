@@ -34,6 +34,7 @@ from teknofest_ika.otonomi.pure_logic import (  # noqa: E402
     hizlanma_hiz_profili,
     DetectionsStore,
 )
+from teknofest_ika.otonomi.topics import BATTERY_WARN_SOC, BATTERY_CRITICAL_SOC  # noqa: E402
 
 PASS = 0
 FAIL = 0
@@ -193,7 +194,7 @@ print("\n=== 9. IMU Güvenlik Hız Kısıt Mantığı ===")
 WARN, STOP, ESTOP = 8.0, 15.0, 20.0
 PITCH_DOWN = 15.0
 NMAX, FREN, BAT_HIZ = 2.0, 0.4, 1.0
-BAT_DUSUK, BAT_KRITIK = 30.0, 10.0
+BAT_DUSUK, BAT_KRITIK = BATTERY_WARN_SOC, BATTERY_CRITICAL_SOC
 
 
 def guvenlik_hiz(roll_deg, pitch_deg, bat_pct_):

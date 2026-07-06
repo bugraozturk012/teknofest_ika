@@ -162,9 +162,9 @@ def imu_guvenlik_hiz(roll_deg: float, pitch_deg: float, batarya_yuzde: float,
     else:
         hiz = normal_max_hiz
 
-    if batarya_yuzde < bat_kritik_yuzde:
+    if batarya_yuzde <= bat_kritik_yuzde:
         hiz = min(hiz, 0.0)
-    elif batarya_yuzde < bat_dusuk_yuzde:
+    elif batarya_yuzde <= bat_dusuk_yuzde:
         hiz = min(hiz, bat_dusuk_hiz)
 
     return hiz

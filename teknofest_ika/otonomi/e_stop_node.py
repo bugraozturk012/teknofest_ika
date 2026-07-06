@@ -46,7 +46,9 @@ from rclpy.node import Node
 from std_msgs.msg import Bool
 
 from teknofest_ika.otonomi.topics import (
-    E_STOP_TOPIC, E_STOP_FORCE_TOPIC, E_STOP_GPIO_FAULT_TOPIC,
+    E_STOP_TOPIC, E_STOP_GPIO_FAULT_TOPIC,
+    E_STOP_FORCE_IMU_TOPIC, E_STOP_FORCE_SERIAL_TOPIC, E_STOP_FORCE_GCS_TOPIC,
+    E_STOP_FORCE_RC_TOPIC,
 )
 
 _GPIO_MEVCUT = False
@@ -56,11 +58,10 @@ try:
 except ImportError:
     pass
 
-# /e_stop/force yayıncıları — her biri ayrı takip edilir
-_KAYNAK_IMU    = 'imu_guvenlik'
-_KAYNAK_SERIAL = 'seri_kopru'
-_KAYNAK_GCS    = 'lora_gcs'
-_KAYNAK_GENEL  = 'genel'
+_KAYNAK_IMU    = 'imu'
+_KAYNAK_SERIAL = 'serial'
+_KAYNAK_GCS    = 'gcs'
+_KAYNAK_RC     = 'rc'
 
 
 class EStopNode(Node):
@@ -76,11 +77,18 @@ class EStopNode(Node):
         self._gpio_istenen = self.get_parameter('gpio_mod').value
         self._gpio_mod = self._gpio_istenen and _GPIO_MEVCUT
 
-        # OR mantığı: her kaynak bağımsız takip edilir
-        # Herhangi biri True → _aktif True
         self._lock = threading.Lock()
-        self._gpio_aktif   = False   # fiziksel GPIO butonu
-        self._force_aktif  = False   # /e_stop/force'tan gelen yazılımsal E-STOP
+        self._gpio_aktif = False  # fiziksel GPIO butonu
+
+        # Her kaynak bağımsız takip edilir — herhangi biri True → E-STOP aktif.
+        # Tek bool kullanmak OR mantığını bozar: imu True gönderip False'a
+        # dönünce seri_kopru'nun True'su silinirdi.
+        self._force_sources = {
+            _KAYNAK_IMU:    False,
+            _KAYNAK_SERIAL: False,
+            _KAYNAK_GCS:    False,
+            _KAYNAK_RC:     False,
+        }
 
         self._gpio_fault = False
         self._gpio_fault_pub = self.create_publisher(Bool, E_STOP_GPIO_FAULT_TOPIC, 10)
@@ -88,7 +96,14 @@ class EStopNode(Node):
         self._gpio_kur()
 
         self._pub = self.create_publisher(Bool, E_STOP_TOPIC, 10)
-        self.create_subscription(Bool, E_STOP_FORCE_TOPIC, self._force_cb, 10)
+        self.create_subscription(Bool, E_STOP_FORCE_IMU_TOPIC,
+                                 lambda m: self._force_cb(m, _KAYNAK_IMU), 10)
+        self.create_subscription(Bool, E_STOP_FORCE_SERIAL_TOPIC,
+                                 lambda m: self._force_cb(m, _KAYNAK_SERIAL), 10)
+        self.create_subscription(Bool, E_STOP_FORCE_GCS_TOPIC,
+                                 lambda m: self._force_cb(m, _KAYNAK_GCS), 10)
+        self.create_subscription(Bool, E_STOP_FORCE_RC_TOPIC,
+                                 lambda m: self._force_cb(m, _KAYNAK_RC), 10)
 
         hz = self.get_parameter('publish_hz').value
         self.create_timer(1.0 / hz, self._yayinla)
@@ -99,8 +114,8 @@ class EStopNode(Node):
 
     @property
     def _aktif(self) -> bool:
-        """GPIO VEYA yazılımsal kaynaklardan herhangi biri True → E-STOP aktif."""
-        return self._gpio_aktif or self._force_aktif
+        """GPIO VEYA herhangi bir yazılımsal kaynak True → E-STOP aktif."""
+        return self._gpio_aktif or any(self._force_sources.values())
 
     # ── GPIO kurulumu ────────────────────────────────────────────────────────
     def _gpio_kur(self):
@@ -151,27 +166,27 @@ class EStopNode(Node):
                 '[E-STOP] Fiziksel buton bırakıldı.'
             )
 
-    # ── Yazılımsal override — OR mantığı ────────────────────────────────────
-    def _force_cb(self, msg: Bool):
+    # ── Yazılımsal override — per-kaynak OR mantığı ─────────────────────────
+    def _force_cb(self, msg: Bool, kaynak: str):
         """
-        Birden fazla kaynak bu topic'e yayın yapar (imu_guvenlik, seri_kopru, lora_gcs).
-        True → force_aktif bayrağını set et (OR mantığı).
-        False → sadece force_aktif'i temizle; GPIO butonu hâlâ basılıysa E-STOP sürer.
+        Her kaynak kendi topic'ine yayın yapar; bu callback kaynağı bilir.
+        Yalnızca o kaynağın bayrağı güncellenir — diğer kaynakların durumu
+        değişmez. E-STOP, tüm kaynaklar False olmadan temizlenmez.
         """
         with self._lock:
-            onceki_force = self._force_aktif
-            self._force_aktif = msg.data
-            aktif = self._aktif   # OR sonucu
+            onceki = self._force_sources[kaynak]
+            self._force_sources[kaynak] = msg.data
+            aktif = self._aktif
 
-        if msg.data and not onceki_force:
-            self.get_logger().error('!!! YAZILIMSAL E-STOP AKTİF !!!')
-        elif not msg.data and onceki_force:
+        if msg.data and not onceki:
+            self.get_logger().error(f'!!! YAZILIMSAL E-STOP [{kaynak}] AKTİF !!!')
+        elif not msg.data and onceki:
             if aktif:
                 self.get_logger().warn(
-                    '[E-STOP] Yazılımsal force kaldırıldı ama GPIO butonu hâlâ basılı.'
+                    f'[E-STOP] [{kaynak}] kaldırıldı ama başka kaynak hâlâ aktif.'
                 )
             else:
-                self.get_logger().warn('[E-STOP] Yazılımsal e-stop kaldırıldı.')
+                self.get_logger().warn(f'[E-STOP] [{kaynak}] kaldırıldı — tüm kaynaklar temiz.')
 
     # ── 20 Hz yayın ─────────────────────────────────────────────────────────
     def _yayinla(self):

@@ -139,7 +139,7 @@ asamalar:
     pas_gecilir: false
     aciklama: >
       §6.11 Hızlanma parkuru girişi. Nav2 bu noktaya götürür, sonra
-      HizlanmaState devralır: Nav2 bypass, doğrudan /cmd_vel 10 m/s,
+      HizlanmaState devralır: Nav2 bypass, doğrudan /cmd_vel 3.0 m/s,
       30m enkoder mesafesi, son 5m rampalı fren, Tabela_11_son yedek dur.
 
 # Genel parametreler

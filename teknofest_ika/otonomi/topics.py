@@ -344,8 +344,14 @@ ACKERMANN_CMD_TOPIC = "/ackermann_cmd"  # AckermannDriveStamped
 # KONTROL TOPIC'LERİ (node'lar arası iç protokol)
 # ─────────────────────────────────────────────
 
-# E-STOP besleme (çok kaynak → e_stop_node toplayıcısına)
-E_STOP_FORCE_TOPIC = "/e_stop/force"
+# E-STOP besleme — her kaynak kendi topic'ine yayınlar, e_stop_node ayrı takip eder.
+# Tek topic kullanılırsa imu_guvenlik True gönderip hemen False'a dönünce
+# seri_kopru'nun True'su silinir (OR mantığı bozulur).
+E_STOP_FORCE_TOPIC       = "/e_stop/force"            # geriye dönük uyumluluk (kullanılmamalı)
+E_STOP_FORCE_IMU_TOPIC   = "/e_stop/force/imu"        # imu_guvenlik → devrilme
+E_STOP_FORCE_SERIAL_TOPIC= "/e_stop/force/serial"     # seri_kopru  → fiziksel buton
+E_STOP_FORCE_GCS_TOPIC   = "/e_stop/force/gcs"        # lora_gcs    → GCS komutu
+E_STOP_FORCE_RC_TOPIC    = "/e_stop/force/rc"         # mod_yoneticisi → RC sinyal kaybı
 
 # GPIO kurulumu/fiziksel buton donanımı başarısız olduğunda True yayınlanır.
 # Ayrılık ilkesi (Şartname §6.13/§7.8): güvenlik alt sisteminin kendi iç hata

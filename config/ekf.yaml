@@ -10,8 +10,8 @@
 #   TF: odom → base_link   → Nav2 ve SLAM için
 #
 # Araç parametreleri:
-#   Dingil arası : 0.55 m
-#   İz genişliği : 0.67 m
+#   Dingil arası : 0.55 m   (PLACEHOLDER — wheelbase ölçülmedi)
+#   İz genişliği : 0.90 m   (arka aks, EK-7 B)
 #   Kinematik    : Ackermann (yer aracı, 2D hareket)
 #
 # KURULUM:

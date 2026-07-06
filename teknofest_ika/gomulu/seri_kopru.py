@@ -49,7 +49,7 @@ import serial
 from teknofest_ika.otonomi.topics import (
     ACKERMANN_CMD_TOPIC, SHOOT_RESULT_TOPIC, TARET_PAN_TOPIC, TARET_TILT_TOPIC,
     ODOM_TOPIC, IMU_TOPIC, BATTERY_TOPIC, RC_INPUT_TOPIC,
-    E_STOP_FORCE_TOPIC, E_STOP_TOPIC, SHOOT_CMD_TOPIC,
+    E_STOP_FORCE_SERIAL_TOPIC, E_STOP_TOPIC, SHOOT_CMD_TOPIC,
 )
 from teknofest_ika.otonomi.pure_logic import (
     paket_olustur, paket_dogrula, encoder_delta, batarya_yuzdesi,
@@ -118,8 +118,8 @@ def _v1_oku(ham: bytes) -> int:
 #                    bu da aynı şekilde son savunma hattıdır — üst akış (Nav2,
 #                    HizlanmaState, manuel override) hatalı/aşırı bir hız
 #                    gönderirse dahi binary pakete bu değerin üstü yazılamaz.
-TEKERLEK_ARALIGI  = 0.670   # [m] — ölçüp güncelle
-TEKERLEK_YARICI   = 0.180   # [m] — NEMA23 + dişli kutusu çıkış yarıçapı
+TEKERLEK_ARALIGI  = 0.900   # [m] — arka aks iz genişliği (EK-7 B)
+TEKERLEK_YARICI   = 0.200   # [m] — havalı arazi lastiği (EK-7 A, C)
 TICKS_PER_REV     = 1024    # AS5600 10-bit (sabit, değiştirme)
 MAX_DIREKSIYON    = 30.0    # [derece] — donanım güvenlik limiti
 MAX_HIZ_MS        = 3.0     # [m/s] — donanım güvenlik limiti (VESC sınırı)
@@ -194,11 +194,11 @@ class SeriKopru(Node):
         self._tf       = TransformBroadcaster(self)
 
         # Batarya durumu yayıncısı — INA219 → PKT_AKIM → /battery/status
-        # 4S LiPo: 16.8V tam, 14.0V boş (4.2V / 3.5V per hücre)
+        # 8S LiPo: 33.6V tam, 28.0V boş (4.2V / 3.5V per hücre)
         self._battery_pub = self.create_publisher(BatteryState, BATTERY_TOPIC, 10)
-        self._BATARYA_V_MAX = 16.8
-        self._BATARYA_V_MIN = 14.0
-        self._BATARYA_UYARI = 14.8   # 3.7V/hücre × 4 → nominal = uyarı eşiği
+        self._BATARYA_V_MAX = 33.6
+        self._BATARYA_V_MIN = 28.0
+        self._BATARYA_UYARI = 29.6   # 3.7V/hücre × 8 → nominal = uyarı eşiği
 
         # RC kanal yayıncısı — mod_yoneticisi dinler
         # Format: [ch1_throttle_us, ch2_steering_us, ch5_mode_us, ch3_aux_us]
@@ -220,8 +220,7 @@ class SeriKopru(Node):
         # E-STOP durumu — True iken tüm hareket komutları yoksayılır,
         # _guvenlik_kontrol her 100ms'de PKT_ESTOP_OUT + PKT_DUR gönderir
         self._e_stop_aktif = False
-        # Arduino'dan PKT_ESTOP_IN gelince /e_stop/force'a yaz (e_stop_node toplar)
-        self._e_stop_force_pub = self.create_publisher(Bool, E_STOP_FORCE_TOPIC, 10)
+        self._e_stop_force_pub = self.create_publisher(Bool, E_STOP_FORCE_SERIAL_TOPIC, 10)
         self.create_subscription(Bool, E_STOP_TOPIC, self._e_stop_cb, 10)
 
         # /shoot_command → PKT_LAZER
@@ -386,8 +385,8 @@ class SeriKopru(Node):
 
         elif komut == PKT_AKIM:
             motor_ma   = _v0_oku(ham)            # mA
-            batarya_mv = _v1_oku(ham)            # mV
-            voltaj     = batarya_mv / 1000.0     # V
+            batarya_cv = _v1_oku(ham)            # cV (centi-volt = V×100, 33.6V→3360)
+            voltaj     = batarya_cv / 100.0      # V
             akim       = motor_ma   / 1000.0     # A
 
             yuzdesi = batarya_yuzdesi(voltaj, self._BATARYA_V_MIN, self._BATARYA_V_MAX)

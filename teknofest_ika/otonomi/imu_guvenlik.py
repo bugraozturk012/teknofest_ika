@@ -22,9 +22,10 @@ from sensor_msgs.msg import Imu, BatteryState
 from std_msgs.msg import Float32, Bool
 
 from teknofest_ika.otonomi.topics import (
-    IMU_TOPIC, BATTERY_TOPIC, SPEED_LIMIT_TOPIC, E_STOP_FORCE_TOPIC,
+    IMU_TOPIC, BATTERY_TOPIC, SPEED_LIMIT_TOPIC, E_STOP_FORCE_IMU_TOPIC,
     IMU_ROLL_WARN_THRESHOLD, IMU_ROLL_STOP_THRESHOLD,
     IMU_ROLL_ESTOP_THRESHOLD, IMU_PITCH_DOWN_THRESHOLD,
+    BATTERY_WARN_SOC, BATTERY_CRITICAL_SOC,
 )
 from teknofest_ika.otonomi.pure_logic import quat_to_roll_pitch_deg, imu_guvenlik_hiz
 
@@ -32,9 +33,9 @@ NORMAL_MAX_HIZ    = 2.0   # [m/s]
 FRENLEME_HIZ      = 0.4   # [m/s]
 YAYINLAMA_HZ      = 10.0
 
-# Batarya eşikleri (4S LiPo)
-BATARYA_DUSUK_YUZDE   = 30   # %30 altı → hız 1.0 m/s ile kısıtlanır
-BATARYA_KRITIK_YUZDE  = 10   # %10 altı → hız 0.0 m/s (dur)
+# Batarya eşikleri (8S LiPo — %100=33.6V, %0=28.0V) — topics.py'den merkezi
+BATARYA_DUSUK_YUZDE   = int(BATTERY_WARN_SOC)      # %20 → hız 1.0 m/s ile kısıtlanır
+BATARYA_KRITIK_YUZDE  = int(BATTERY_CRITICAL_SOC)  # %10 → hız 0.0 m/s (dur)
 BATARYA_DUSUK_HIZ     = 1.0  # [m/s]
 
 
@@ -52,8 +53,7 @@ class ImuGuvenlik(Node):
         self.create_subscription(BatteryState, BATTERY_TOPIC, self._bat_cb, 10)
 
         self._pub       = self.create_publisher(Float32, SPEED_LIMIT_TOPIC,  10)
-        # /e_stop/force → e_stop_node toplar, tek /e_stop yayıncısı o olur
-        self._estop_pub = self.create_publisher(Bool,    E_STOP_FORCE_TOPIC, 10)
+        self._estop_pub = self.create_publisher(Bool, E_STOP_FORCE_IMU_TOPIC, 10)
 
         self.create_timer(1.0 / YAYINLAMA_HZ, self._yayinla)
         self.get_logger().info(

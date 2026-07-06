@@ -1,11 +1,11 @@
 ### nav2_params.yaml — LYDİA Nav2 Konfigürasyonu
 #
 # Araç: Ackermann kinematikli İKA
-#   Dingil arası       : 0.55 m
-#   İz genişliği       : 0.67 m
+#   Dingil arası       : 0.55 m   (PLACEHOLDER — wheelbase ölçülmedi)
+#   İz genişliği       : 0.90 m   (arka aks, EK-7 B)
 #   Max hız            : 3.0 m/s  (VESC sınırı)
 #   Max direksiyon açısı: 30°
-#   Min dönüş yarıçapı : L / tan(delta_max) = 0.55 / tan(30°) ≈ 0.95 m
+#   Min dönüş yarıçapı : L / tan(delta_max) = 0.55 / tan(30°) ≈ 0.95 m  (wheelbase placeholder)
 #
 # Planner  : SmacPlannerHybrid (DUBIN — sadece ileri hareket, Ackermann uyumlu)
 # Controller: RegulatedPurePursuitController (RPP — Ackermann uyumlu)
@@ -216,7 +216,7 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_footprint
-      robot_radius: 0.40
+      robot_radius: 0.50
 
       resolution: 0.05            # [m/piksel] — 5 cm çözünürlük
       rolling_window: true
@@ -297,7 +297,7 @@ local_costmap:
       publish_frequency: 2.0
       global_frame: odom
       robot_base_frame: base_footprint
-      robot_radius: 0.40          # global_costmap ile tutarlı
+      robot_radius: 0.50          # global_costmap ile tutarlı
       rolling_window: true
       width: 8                    # [m] — lokal harita genişliği
       height: 8                   # [m] — lokal harita yüksekliği

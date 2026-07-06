@@ -47,7 +47,7 @@ from geometry_msgs.msg import Twist
 from teknofest_ika.otonomi.topics import (
     RC_INPUT_TOPIC, MOD_KOMUT_TOPIC, CMD_VEL_TOPIC, E_STOP_TOPIC,
     MOD_AKTIF_TOPIC, MUX_CMD_VEL_TOPIC, MISSION_START_TOPIC, SHOOT_CMD_TOPIC,
-    SPEED_LIMIT_TOPIC,
+    SPEED_LIMIT_TOPIC, E_STOP_FORCE_RC_TOPIC,
 )
 
 # ─── Mod Sabitleri ─────────────────────────────────────────────────────────
@@ -103,7 +103,8 @@ class ModYoneticisi(Node):
         self._mod_bekleyen      = None   # debounce: beklenen yeni mod
         self._mod_bekleyen_zaman = 0.0   # debounce: ne zaman değişmeye başladı
 
-        self._e_stop_aktif = False
+        self._e_stop_aktif     = False
+        self._rc_estop_aktif   = False   # RC sinyal kaybı E-STOP izleme
         # imu_guvenlik'ten gelen hız sınırı — önceden FULL_AUTO'da Nav2
         # parametreleri üzerinden uygulanıyordu ama MANUAL/SEMI_AUTO'da RC
         # komutuna hiç yansımıyordu (devrilme/düşük batarya gibi durumlarda
@@ -125,10 +126,11 @@ class ModYoneticisi(Node):
         self.create_subscription(
             Float32, SPEED_LIMIT_TOPIC, self._speed_limit_cb, 10)
 
-        self._mod_pub   = self.create_publisher(UInt8,  MOD_AKTIF_TOPIC,     10)
-        self._mux_pub   = self.create_publisher(Twist,  MUX_CMD_VEL_TOPIC,   qos_rel)
-        self._start_pub = self.create_publisher(Bool,   MISSION_START_TOPIC, 10)
-        self._shoot_pub = self.create_publisher(Bool,   SHOOT_CMD_TOPIC,     10)
+        self._mod_pub      = self.create_publisher(UInt8,  MOD_AKTIF_TOPIC,      10)
+        self._mux_pub      = self.create_publisher(Twist,  MUX_CMD_VEL_TOPIC,    qos_rel)
+        self._start_pub    = self.create_publisher(Bool,   MISSION_START_TOPIC,  10)
+        self._shoot_pub    = self.create_publisher(Bool,   SHOOT_CMD_TOPIC,      10)
+        self._rc_estop_pub = self.create_publisher(Bool,   E_STOP_FORCE_RC_TOPIC, 10)
 
         self.create_timer(0.05, self._mux_dongusu)   # 20 Hz
         self.create_timer(1.0,  self._mod_yayinla)   # 1 Hz
@@ -150,7 +152,9 @@ class ModYoneticisi(Node):
             self._ch3  = float(msg.data[3]) if len(msg.data) > 3 else RC_MIN
             self._rc_son = time.time()
 
-        yeni = self._ch5_mod(self._ch5)
+        with self._lock:
+            ch5 = self._ch5
+        yeni = self._ch5_mod(ch5)
         with self._lock:
             if yeni != self._mod:
                 if self._mod_bekleyen != yeni:
@@ -230,6 +234,15 @@ class ModYoneticisi(Node):
             rc_gecmis   = time.time() - self._rc_son
             nav2        = self._nav2_twist
             speed_limit = self._speed_limit
+
+        # RC sinyal kaybı → E-STOP kaynağı olarak yayınla (şartname 3. kaynak)
+        rc_kopuk = rc_gecmis > RC_TIMEOUT_S
+        if rc_kopuk and not self._rc_estop_aktif:
+            self._rc_estop_aktif = True
+            self._rc_estop_pub.publish(Bool(data=True))
+        elif not rc_kopuk and self._rc_estop_aktif:
+            self._rc_estop_aktif = False
+            self._rc_estop_pub.publish(Bool(data=False))
 
         # E-STOP: tüm modlarda sıfır Twist yayınla
         if e_stop:
