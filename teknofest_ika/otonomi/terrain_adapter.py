@@ -17,18 +17,23 @@ doğrudan /yolo/class_id topic'ine UInt8 olarak yayınlar.
 TOPIC ARAYÜZÜ
 ─────────────────────────────────────────────────────────────────────────────
   Giriş  : /yolo/class_id  (std_msgs/UInt8)
-             0 = SULU_YOL      (Tabela_1)  → wet
-             1 = TASLI_YOL     (Tabela_2)  → gravel
-             2 = YAN_EGIM      (Tabela_3)  → slope
-             3 = DIK_ENGEL     (Tabela_4)  → obstacle
-             4 = KONİLİ_YOL   (Tabela_5)  → normal (Nav2 halleder)
-             5 = KAYAR_ENGEL   (Tabela_6)  → normal (Nav2 halleder)
-             6 = ENGEBELİ_ARAZİ(Tabela_7) → rough
-             7 = DIK_EGIM      (Tabela_8)  → rough
-             8 = ATIS_BOLGESI  (Tabela_9)  → slow
-             9 = YAN_EGIM_2    (Tabela_10) → slope
-            10 = HIZLANMA_PARKURU(Tabela_11) → fast (HizlanmaState Nav2'yi bypass eder)
-           255 = tespit yok               → normal (varsayılan profil)
+             0 = SULU_YOL       (Tabela_1)       → wet
+             1 = DIK_EGIM_CIKIS (Tabela_10)      → normal
+             2 = HIZLANMA       (Tabela_11)       → fast   (HizlanmaState Nav2'yi bypass eder)
+             3 = HIZLANMA_SON   (Tabela_11_son)   → normal
+             4 = Tabela_12      (netleştirilecek) → normal
+             5 = TASLI_YOL      (Tabela_2)        → gravel
+             6 = YAN_EGIM       (Tabela_3)        → slope
+             7 = DIK_ENGEL      (Tabela_4)        → obstacle
+             8 = KONİLİ_YOL    (Tabela_5)        → normal (Nav2 halleder)
+             9 = KAYAR_ENGEL    (Tabela_6)        → normal (Nav2 halleder)
+            10 = ENGEBELİ_ARAZİ(Tabela_7)        → rough
+            11 = DIK_EGIM       (Tabela_8)        → rough
+            12 = ATIS_BOLGESI   (Tabela_9)        → slow
+            13 = Tabela_stop                      → normal (FSM halleder)
+            14 = hedef_tahtasi                    → slow
+            15 = trafik_huni                      → normal (Nav2 costmap halleder)
+           255 = tespit yok                       → normal (varsayılan profil)
 
   Çıkış  : Nav2 /controller_server/set_parameters RPC çağrısı
            (Node yeniden başlatılmaz — anlık etkili)

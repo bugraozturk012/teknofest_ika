@@ -6,19 +6,23 @@ Girdi : /detections/yolo  (vision_msgs/Detection2DArray)  — yolo_detection_nod
 Çıktı : /ika/detections   (std_msgs/String JSON)          — misyon_fsm
         /yolo/class_id    (std_msgs/UInt8)                — terrain_adapter
 
-Tabela numarası → parkur aşaması (class_id = Tabela_N - 1):
-  class_id=0  Tabela_1  → SULU_YOL
-  class_id=1  Tabela_2  → TASLI_YOL
-  class_id=2  Tabela_3  → YAN_EGIM
-  class_id=3  Tabela_4  → DIK_ENGEL
-  class_id=4  Tabela_5  → KONİLİ_YOL
-  class_id=5  Tabela_6  → KAYAR_ENGEL
-  class_id=6  Tabela_7  → ENGEBELİ_ARAZİ
-  class_id=7  Tabela_8  → DIK_EGIM
-  class_id=8  Tabela_9  → ATIS_BOLGESI
-  class_id=9  Tabela_10 → YAN_EGIM_2
-  class_id=13           → trafik_huni  → koni_var=True
-  class_id=14           → hedef_tahtasi → hedef_var=True
+Tabela numarası → parkur aşaması (model ALFABETİK sırayla eğitildi, sequential değil):
+  class_id= 0  Tabela_1       → SULU_YOL
+  class_id= 1  Tabela_10      → DIK_EGIM_CIKIS
+  class_id= 2  Tabela_11      → HIZLANMA başlangıcı (§6.11)
+  class_id= 3  Tabela_11_son  → HIZLANMA sonu (§6.11)
+  class_id= 4  Tabela_12
+  class_id= 5  Tabela_2       → TASLI_YOL
+  class_id= 6  Tabela_3       → YAN_EGIM
+  class_id= 7  Tabela_4       → DIK_ENGEL
+  class_id= 8  Tabela_5       → KONİLİ_YOL
+  class_id= 9  Tabela_6       → KAYAR_ENGEL
+  class_id=10  Tabela_7       → ENGEBELİ_ARAZİ
+  class_id=11  Tabela_8       → DIK_EGIM
+  class_id=12  Tabela_9       → ATIS_BOLGESI
+  class_id=13  Tabela_stop    → STOP işareti (§6.10)
+  class_id=14  hedef_tahtasi  → hedef_var=True
+  class_id=15  trafik_huni    → koni_var=True
 
 Notlar:
   - kayar_yon: YOLO'dan çıkarılamaz — kayar_engel_kalman node'undan /moving_obs/direction gelir,
@@ -196,7 +200,7 @@ class YoloAdapterNode(Node):
         }
 
         self._pub_json.publish(String(data=json.dumps(payload)))
-        self._pub_class.publish(UInt8(data=tabela_id))
+        self._pub_class.publish(UInt8(data=tabela_confirmed))
 
         if tabela_id != NO_DETECTION:
             self.get_logger().debug(

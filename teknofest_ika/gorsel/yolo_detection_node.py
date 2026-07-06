@@ -24,6 +24,12 @@ from teknofest_ika.otonomi.topics import (
     YOLO_CONFIDENCE_THRESHOLD,
 )
 
+try:
+    from ultralytics import YOLO as UltralyticsYOLO
+    HAS_ULTRALYTICS = True
+except ImportError:
+    HAS_ULTRALYTICS = False
+
 
 # Alfabetik model sırası — topics.py YOLO_CLASSES ile birebir uyumlu
 CLASS_NAMES = {
@@ -64,36 +70,47 @@ class YoloDetectionNode(Node):
         iou_thres = self.get_parameter("iou_thres").value
         self.publish_debug = self.get_parameter("publish_debug_image").value
 
-        # Resolve path using ament_index (robust across install/symlink builds)
-        if not os.path.isfile(model_path):
+        # Resolve path — os.path.exists() hem dosya hem dizin formatı .pt için çalışır
+        if not os.path.exists(model_path):
             try:
                 from ament_index_python.packages import get_package_share_directory
                 pkg_share = get_package_share_directory('teknofest_ika')
                 candidate = os.path.join(pkg_share, model_path)
-                if os.path.isfile(candidate):
+                if os.path.exists(candidate):
                     model_path = candidate
             except Exception:
                 pass
-        if not os.path.isfile(model_path):
-            # final fallback: workspace src directory
-            ws_src = os.path.join(os.path.dirname(__file__), '..', '..')
+        if not os.path.exists(model_path):
+            ws_src = os.path.join(os.path.dirname(__file__), '..', '..', '..')
             candidate = os.path.join(ws_src, model_path)
-            if os.path.isfile(candidate):
+            if os.path.exists(candidate):
                 model_path = candidate
 
-        if not HAS_TRT:
-            self.get_logger().error("TensorRT not available. YOLO node cannot start.")
-            raise RuntimeError("TensorRT missing")
+        self._use_ultralytics = False
+        self.inferer = None
 
-        self.get_logger().info(f"Loading TensorRT engine: {model_path}")
-        self.inferer = TensorRTInferer(
-            engine_path=model_path,
-            input_shape=input_shape,
-            conf_thres=conf_thres,
-            iou_thres=iou_thres,
-            class_names=CLASS_NAMES
-        )
-        self.get_logger().info("TensorRT engine loaded.")
+        if HAS_TRT and model_path.endswith('.engine') and os.path.isfile(model_path):
+            self.get_logger().info(f"Loading TensorRT engine: {model_path}")
+            self.inferer = TensorRTInferer(
+                engine_path=model_path,
+                input_shape=input_shape,
+                conf_thres=conf_thres,
+                iou_thres=iou_thres,
+                class_names=CLASS_NAMES
+            )
+            self.get_logger().info("TensorRT engine loaded.")
+        elif HAS_ULTRALYTICS and os.path.exists(model_path.replace('.engine', '.pt')):
+            # Laptop / debug: Ultralytics ile .pt modelini doğrudan çalıştır
+            pt_path = model_path.replace('.engine', '.pt')
+            self.get_logger().warn(
+                f"TensorRT yok — Ultralytics fallback: {pt_path}  (Jetson'da .engine kullan)")
+            self._ul_model = UltralyticsYOLO(pt_path)
+            self._ul_conf  = conf_thres
+            self._use_ultralytics = True
+        else:
+            self.get_logger().error(
+                "Ne TensorRT engine ne de .pt modeli bulunamadı. Node başlatılamıyor.")
+            raise RuntimeError("YOLO modeli yüklenemedi")
 
         self.pub = self.create_publisher(Detection2DArray, YOLO_RAW_TOPIC, 10)
         if self.publish_debug:
@@ -108,11 +125,24 @@ class YoloDetectionNode(Node):
     def cb_image(self, msg: Image):
         img = self.bridge.imgmsg_to_cv2(msg, "bgr8")
 
-        detections, timings = self.inferer.infer(img)
-        self.get_logger().debug(
-            f"Inference pre={timings['pre']:.1f}ms inf={timings['inf']:.1f}ms post={timings['post']:.1f}ms | "
-            f"detections={len(detections)}",
-            throttle_duration_sec=2.0)
+        if self._use_ultralytics:
+            results = self._ul_model(img, conf=self._ul_conf, verbose=False)[0]
+            detections = []
+            for box in results.boxes:
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                detections.append({
+                    "bbox":       (x1, y1, x2, y2),
+                    "center":     ((x1 + x2) / 2, (y1 + y2) / 2),
+                    "class_id":   int(box.cls[0]),
+                    "label":      CLASS_NAMES.get(int(box.cls[0]), str(int(box.cls[0]))),
+                    "confidence": float(box.conf[0]),
+                })
+        else:
+            detections, timings = self.inferer.infer(img)
+            self.get_logger().debug(
+                f"Inference pre={timings['pre']:.1f}ms inf={timings['inf']:.1f}ms "
+                f"post={timings['post']:.1f}ms | detections={len(detections)}",
+                throttle_duration_sec=2.0)
 
         det_array = Detection2DArray()
         det_array.header = msg.header
