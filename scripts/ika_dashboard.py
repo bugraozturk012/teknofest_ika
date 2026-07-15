@@ -22,7 +22,7 @@ from teknofest_ika.otonomi.topics import (
     BATTERY_TOPIC, IMU_TOPIC, EKF_ODOM_TOPIC,
     MISYON_WP_INDEX_TOPIC,
     TARGETING_STATUS_TOPIC, SHOOT_RESULT_TOPIC,
-    CAMERA_FRONT_TOPIC, CAMERA_REAR_TOPIC, CAMERA_TARET_TOPIC,
+    CAMERA_IMAGE_TOPIC, CAMERA_REAR_TOPIC, CAMERA_TARET_TOPIC,
     YOLO_RAW_DEBUG_TOPIC, MAP_IMAGE_TOPIC,
 )
 
@@ -87,7 +87,7 @@ class DashboardNode(Node):
         self.create_subscription(UInt8,         MISYON_WP_INDEX_TOPIC,  self._wp,        10)
         self.create_subscription(String,        TARGETING_STATUS_TOPIC, self._targeting, 10)
         self.create_subscription(Bool,          SHOOT_RESULT_TOPIC,     self._shoot,     10)
-        self.create_subscription(Image,         CAMERA_FRONT_TOPIC,     self._c0,        be)
+        self.create_subscription(Image,         CAMERA_IMAGE_TOPIC,     self._c0,        be)
         self.create_subscription(Image,         CAMERA_REAR_TOPIC,      self._c1,        be)
         self.create_subscription(Image,         CAMERA_TARET_TOPIC,     self._c2,        be)
         self.create_subscription(Image,         YOLO_RAW_DEBUG_TOPIC,   self._c3,        be)

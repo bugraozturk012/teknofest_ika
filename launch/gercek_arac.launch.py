@@ -261,11 +261,10 @@ def generate_launch_description():
     # var olmayan bir udev symlink'iydi, v4l2_camera de bu kameranın tek
     # desteklediği MJPG formatını çözemiyordu (2026-07-14 oturumunda bulundu).
     # Ahmet'in oluşturduğu gerçek udev ismi: /dev/kamera_on (usb-2.3 portu).
-    # DİKKAT — webcam_ileri (aşağıda) de aynı /dev/kamera_on'u açmaya
-    # çalışıyor; ikisi aynı anda çalışırsa cihaz çakışması (busy) olabilir.
-    # Akşam Jetson'da doğrulanmalı: gerekirse webcam_ileri kaldırılıp
-    # preprocessing_node'un /camera/front/image_raw çıkışı da bu node'un
-    # /camera/image_raw görüntüsünden türetilmeli.
+    # Bu, ön kameranın TEK açıcısı — ayrı bir webcam_ileri node'u YOK
+    # (2026-07-15 sahada doğrulandı: aynı cihazı iki node açınca çakışma
+    # oluyordu). Ön kamera görüntüsüne ihtiyaç duyanlar (dashboard,
+    # veri_paketi) CAMERA_IMAGE_TOPIC'e (bu node'un çıktısı) abone.
     imx258 = Node(
         package='usb_cam',
         executable='usb_cam_node_exe',
@@ -421,31 +420,13 @@ def generate_launch_description():
         ]
     )
 
-    # Ön kamera — ileri sürüş görüntüsü (§6.12 zorunlu)
-    # DİKKAT: kamera_ana node'u (yukarıda) da /dev/kamera_on açıyor — ikisi
-    # aynı fiziksel kameraya bağlanmaya çalışıyor, aynı anda çalışırsa cihaz
-    # çakışması olabilir. Akşam Jetson'da doğrulanmalı.
-    webcam_ileri = Node(
-        package='usb_cam',
-        executable='usb_cam_node_exe',
-        name='webcam_ileri',
-        output='screen',
-        parameters=[{
-            'video_device':       '/dev/kamera_on',
-            'image_width':        1280,
-            'image_height':       720,
-            'framerate':          30.0,
-            'pixel_format':       'mjpeg2rgb',
-            'camera_name':        'ileri',
-            'camera_info_url':    '',
-            'auto_white_balance': True,
-            'autoexposure':       True,
-        }],
-        remappings=[
-            ('image_raw',   '/camera/front/image_raw'),
-            ('camera_info', '/camera/front/camera_info'),
-        ]
-    )
+    # Ön kamera — AYRI BİR NODE YOK. kamera_ana (yukarıda) zaten /dev/kamera_on'u
+    # açıp /camera/image_raw'a yayınlıyor — aynı fiziksel kamerayı iki node'un
+    # açmaya çalışması cihaz çakışmasına yol açıyordu (sahada doğrulandı,
+    # 2026-07-15: ikinci usb_cam_node_exe "terminate called after throwing an
+    # instance of 'char*'" ile çöktü). Ön kamera görüntüsüne ihtiyaç duyan
+    # tüketiciler (dashboard, veri_paketi) artık CAMERA_FRONT_TOPIC yerine
+    # doğrudan CAMERA_IMAGE_TOPIC'e (kamera_ana'nın çıktısı) abone.
 
     # Arka kamera — geri sürüş görüntüsü (§6.12 zorunlu)
     webcam_geri = Node(
@@ -475,7 +456,7 @@ def generate_launch_description():
         TimerAction(period=0.5,  actions=[e_stop]),
         TimerAction(period=1.0,  actions=[seri_kopru, lidar, scan_relay, os30a,
                                           imx258,
-                                          webcam_taret, webcam_ileri, webcam_geri]),
+                                          webcam_taret, webcam_geri]),
         TimerAction(period=2.0,  actions=[preprocessing]),
         TimerAction(period=3.0,  actions=[ekf]),
         TimerAction(period=5.0,  actions=[slam]),

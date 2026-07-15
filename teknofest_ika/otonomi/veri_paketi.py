@@ -45,7 +45,7 @@ except ImportError:
     CV_OK = False
 
 from teknofest_ika.otonomi.topics import (
-    CAMERA_FRONT_TOPIC as TOPIC_ILERI,
+    CAMERA_IMAGE_TOPIC as TOPIC_ILERI,
     CAMERA_REAR_TOPIC  as TOPIC_GERI,
     CAMERA_TARET_TOPIC as TOPIC_NISAN,
     MISYON_AKTIF_TOPIC, KAYIT_BASLAT_TOPIC, KAYIT_DURUMU_TOPIC,

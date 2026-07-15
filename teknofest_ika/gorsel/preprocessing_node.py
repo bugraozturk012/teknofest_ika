@@ -79,6 +79,11 @@ class PreprocessingNode(Node):
         self.sub_main = self.create_subscription(
             Image, CAMERA_IMAGE_TOPIC,
             self.cb_main_camera, qos_profile_sensor_data)
+        # NOT: CAMERA_FRONT_TOPIC'e artık hiçbir node yayın yapmıyor (ön kamera
+        # ile ana kamera aynı fiziksel cihaza indirgendi, cihaz çakışması
+        # nedeniyle — bkz. gercek_arac.launch.py). Bu abonelik zararsız
+        # şekilde beslenmeden kalır, kaldırılmadı çünkü CAMERA_FRONT_TOPIC
+        # ayrı bir kamera eklenirse yeniden kullanılabilir.
         self.sub_aux = self.create_subscription(
             Image, CAMERA_FRONT_TOPIC,
             self.cb_aux_camera, qos_profile_sensor_data)
