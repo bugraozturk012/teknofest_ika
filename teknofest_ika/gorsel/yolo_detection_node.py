@@ -13,8 +13,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
 from sensor_msgs.msg import Image
-from vision_msgs.msg import Detection2D, Detection2DArray, ObjectHypothesisWithPose
-from geometry_msgs.msg import Pose2D
+from vision_msgs.msg import Detection2D, Detection2DArray, ObjectHypothesisWithPose, Pose2D, Point2D
 from std_msgs.msg import Header
 
 from cv_bridge import CvBridge
@@ -157,7 +156,7 @@ class YoloDetectionNode(Node):
             w = x2 - x1
             h = y2 - y1
 
-            det.bbox.center = Pose2D(x=float(cx), y=float(cy), theta=0.0)
+            det.bbox.center = Pose2D(position=Point2D(x=float(cx), y=float(cy)), theta=0.0)
             det.bbox.size_x = float(w)
             det.bbox.size_y = float(h)
 
