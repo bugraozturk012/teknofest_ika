@@ -8,7 +8,11 @@ Başlatma:
   ros2 launch teknofest_ika gercek_harita.launch.py
 
 Harita Kaydetme (ayrı terminalde):
-  ros2 run nav2_map_server map_saver_cli -f ~/ika_ws/maps/gercek_harita
+  ros2 run nav2_map_server map_saver_cli -f ~/teknofest_ika_yazilim/maps/teknofest_harita
+  cd ~/ika_ws && colcon build --packages-select teknofest_ika --symlink-install
+  # ÖNEMLİ: gercek_arac.launch.py haritayı pkg_share/maps/teknofest_harita.pgm'den
+  # okur (install dizini) — dosya adı/dizin farklı olursa veya rebuild atlanırsa
+  # localization modu hiç tetiklenmez, araç sessizce mapping modunda kalır.
 
 Sıralama:
   0s  → robot_state_publisher

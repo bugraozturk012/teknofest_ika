@@ -18,21 +18,19 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import BatteryState, Imu, Image
 
 from teknofest_ika.otonomi.topics import (
-    E_STOP_TOPIC, MOD_AKTIF_TOPIC, FSM_STATE_TOPIC,
+    E_STOP_TOPIC, E_STOP_FORCE_GCS_TOPIC, MOD_AKTIF_TOPIC, FSM_STATE_TOPIC,
     BATTERY_TOPIC, IMU_TOPIC, EKF_ODOM_TOPIC,
     MISYON_WP_INDEX_TOPIC,
     TARGETING_STATUS_TOPIC, SHOOT_RESULT_TOPIC,
     CAMERA_FRONT_TOPIC, CAMERA_REAR_TOPIC, CAMERA_TARET_TOPIC,
-    YOLO_RAW_DEBUG_TOPIC,
+    YOLO_RAW_DEBUG_TOPIC, MAP_IMAGE_TOPIC,
 )
-
-MAP_IMAGE_TOPIC = '/map/image'
 
 from cv_bridge import CvBridge
 
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QFrame, QGridLayout, QPushButton, QSizePolicy,
+    QLabel, QFrame, QGridLayout, QPushButton, QSizePolicy, QMessageBox,
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QObject
 from PyQt5.QtGui import QFont, QPixmap, QImage
@@ -94,6 +92,14 @@ class DashboardNode(Node):
         self.create_subscription(Image,         CAMERA_TARET_TOPIC,     self._c2,        be)
         self.create_subscription(Image,         YOLO_RAW_DEBUG_TOPIC,   self._c3,        be)
         self.create_subscription(Image,         MAP_IMAGE_TOPIC,        self._c4,        be)
+
+        # GCS'den (bu dashboard) uzaktan E-STOP — WiFi/ROS2 üzerinden, LoRa'nın
+        # yerini alıyor (donanımda hiç LoRa modülü yok). Diğer 3 kaynaktan
+        # (imu/serial/rc) bağımsız, e_stop_node'da OR mantığıyla birleşiyor.
+        self._estop_gcs_pub = self.create_publisher(Bool, E_STOP_FORCE_GCS_TOPIC, 10)
+
+    def gcs_estop(self, aktif: bool):
+        self._estop_gcs_pub.publish(Bool(data=aktif))
 
     def _estop(self, m):     durum['e_stop']=m.data; durum['bag_ok']=True; _sig.guncelle.emit()
     def _mod(self, m):       durum['mod']=m.data; _sig.guncelle.emit()
@@ -162,13 +168,47 @@ class Kart(QFrame):
 
 # ── E-STOP ────────────────────────────────────────────────────────────────────
 class EStopKart(QFrame):
-    def __init__(self, parent=None):
+    def __init__(self, node: 'DashboardNode', parent=None):
         super().__init__(parent)
+        self._node = node
         lay = QVBoxLayout(self); lay.setContentsMargins(10, 8, 10, 8); lay.setSpacing(3)
         lay.addWidget(_l('ACİL DURDURMA', 8, color=DIM))
         self._v = _l('—', 15, bold=True); self._v.setWordWrap(True)
         lay.addWidget(self._v)
+
+        self._btn_dur = QPushButton('ACİL DURDUR')
+        self._btn_dur.setStyleSheet(
+            f'QPushButton{{background:{RED};color:white;border:none;'
+            f'border-radius:4px;padding:6px;font-weight:bold;font-size:10pt;}}'
+            f'QPushButton:hover{{background:#d32f2f;}}')
+        self._btn_dur.clicked.connect(self._durdur)
+        lay.addWidget(self._btn_dur)
+
+        self._btn_kaldir = QPushButton('E-STOP Kaldır (GCS)')
+        self._btn_kaldir.setStyleSheet(
+            f'QPushButton{{background:{LINE};color:{TEXT};border:none;'
+            f'border-radius:3px;padding:3px;font-size:8pt;}}'
+            f'QPushButton:hover{{background:#383838;}}')
+        self._btn_kaldir.clicked.connect(self._kaldir)
+        lay.addWidget(self._btn_kaldir)
+
         self.set(False)
+
+    def _durdur(self):
+        # Tetikleme onay istemez — acil durumda hız önemli.
+        self._node.gcs_estop(True)
+
+    def _kaldir(self):
+        # Kaldırma yanlışlıkla basmaya karşı onay ister; sadece GCS
+        # kaynağını temizler, diğer kaynaklardan (imu/serial/rc) biri hâlâ
+        # aktifse /e_stop True kalmaya devam eder (OR mantığı, e_stop_node).
+        cevap = QMessageBox.question(
+            self, 'E-STOP Kaldır',
+            'GCS kaynaklı E-STOP kaldırılsın mı?\n'
+            '(Fiziksel buton/IMU/RC aktifse araç yine duracaktır.)',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if cevap == QMessageBox.Yes:
+            self._node.gcs_estop(False)
 
     def set(self, aktif):
         c = RED if aktif else GREEN
@@ -322,8 +362,9 @@ class SensorPanel(QFrame):
 
 # ── Ana pencere ───────────────────────────────────────────────────────────────
 class Dashboard(QWidget):
-    def __init__(self):
+    def __init__(self, node: 'DashboardNode'):
         super().__init__()
+        self._node = node
         self.setWindowTitle('LYDİA İKA — GCS')
         self.resize(1500, 880)
         self.setStyleSheet(f'QWidget{{background:{BG};}}')
@@ -365,7 +406,7 @@ class Dashboard(QWidget):
         f = QFrame(); f.setFixedWidth(178)
         f.setStyleSheet('QFrame{background:transparent;border:none;}')
         lay = QVBoxLayout(f); lay.setContentsMargins(0,0,0,0); lay.setSpacing(6)
-        self.estop = EStopKart()
+        self.estop = EStopKart(self._node)
         self.kmod  = Kart('Mod', 14)
         self.kfsm  = Kart('Parkur Aşaması', 13)
         self.sure  = SureKarti()
@@ -417,7 +458,8 @@ class Dashboard(QWidget):
             GREEN if v>29.6 else AMBER if v>28.0 else RED if v>0 else DIM)
 
         a = durum['akim']
-        sp.akim.set(f'{a:.1f} A', RED if a>30 else AMBER if a>20 else TEXT)
+        sp.akim.set(f'{a:.1f} A' if b>=0 else '—',
+            RED if a>30 else AMBER if a>20 else (TEXT if b>=0 else DIM))
 
         tgt = durum['targeting']
         sp.target.set(tgt, TARGETING_R.get(tgt, TEXT))
@@ -450,7 +492,7 @@ def main():
     threading.Thread(target=rclpy.spin, args=(node,), daemon=True).start()
 
     app = QApplication(sys.argv)
-    win = Dashboard()
+    win = Dashboard(node)
     win.show()
     try:    sys.exit(app.exec_())
     finally:

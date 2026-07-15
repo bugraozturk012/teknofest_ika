@@ -227,6 +227,13 @@ def generate_launch_description():
         name='mod_yoneticisi', output='screen',
         parameters=[{'use_sim_time': False}]
     )
+    # Taret RC Köprüsü — sağ stick MANUEL+SWB'de Turret UNO'ya pan/tilt iletir
+    taret_rc_koprusu = Node(
+        package='teknofest_ika', executable='taret_rc_koprusu',
+        name='taret_rc_koprusu', output='screen',
+        parameters=[{'use_sim_time': False,
+                     'port': '/dev/ttyCH341USB0', 'baud': 115200}]
+    )
     # NOT: koni_costmap.py kasıtlı olarak başlatılmıyor — /cone_positions
     # (PoseArray) üreticisi yok, koni tespiti cone_fusion_node tarafından
     # LiDAR+YOLO füzyonuyla doğrudan /costmap/cone_cloud'a yazılıyor (aşağıda
@@ -248,23 +255,32 @@ def generate_launch_description():
     )
 
 
-    # ── WaveShare IMX258 Ana Kamera (13MP CSI) ───────────────────────────────
-    # Jetson'da CSI kamera v4l2_camera veya gscam2 ile açılır.
-    # Udev (bir kez): /dev/video_imx258 symlink oluştur
-    #   ls /dev/video* ile CSI device'ı bul, ardından:
-    #   echo 'SUBSYSTEM=="video4linux", ATTR{name}=="vi-output...", SYMLINK+="video_imx258"' \
-    #       | sudo tee /etc/udev/rules.d/99-imx258.rules
-    #   sudo udevadm control --reload-rules && sudo udevadm trigger
+    # ── Ana Kamera (YOLO'ya giden görüntü) ────────────────────────────────────
+    # ESKİ VARSAYIM YANLIŞTI: burası bir CSI/IMX258 kamerası değil, gerçek
+    # donanımda "WebCamera" (UVC) cihazı — /dev/video_imx258 hiçbir zaman
+    # var olmayan bir udev symlink'iydi, v4l2_camera de bu kameranın tek
+    # desteklediği MJPG formatını çözemiyordu (2026-07-14 oturumunda bulundu).
+    # Ahmet'in oluşturduğu gerçek udev ismi: /dev/kamera_on (usb-2.3 portu).
+    # DİKKAT — webcam_ileri (aşağıda) de aynı /dev/kamera_on'u açmaya
+    # çalışıyor; ikisi aynı anda çalışırsa cihaz çakışması (busy) olabilir.
+    # Akşam Jetson'da doğrulanmalı: gerekirse webcam_ileri kaldırılıp
+    # preprocessing_node'un /camera/front/image_raw çıkışı da bu node'un
+    # /camera/image_raw görüntüsünden türetilmeli.
     imx258 = Node(
-        package='v4l2_camera',
-        executable='v4l2_camera_node',
-        name='imx258',
+        package='usb_cam',
+        executable='usb_cam_node_exe',
+        name='kamera_ana',
         output='screen',
         parameters=[{
-            'video_device':  '/dev/video_imx258',
-            'image_size':    [1280, 720],
-            'pixel_format':  'YUYV',
-            'camera_frame_id': 'camera_link',
+            'video_device':       '/dev/kamera_on',
+            'image_width':        1280,
+            'image_height':       720,
+            'framerate':          30.0,
+            'pixel_format':       'mjpeg2rgb',
+            'camera_name':        'ana',
+            'camera_info_url':    '',
+            'auto_white_balance': True,
+            'autoexposure':       True,
         }],
         remappings=[
             ('image_raw',   '/camera/image_raw'),
@@ -346,6 +362,14 @@ def generate_launch_description():
         }]
     )
 
+    # ── SLAM Haritası → GCS Dashboard Görüntüsü ───────────────────────────────
+    # /map (OccupancyGrid) → /map/image (Image) — slam_toolbox'tan sonra başlamalı
+    map_image = Node(
+        package='teknofest_ika', executable='map_image_node',
+        name='map_image_node', output='screen',
+        parameters=[{'use_sim_time': False}]
+    )
+
     # ── Watchdog (Kritik topic sağlık izleme) ─────────────────────────────────
     watchdog = Node(
         package='teknofest_ika', executable='watchdog',
@@ -367,44 +391,12 @@ def generate_launch_description():
         }]
     )
 
-    # ── LR02 433MHz LoRa GCS Köprüsü ─────────────────────────────────────────
-    # Udev (bir kez): /dev/lora symlink oluştur
-    #   echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="2303", SYMLINK+="lora"' \
-    #       | sudo tee /etc/udev/rules.d/99-lora.rules
-    #   sudo udevadm control --reload-rules && sudo udevadm trigger
-    lora = Node(
-        package='teknofest_ika',
-        executable='lora_gcs',
-        name='lora_gcs',
-        output='screen',
-        parameters=[{
-            'port':       '/dev/lora',
-            'baud':       9600,
-            'publish_hz': 1.0,
-            'at_init':    True,
-        }]
-    )
-
     # ── Microcase 720P Webcam'ler — Şartname §6.12: 3 kamera zorunlu ────────────
     #
-    # 3 Microcase 720P aynı USB VID:PID paylaşır → udev'de by-path ile ayırt et.
-    # Hangi kamera hangi USB portuna takılı → lsusb -t ile bak, ardından:
-    #
-    #   Taret (nişan):
-    #     echo 'SUBSYSTEM=="video4linux", KERNELS=="<PORT_TARET>", SYMLINK+="webcam_taret"' \
-    #         | sudo tee /etc/udev/rules.d/99-webcam-taret.rules
-    #
-    #   Ön (ileri):
-    #     echo 'SUBSYSTEM=="video4linux", KERNELS=="<PORT_ILERI>", SYMLINK+="webcam_ileri"' \
-    #         | sudo tee /etc/udev/rules.d/99-webcam-ileri.rules
-    #
-    #   Arka (geri):
-    #     echo 'SUBSYSTEM=="video4linux", KERNELS=="<PORT_GERI>", SYMLINK+="webcam_geri"' \
-    #         | sudo tee /etc/udev/rules.d/99-webcam-geri.rules
-    #
-    #   sudo udevadm control --reload-rules && sudo udevadm trigger
-    #
-    # Udev yoksa /dev/video0, /dev/video1, /dev/video2 olarak dene.
+    # Gerçek udev isimleri Ahmet'in /etc/udev/rules.d/99-ika.rules kuralında
+    # zaten oluşturulmuş (2026-07-13 doğrulandı) — aşağıdaki webcam_taret/
+    # webcam_ileri/webcam_geri placeholder isimleri hiç var olmayan symlink'lerdi,
+    # gerçek isimlerle (kamera_nisan, kamera_on, kamera_arka) değiştirildi.
 
     # Taret kamerası — nişan alma (taret üzeri)
     webcam_taret = Node(
@@ -413,7 +405,7 @@ def generate_launch_description():
         name='webcam_taret',
         output='screen',
         parameters=[{
-            'video_device':       '/dev/webcam_taret',
+            'video_device':       '/dev/kamera_nisan',
             'image_width':        1280,
             'image_height':       720,
             'framerate':          30.0,
@@ -430,13 +422,16 @@ def generate_launch_description():
     )
 
     # Ön kamera — ileri sürüş görüntüsü (§6.12 zorunlu)
+    # DİKKAT: kamera_ana node'u (yukarıda) da /dev/kamera_on açıyor — ikisi
+    # aynı fiziksel kameraya bağlanmaya çalışıyor, aynı anda çalışırsa cihaz
+    # çakışması olabilir. Akşam Jetson'da doğrulanmalı.
     webcam_ileri = Node(
         package='usb_cam',
         executable='usb_cam_node_exe',
         name='webcam_ileri',
         output='screen',
         parameters=[{
-            'video_device':       '/dev/webcam_ileri',
+            'video_device':       '/dev/kamera_on',
             'image_width':        1280,
             'image_height':       720,
             'framerate':          30.0,
@@ -459,7 +454,7 @@ def generate_launch_description():
         name='webcam_geri',
         output='screen',
         parameters=[{
-            'video_device':       '/dev/webcam_geri',
+            'video_device':       '/dev/kamera_arka',
             'image_width':        1280,
             'image_height':       720,
             'framerate':          30.0,
@@ -480,16 +475,16 @@ def generate_launch_description():
         TimerAction(period=0.5,  actions=[e_stop]),
         TimerAction(period=1.0,  actions=[seri_kopru, lidar, scan_relay, os30a,
                                           imx258,
-                                          webcam_taret, webcam_ileri, webcam_geri,
-                                          lora]),
+                                          webcam_taret, webcam_ileri, webcam_geri]),
         TimerAction(period=2.0,  actions=[preprocessing]),
         TimerAction(period=3.0,  actions=[ekf]),
         TimerAction(period=5.0,  actions=[slam]),
-        TimerAction(period=8.0,  actions=[nav2]),
+        TimerAction(period=8.0,  actions=[nav2, map_image]),
         TimerAction(period=10.0, actions=[ackermann, imu_guvenlik,
                                           anti_rollback, mod_yoneticisi]),
         TimerAction(period=11.5, actions=[veri_paketi, terrain_adapter,
-                                          kayar_kalman, kayar_costmap]),
+                                          kayar_kalman, kayar_costmap,
+                                          taret_rc_koprusu]),
         TimerAction(period=12.0, actions=[watchdog]),
         TimerAction(period=13.0, actions=[yolo_detection, cone_fusion,
                                           targeting, servo_controller]),

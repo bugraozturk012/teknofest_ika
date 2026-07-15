@@ -32,7 +32,7 @@ E-STOP KAYNAK MİMARİSİ (OR mantığı):
   /e_stop/force'a birden fazla node yayın yapar:
     - imu_guvenlik  : devrilme tespiti (10 Hz sürekli)
     - seri_kopru    : fiziksel buton (olay bazlı)
-    - lora_gcs      : GCS komutu (olay bazlı)
+    - ika_dashboard : GCS komutu, WiFi/ROS2 üzerinden (olay bazlı)
 
   Her kaynak ayrı takip edilir. Herhangi biri True → /e_stop True.
   Tümü aynı anda False göndermeden E-STOP temizlenmez.
