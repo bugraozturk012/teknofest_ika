@@ -21,8 +21,8 @@ DENETLENEN TOPIC'LER:
   /detections/yolo     -> YOLO       (timeout: 3.0s)
   /ika/detections      -> YOLOAdapter(timeout: 3.0s)
 
-NOT: AnyMsg kullanir — mesaj tipinden bagimsiz, sadece topic
-     canliligini kontrol eder. Deserialization yapmaz.
+NOT: raw=True abonelik kullanir — mesaj icerigini deserialize etmez,
+     sadece topic canliligini kontrol eder.
 
 TEST:
   ros2 topic echo /sensor/fault
@@ -32,8 +32,10 @@ import threading
 
 import rclpy
 from rclpy.node import Node
-from rclpy.msg import AnyMsg
-from std_msgs.msg import String
+from std_msgs.msg import String, Bool
+from sensor_msgs.msg import LaserScan, Imu, BatteryState, Image
+from nav_msgs.msg import Odometry
+from vision_msgs.msg import Detection2DArray
 
 from teknofest_ika.otonomi.topics import (
     SCAN_LIDAR_TOPIC, SCAN_FILTERED_TOPIC, ODOM_TOPIC, IMU_TOPIC,
@@ -65,6 +67,22 @@ CRITICAL_TOPICS = {
     # targeting_node sadece misyon_fsm SHOOT_APPROACH state'inde aktif.
 }
 
+# ROS2 Humble'da rclpy.msg.AnyMsg diye bir şey yok (ROS1'e özgüydü) — her
+# topic'in gerçek mesaj tipiyle raw=True abonelik aynı sonucu veriyor
+# (içerik deserialize edilmiyor, sadece canlılık takip ediliyor).
+_TOPIC_MSG_TYPE = {
+    SCAN_LIDAR_TOPIC:       LaserScan,
+    SCAN_FILTERED_TOPIC:    LaserScan,
+    ODOM_TOPIC:             Odometry,
+    IMU_TOPIC:              Imu,
+    BATTERY_TOPIC:          BatteryState,
+    EKF_ODOM_TOPIC:         Odometry,
+    CAMERA_PROCESSED_TOPIC: Image,
+    YOLO_RAW_TOPIC:         Detection2DArray,
+    DETECTIONS_TOPIC:       String,
+    E_STOP_TOPIC:           Bool,
+}
+
 STARTUP_GRACE_S = 30.0   # YOLO TensorRT engine yükleme süresi (~5-10s) dahil
 
 
@@ -82,15 +100,15 @@ class Watchdog(Node):
         for topic in CRITICAL_TOPICS:
             self._last_seen[topic] = 0.0
             self.create_subscription(
-                AnyMsg, topic,
+                _TOPIC_MSG_TYPE[topic], topic,
                 lambda msg, t=topic: self._cb(t),
-                10)
+                10, raw=True)
 
         self.create_timer(1.0, self._check)
 
         self.get_logger().info(
             f'Watchdog hazir | {len(CRITICAL_TOPICS)} topic izleniyor | '
-            f'AnyMsg (tip bagimsiz)'
+            f'raw=True (deserialize edilmiyor)'
         )
 
     def _cb(self, topic: str):
