@@ -246,6 +246,46 @@ def hizlanma_hiz_profili(dist: float, max_hiz: float, toplam_mesafe: float,
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# 11b. Otomatik Fren Oranı (ackermann_converter.py)
+# ─────────────────────────────────────────────────────────────────────────
+
+def fren_hedef_hesapla(onceki_hiz: float, hedef_hiz: float, dt: float,
+                        esik_min: float, esik_max: float,
+                        tam_dur_oran: float) -> float:
+    """
+    Hedef hızdaki ani düşüşten fren oranı [0-1] hesaplar.
+    Yalnızca YAVAŞLAMA isteğinde (hız büyüklüğü azalırken) fren üretir;
+    hızlanırken veya sabit hızda 0 döner. Hedef hız tam 0 ise (gerçek dur
+    komutu) en az tam_dur_oran uygulanır, ivme yavaş hesaplansa bile.
+    """
+    if dt <= 0.0:
+        return 0.0
+    yavaslama = abs(onceki_hiz) - abs(hedef_hiz)
+    if yavaslama <= 0.0:
+        oran = 0.0
+    else:
+        ivme = yavaslama / dt
+        if ivme <= esik_min:
+            oran = 0.0
+        elif ivme >= esik_max:
+            oran = 1.0
+        else:
+            oran = (ivme - esik_min) / (esik_max - esik_min)
+    if hedef_hiz == 0.0:
+        oran = max(oran, tam_dur_oran)
+    return oran
+
+
+def fren_yumusat(mevcut: float, hedef: float, ramp_oran_per_s: float, dt: float) -> float:
+    """Fren oranını [0-1] ramp_oran_per_s hızıyla sınırlayarak hedefe yaklaştırır."""
+    if dt <= 0.0:
+        return mevcut
+    max_degisim = ramp_oran_per_s * dt
+    fark = max(-max_degisim, min(max_degisim, hedef - mevcut))
+    return mevcut + fark
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # 11. DetectionsStore — misyon_fsm SMACH state'lerinin paylaştığı,
 #     thread-safe /ika/detections son-durum deposu.
 # ─────────────────────────────────────────────────────────────────────────

@@ -33,6 +33,8 @@ from teknofest_ika.otonomi.pure_logic import (  # noqa: E402
     stop_check,
     hizlanma_hiz_profili,
     DetectionsStore,
+    fren_hedef_hesapla,
+    fren_yumusat,
 )
 from teknofest_ika.otonomi.topics import BATTERY_WARN_SOC, BATTERY_CRITICAL_SOC  # noqa: E402
 
@@ -323,6 +325,33 @@ ds2.update({'tabela': 3})            # ikinci update _DEFAULT'tan merge eder
 check("ikinci update e_stop _DEFAULT'a döner",       ds2.get_field('e_stop'),       False)
 check("ikinci update stop_var _DEFAULT'a döner",     ds2.get_field('stop_var'),     False)
 check("ikinci update tabela yenilendi",              ds2.get_field('tabela'),       3)
+
+# ─── 15. Otomatik Fren Oranı (ackermann_converter.py) ───────────────────────
+print("\n=== 15. Otomatik Fren Oranı ===")
+
+ESIK_MIN = 1.5
+ESIK_MAX = 5.0
+TAM_DUR_ORAN = 0.3
+
+
+def fren_hedef(onceki, hedef, dt):
+    return fren_hedef_hesapla(onceki, hedef, dt, ESIK_MIN, ESIK_MAX, TAM_DUR_ORAN)
+
+
+check("hızlanırken fren yok",              fren_hedef(1.0, 2.0, 0.1), 0.0)
+check("sabit hızda fren yok",              fren_hedef(2.0, 2.0, 0.5), 0.0)
+check("eşik altı yavaşlama → fren yok",    fren_hedef(2.0, 1.9, 0.1), 0.0)
+check("orta yavaşlama → orantılı",         fren_hedef(3.0, 2.0, 0.5), 0.142857)
+check("aşırı yavaşlama → tam fren (1.0)",  fren_hedef(5.0, 0.5, 0.2), 1.0)
+check("tam dur → en az TAM_DUR_ORAN",      fren_hedef(0.5, 0.0, 1.0), 0.3)
+check("geri viteste yavaşlama → orantılı", fren_hedef(-3.0, -1.0, 0.5), 0.714286)
+check("dt=0 → fren yok (güvenli varsayılan)", fren_hedef(3.0, 0.0, 0.0), 0.0)
+
+check("yumuşatma: hedefe doğru sınırlı artış",  fren_yumusat(0.0, 1.0, 0.5, 1.0), 0.5)
+check("yumuşatma: küçük dt → küçük adım",       fren_yumusat(0.0, 1.0, 0.5, 0.1), 0.05)
+check("yumuşatma: azalış da sınırlı",           fren_yumusat(0.8, 0.0, 0.5, 1.0), 0.3)
+check("yumuşatma: hedefe zaten ulaşılmış",      fren_yumusat(0.5, 0.5, 0.5, 1.0), 0.5)
+check("yumuşatma: dt=0 → değişmez",             fren_yumusat(0.4, 1.0, 0.5, 0.0), 0.4)
 
 # ─── Sonuç ───────────────────────────────────────────────────────────────────
 print(f"\n{'='*45}")

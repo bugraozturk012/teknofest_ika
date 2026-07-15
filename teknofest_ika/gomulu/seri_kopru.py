@@ -15,11 +15,13 @@ PROTOKOL (115200 baud, 8N1 — ASCII YOK, saf binary):
     PKT_DUR    (0x02): dur komutu
     PKT_LAZER  (0x03): int16 0/1 (kapat/aç)
     PKT_HB     (0x04): heartbeat
+    PKT_FREN   (0x08): int16 fren_binde [‰, 0-1000]
 
   MCU → Jetson:
     PKT_ENC   (0x10): uint16 sol_enc, uint16 sag_enc (0-1023 ADC)
     PKT_IMU_YP(0x11): int16 yaw_dd [1/10°], int16 pitch_dd [1/10°]
     PKT_IMU_R (0x12): int16 roll_dd [1/10°]
+    PKT_RC3   (0x23): int16 ch_tilt [µs], int16 ch_taret_aktif [µs]
 
 ENKODER:
   AS5600 analog → MCU ADC → 10-bit (0–1023)
@@ -42,14 +44,14 @@ from geometry_msgs.msg import TransformStamped
 from ackermann_msgs.msg import AckermannDriveStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu, BatteryState
-from std_msgs.msg import Bool, Int16, Float32MultiArray
+from std_msgs.msg import Bool, Int16, UInt16, Float32MultiArray
 from tf2_ros import TransformBroadcaster
 import serial
 
 from teknofest_ika.otonomi.topics import (
     ACKERMANN_CMD_TOPIC, SHOOT_RESULT_TOPIC, TARET_PAN_TOPIC, TARET_TILT_TOPIC,
     ODOM_TOPIC, IMU_TOPIC, BATTERY_TOPIC, RC_INPUT_TOPIC,
-    E_STOP_FORCE_SERIAL_TOPIC, E_STOP_TOPIC, SHOOT_CMD_TOPIC,
+    E_STOP_FORCE_SERIAL_TOPIC, E_STOP_TOPIC, SHOOT_CMD_TOPIC, FREN_KOMUT_TOPIC,
 )
 from teknofest_ika.otonomi.pure_logic import (
     paket_olustur, paket_dogrula, encoder_delta, batarya_yuzdesi,
@@ -69,6 +71,7 @@ PKT_HB        = 0x04   # Jetson→MEGA: heartbeat
 PKT_SERVO_PAN = 0x05   # Jetson→MEGA: pan açısı [0-180°] → NANO'ya iletilir
 PKT_SERVO_TLT = 0x06   # Jetson→MEGA: tilt açısı [0-180°] → NANO'ya iletilir
 PKT_ESTOP_OUT = 0x07   # Jetson→MEGA: acil durdurma bildirimi (Arduino motor/servo kes)
+PKT_FREN      = 0x08   # Jetson→MEGA: fren miktarı [‰, 0-1000] — step-motorlu hidrolik fren
 
 PKT_ENC       = 0x10   # MEGA→Jetson: enkoder sol + sağ
 PKT_IMU_YP    = 0x11   # MEGA→Jetson: yaw + pitch (1/10 derece)
@@ -81,6 +84,7 @@ PKT_AKIM      = 0x13   # MEGA→Jetson: motor akımı [mA] + batarya [mV]
 PKT_RC        = 0x20   # MEGA→Jetson: RC ch1 + ch2 (throttle + steering, µs)
 PKT_RC2       = 0x21   # MEGA→Jetson: RC ch5 + ch3 (mode switch + aux, µs)
 PKT_ESTOP_IN  = 0x22   # MEGA→Jetson: Arduino E-STOP butonu algıladı
+PKT_RC3       = 0x23   # MEGA→Jetson: RC ch_tilt + ch_taret_aktif (µs)
 
 
 # _paket_olustur / _paket_dogrula → pure_logic.py'ye taşındı (DRY + rclpy
@@ -189,6 +193,10 @@ class SeriKopru(Node):
                                  lambda m: self._paket_gonder(PKT_SERVO_PAN, m.data, 0), 10)
         self.create_subscription(Int16, TARET_TILT_TOPIC,
                                  lambda m: self._paket_gonder(PKT_SERVO_TLT, m.data, 0), 10)
+
+        # Fren komutu — ackermann_converter'dan gelir (otomatik hesaplanmış oran)
+        self.create_subscription(UInt16, FREN_KOMUT_TOPIC,
+                                 lambda m: self._paket_gonder(PKT_FREN, m.data, 0), 10)
         self._pub      = self.create_publisher(Odometry, ODOM_TOPIC, qos_odom)
         self._imu_pub  = self.create_publisher(Imu, IMU_TOPIC, qos_odom)
         self._tf       = TransformBroadcaster(self)
@@ -200,19 +208,22 @@ class SeriKopru(Node):
         self._BATARYA_V_MIN = 28.0
         self._BATARYA_UYARI = 29.6   # 3.7V/hücre × 8 → nominal = uyarı eşiği
 
-        # RC kanal yayıncısı — mod_yoneticisi dinler
-        # Format: [ch1_throttle_us, ch2_steering_us, ch5_mode_us, ch3_aux_us]
+        # RC kanal yayıncısı — mod_yoneticisi + taret_rc_koprusu dinler
+        # Format: [ch1_throttle_us, ch2_steering_us, ch5_mode_us, ch3_aux_us,
+        #          ch_tilt_us, ch_taret_aktif_us]
         self._rc_pub   = self.create_publisher(Float32MultiArray, RC_INPUT_TOPIC, 10)
 
-        # RC kanalları biriktirici (PKT_RC + PKT_RC2 ayrı gelir)
+        # RC kanalları biriktirici (PKT_RC + PKT_RC2 + PKT_RC3 ayrı gelir)
         self._rc_ch1   = 1500.0
         self._rc_ch2   = 1500.0
         self._rc_ch5   = 1500.0   # Varsayılan: MANUAL (güvenli başlangıç)
         self._rc_ch3   = 1000.0   # ch3 aux — lazer tetikleyici
+        self._rc_tilt         = 1500.0
+        self._rc_taret_aktif  = 1000.0   # Varsayılan: taret kapalı
 
         # Önceden tahsis edilmiş mesajlar — hot path'de GC baskısını azaltır
         self._rc_msg   = Float32MultiArray()
-        self._rc_msg.data = [0.0, 0.0, 0.0, 0.0]
+        self._rc_msg.data = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
         # Lazer aktifken hareketi kilitle (şartname: atışta -10 ceza)
         self._lazer_aktif = False
@@ -374,6 +385,12 @@ class SeriKopru(Node):
             self._rc_ch3 = float(_v1_oku(ham))
             self._rc_yayinla()
 
+        elif komut == PKT_RC3:
+            # RC ch_tilt (µs), ch_taret_aktif (µs)
+            self._rc_tilt        = float(_v0_oku(ham))
+            self._rc_taret_aktif = float(_v1_oku(ham))
+            self._rc_yayinla()
+
         elif komut == PKT_ESTOP_IN:
             # Arduino E-STOP butonunu algıladı → /e_stop/force'a yaz (e_stop_node toplar)
             aktif = (_v0_oku(ham) != 0)
@@ -421,6 +438,8 @@ class SeriKopru(Node):
         self._rc_msg.data[1] = self._rc_ch2
         self._rc_msg.data[2] = self._rc_ch5
         self._rc_msg.data[3] = self._rc_ch3
+        self._rc_msg.data[4] = self._rc_tilt
+        self._rc_msg.data[5] = self._rc_taret_aktif
         self._rc_pub.publish(self._rc_msg)
 
     # ── Odometri (10-bit analog AS5600, overflow korumalı) ──────────────────

@@ -89,12 +89,17 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from geometry_msgs.msg import Twist
 from ackermann_msgs.msg import AckermannDriveStamped
+from std_msgs.msg import UInt16
 
 from teknofest_ika.otonomi.topics import (
     MUX_CMD_VEL_TOPIC, ACKERMANN_CMD_TOPIC, E_STOP_TOPIC,
     ANTI_ROLLBACK_AKTIF_TOPIC, ANTI_ROLLBACK_CMD_TOPIC,
+    FREN_KOMUT_TOPIC, FREN_IVME_ESIK_MIN, FREN_IVME_ESIK_MAX,
+    FREN_TAM_DUR_ORAN, FREN_RAMP_PER_S,
 )
-from teknofest_ika.otonomi.pure_logic import ackermann_steering
+from teknofest_ika.otonomi.pure_logic import (
+    ackermann_steering, fren_hedef_hesapla, fren_yumusat,
+)
 
 
 class AckermannConverter(Node):
@@ -146,6 +151,14 @@ class AckermannConverter(Node):
         self._override_active = False
         self._override_twist  = Twist()
 
+        # ── Otomatik fren state'i ─────────────────────────────────────────────
+        # Hedef hızdaki ani düşüşten fren oranı hesaplanır (bkz. pure_logic.
+        # fren_hedef_hesapla) — ölçekler PLACEHOLDER, fiziksel testte kalibre
+        # edilecek (topics.py: FREN_IVME_ESIK_MIN/MAX, FREN_TAM_DUR_ORAN).
+        self._onceki_hiz   = 0.0
+        self._onceki_zaman = None
+        self._fren_orani   = 0.0   # [0-1], yumuşatılmış (rate-limited) çıkış
+
         # ── Subscriber: /mux/cmd_vel — mod_yoneticisi çıkışı ─────────────────
         self._sub = self.create_subscription(
             Twist,
@@ -174,6 +187,9 @@ class AckermannConverter(Node):
             ACKERMANN_CMD_TOPIC,
             qos_reliable,
         )
+
+        # ── Publisher: /fren_komut ─────────────────────────────────────────────
+        self._fren_pub = self.create_publisher(UInt16, FREN_KOMUT_TOPIC, 10)
 
         # Önceden tahsis edilmiş mesajlar — hot path'de GC baskısını azaltır
         self._ackermann_msg = AckermannDriveStamped()
@@ -205,6 +221,10 @@ class AckermannConverter(Node):
         if self._e_stop_aktif:
             self._stop_msg.header.stamp = self.get_clock().now().to_msg()
             self._pub.publish(self._stop_msg)
+            self._onceki_hiz   = 0.0
+            self._onceki_zaman = None
+            self._fren_orani   = 0.0
+            self._fren_pub.publish(UInt16(data=0))
             return
 
         # anti_rollback aktifse Nav2 komutunu yoksay
@@ -225,8 +245,23 @@ class AckermannConverter(Node):
         # test_birim.py bu fonksiyonu doğrudan test eder.
         steering = ackermann_steering(v, ω, self._L, self._delta_max)
 
-        # ── Hız sınırlaması (VESC akım limiti) ───────────────────────────────
+        # ── Hız sınırlaması (Karaşimşek/buja kontrolcü limiti) ────────────────
         speed = max(-self._v_max, min(self._v_max, v))
+
+        # ── Otomatik fren — hedef hızdaki ani düşüşten oranı hesapla ─────────
+        simdi = self.get_clock().now()
+        if self._onceki_zaman is not None:
+            dt = (simdi - self._onceki_zaman).nanoseconds / 1e9
+            hedef_oran = fren_hedef_hesapla(
+                self._onceki_hiz, speed, dt,
+                FREN_IVME_ESIK_MIN, FREN_IVME_ESIK_MAX, FREN_TAM_DUR_ORAN,
+            )
+            self._fren_orani = fren_yumusat(
+                self._fren_orani, hedef_oran, FREN_RAMP_PER_S / 1000.0, dt,
+            )
+        self._onceki_hiz   = speed
+        self._onceki_zaman = simdi
+        self._fren_pub.publish(UInt16(data=int(self._fren_orani * 1000)))
 
         # ── Mesaj güncelle ve yayınla ─────────────────────────────────────────
         self._ackermann_msg.header.stamp     = self.get_clock().now().to_msg()
@@ -254,6 +289,10 @@ class AckermannConverter(Node):
         if elapsed > self._timeout:
             self._stop_msg.header.stamp = self.get_clock().now().to_msg()
             self._pub.publish(self._stop_msg)
+            self._onceki_hiz   = 0.0
+            self._onceki_zaman = None
+            self._fren_orani   = 0.0
+            self._fren_pub.publish(UInt16(data=0))
 
             self.get_logger().warn(
                 f'[WATCHDOG] /cmd_vel {elapsed:.2f}s süredir gelmiyor → araç durduruldu.',

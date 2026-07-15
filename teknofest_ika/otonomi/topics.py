@@ -129,6 +129,11 @@ CMD_VEL_TOPIC = "/cmd_vel"
 # Mesaj tipi : nav_msgs/OccupancyGrid
 MAP_TOPIC = "/map"
 
+# SLAM haritasının GCS dashboard için gri tonlamalı görüntü hali
+# Üretici: map_image_node (MAP_TOPIC'i dinler)
+# Mesaj tipi : sensor_msgs/Image (bgr8)
+MAP_IMAGE_TOPIC = "/map/image"
+
 # Araç anlık konumu (SLAM lokalizasyon)
 # Mesaj tipi : geometry_msgs/PoseWithCovarianceStamped
 POSE_TOPIC = "/pose"
@@ -226,6 +231,7 @@ BATTERY_TOPIC = "/battery/status"
 SERIAL_LIDAR   = "/dev/lidar"        # YDLidar Tmini Pro
 SERIAL_IMU     = "/dev/imu_arduino"  # Arduino Nano (IMU + servo + lazer)
 SERIAL_ODOM    = "/dev/odom_arduino" # Arduino Mega (enkoder + VESC)
+SERIAL_TARET   = "/dev/ttyCH341USB0" # Turret UNO (PCA9685 + BMI160) — henüz udev symlink yok
 SERIAL_BAUD    = 115200
 
 # ─────────────────────────────────────────────
@@ -340,6 +346,17 @@ YOLO_CLASS_ID_TOPIC = "/yolo/class_id"  # std_msgs/UInt8
 
 ACKERMANN_CMD_TOPIC = "/ackermann_cmd"  # AckermannDriveStamped
 
+# Fren komutu — ackermann_converter, hedef hızdaki ani düşüşten otomatik
+# hesaplar, seri_kopru bunu PKT_FREN olarak Arduino'ya iletir.
+FREN_KOMUT_TOPIC = "/fren_komut"   # std_msgs/UInt16, ‰ (0-1000)
+
+# Fren hesabı kalibrasyon sabitleri — PLACEHOLDER, yumuşak/muhafazakâr
+# başlangıç değerleri, fiziksel testte ayarlanacak.
+FREN_IVME_ESIK_MIN  = 1.5    # [m/s²] — altında fren yok, motor coasting yeterli
+FREN_IVME_ESIK_MAX  = 5.0    # [m/s²] — üstünde tam fren (yüksek eşik = geç tetiklenir)
+FREN_TAM_DUR_ORAN   = 0.3    # hedef hız tam 0 olsa bile en fazla bu oranda fren (0-1)
+FREN_RAMP_PER_S     = 500.0  # [‰/s] fren yüzdesi değişim hızı sınırı — ani sıçramayı önler
+
 # ─────────────────────────────────────────────
 # KONTROL TOPIC'LERİ (node'lar arası iç protokol)
 # ─────────────────────────────────────────────
@@ -350,7 +367,7 @@ ACKERMANN_CMD_TOPIC = "/ackermann_cmd"  # AckermannDriveStamped
 E_STOP_FORCE_TOPIC       = "/e_stop/force"            # geriye dönük uyumluluk (kullanılmamalı)
 E_STOP_FORCE_IMU_TOPIC   = "/e_stop/force/imu"        # imu_guvenlik → devrilme
 E_STOP_FORCE_SERIAL_TOPIC= "/e_stop/force/serial"     # seri_kopru  → fiziksel buton
-E_STOP_FORCE_GCS_TOPIC   = "/e_stop/force/gcs"        # lora_gcs    → GCS komutu
+E_STOP_FORCE_GCS_TOPIC   = "/e_stop/force/gcs"        # ika_dashboard (WiFi) → GCS komutu
 E_STOP_FORCE_RC_TOPIC    = "/e_stop/force/rc"         # mod_yoneticisi → RC sinyal kaybı
 
 # GPIO kurulumu/fiziksel buton donanımı başarısız olduğunda True yayınlanır.
@@ -371,7 +388,9 @@ SHOOT_CMD_TOPIC      = "/shoot_command"   # lazer tetikleyici (Bool)
 MISYON_WP_INDEX_TOPIC = "/misyon/wp_index"  # mevcut waypoint indeksi (UInt8)
 
 # RC kumanda kanalları
-RC_INPUT_TOPIC = "/rc_input"   # Float32MultiArray [ch1,ch2,ch5,ch3] µs
+# Float32MultiArray [ch1_gaz, ch2_direksiyon/pan, ch5_mod, ch3_aux/lazer,
+#                     ch_tilt, ch_taret_aktif] µs
+RC_INPUT_TOPIC = "/rc_input"
 
 # Anti-rollback override
 ANTI_ROLLBACK_CMD_TOPIC   = "/anti_rollback/cmd"    # Twist — override komutu
