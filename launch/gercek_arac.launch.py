@@ -95,20 +95,19 @@ def generate_launch_description():
     #   cd ~/eys3d_ws && rosdep install -i --from-path src -y
     #   colcon build --symlink-install
     #   echo "source ~/eys3d_ws/install/setup.bash" >> ~/.bashrc
-    os30a = Node(
-        package='dm_preview',
-        executable='dm_preview_node',
-        name='os30a_node',
-        output='screen',
-        parameters=[{
-            'frame_id':        'os30a_link',
-            'color_width':     640,
-            'color_height':    360,
-            'depth_width':     640,
-            'depth_height':    360,
-            'fps':             30,
-            'enable_pointcloud': True,
-        }]
+    #
+    # DEĞİŞİKLİK (2026-07-15, sahada doğrulandı): dm_preview paketinin
+    # eys3d_ws derlemesi eksik/bozuk (vendor .so dosyası ve stereo_msgs
+    # bağımlılığı eksik, "package 'dm_preview' not found" ile TÜM launch'ı
+    # çökertiyordu). Aynı donanım için ÇALIŞAN bir alternatif paket var:
+    # ydlidar_os30a (dev_ws'te ayrı kurulu). Elle kısaltılmış parametrelerle
+    # değil, resmi launch dosyasıyla başlatılmalı — aksi halde derinlik
+    # akışı hiç üretilmiyor (2026-07-10 oturumunda bulunan bilinen sorun).
+    os30a = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(get_package_share_directory('ydlidar_os30a'),
+                         'launch', 'apc_camera_launch.py')
+        )
     )
 
     # ── E-STOP Node ───────────────────────────────────────────────────────────
