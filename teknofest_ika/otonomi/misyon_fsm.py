@@ -9,9 +9,14 @@ NE YAPAR:
   komutunu verir. Atış bölgesinde durur, nişan alır, ateş eder.
 
   Görüntü ekibinden /ika/detections (JSON) alır:
-    - hedef_var / hedef_hata_x / hedef_hata_y → nişan doğrulama
-    - kayar_yon                                 → KAYAR_ENGEL geçiş kararı
-    - tabela                                    → FSM bilgi (terrain_adapter halleder)
+    - kayar_yon → KAYAR_ENGEL geçiş kararı
+    - tabela    → FSM bilgi (terrain_adapter halleder)
+
+  NOT — hedef_var / hedef_hata_x / hedef_hata_y bu JSON'da hesaplanıp
+  taşınıyor ama FSM bunları HİÇ okumuyor; bilinçli bir tasarım kararı
+  (ekip: "hedef tahtasını tanıyacak, nişanlama yapmayacak"). YOLO'nun
+  hedef_tahtasi tespiti sadece kayıt/bilgi amaçlıdır. Gerçek nişan alma
+  tamamen ayrı ve YOLO'dan bağımsızdır — bkz. aşağıdaki ATIS waypoint notu.
 
 PROTOKOL ENTEGRASYONU (Ekip Protokol v1.0):
   Giriş : /ika/detections (JSON String) — Görüntü İşleme → Otomasyon
@@ -22,7 +27,9 @@ PROTOKOL ENTEGRASYONU (Ekip Protokol v1.0):
 ÖZEL DURUM MANTIĞI:
   DIK_EGIM waypoint : Şartname gereği hedefe varışta 2 saniye dur, sonra devam.
   KAYAR_ENGEL waypoint: kayar_yon != 'bilinmiyor' olana kadar bekle (max 10s).
-  ATIS waypoint    : hedef_hata_x/y ±5 piksel toleransa girince ateş et.
+  ATIS waypoint    : targeting_node etkinleştirilir (kendi HSV+Hough+PID'i
+                      ile hedef kilitler, YOLO hedef verisi kullanılmaz),
+                      "/targeting/status" == "ALIGNED" gelince ateş edilir.
 
 DURUM DİYAGRAMI:
   [IDLE] → [NAVIGATE] → [SHOOT_APPROACH] → [SHOOT] → [NAVIGATE]
