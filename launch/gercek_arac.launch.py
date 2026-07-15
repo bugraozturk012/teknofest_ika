@@ -133,7 +133,7 @@ def generate_launch_description():
         name='seri_kopru',
         output='screen',
         parameters=[{'use_sim_time': False,
-                     'port': '/dev/odom_arduino',
+                     'port': '/dev/mega',
                      'baud': 115200}]
     )
 

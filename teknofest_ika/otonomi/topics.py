@@ -229,8 +229,8 @@ BATTERY_TOPIC = "/battery/status"
 # ─────────────────────────────────────────────
 
 SERIAL_LIDAR   = "/dev/lidar"        # YDLidar Tmini Pro
-SERIAL_IMU     = "/dev/imu_arduino"  # Arduino Nano (IMU + servo + lazer)
-SERIAL_ODOM    = "/dev/odom_arduino" # Arduino Mega (enkoder + VESC)
+SERIAL_IMU     = "/dev/imu_arduino"  # Arduino Nano (IMU + servo + lazer) — artık kullanılmıyor, IMU Mega'ya entegre
+SERIAL_ODOM    = "/dev/mega"         # Arduino Mega (enkoder + Karaşimşek + step motor + BMI160 IMU) — udev: 99-ika.rules
 SERIAL_TARET   = "/dev/ttyCH341USB0" # Turret UNO (PCA9685 + BMI160) — henüz udev symlink yok
 SERIAL_BAUD    = 115200
 
