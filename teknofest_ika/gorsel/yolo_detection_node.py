@@ -30,25 +30,10 @@ except ImportError:
     HAS_ULTRALYTICS = False
 
 
-# Alfabetik model sırası — topics.py YOLO_CLASSES ile birebir uyumlu
-CLASS_NAMES = {
-    0:  "Tabela_1",       # SULU_YOL
-    1:  "Tabela_10",      # DIK_EGIM_CIKIS
-    2:  "Tabela_11",      # HIZLANMA başlangıcı
-    3:  "Tabela_11_son",  # HIZLANMA sonu
-    4:  "Tabela_12",
-    5:  "Tabela_2",       # TASLI_YOL
-    6:  "Tabela_3",       # YAN_EGIM
-    7:  "Tabela_4",       # DIK_ENGEL
-    8:  "Tabela_5",       # KONİLİ_YOL
-    9:  "Tabela_6",       # KAYAR_ENGEL
-    10: "Tabela_7",       # ENGEBELİ_ARAZİ
-    11: "Tabela_8",       # DIK_EGIM
-    12: "Tabela_9",       # ATIS_BOLGESI
-    13: "Tabela_stop",    # STOP işareti
-    14: "hedef_tahtasi",
-    15: "trafik_huni",
-}
+# Tek kaynak topics.py YOLO_CLASSES (model.names ile eşit tutulur) —
+# elle ikinci bir liste tutmak model değişince kaymaya yol açıyordu.
+from teknofest_ika.otonomi.topics import YOLO_CLASSES
+CLASS_NAMES = {i: ad for i, ad in enumerate(YOLO_CLASSES)}
 
 
 class YoloDetectionNode(Node):

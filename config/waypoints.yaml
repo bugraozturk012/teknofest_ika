@@ -18,18 +18,17 @@
 #   Tabela_10    (class_id= 1) → DIK_EGIM_CIKIS
 #   Tabela_11    (class_id= 2) → HIZLANMA başlangıcı
 #   Tabela_11_son(class_id= 3) → HIZLANMA sonu
-#   Tabela_12    (class_id= 4) → (netleştirilecek)
-#   Tabela_2     (class_id= 5) → TASLI_YOL
-#   Tabela_3     (class_id= 6) → YAN_EGIM
-#   Tabela_4     (class_id= 7) → DIK_ENGEL
-#   Tabela_5     (class_id= 8) → KONİLİ_YOL
-#   Tabela_6     (class_id= 9) → KAYAR_ENGEL
-#   Tabela_7     (class_id=10) → ENGEBELİ_ARAZİ
-#   Tabela_8     (class_id=11) → DIK_EGIM
-#   Tabela_9     (class_id=12) → ATIS_BOLGESI
-#   Tabela_stop  (class_id=13) → STOP işareti
-#   hedef_tahtasi(class_id=14) → atış hedefi
-#   trafik_huni  (class_id=15) → trafik konisi
+#   Tabela_2     (class_id= 4) → TASLI_YOL
+#   Tabela_3     (class_id= 5) → YAN_EGIM
+#   Tabela_4     (class_id= 6) → DIK_ENGEL
+#   Tabela_5     (class_id= 7) → KONİLİ_YOL
+#   Tabela_6     (class_id= 8) → KAYAR_ENGEL
+#   Tabela_7     (class_id= 9) → ENGEBELİ_ARAZİ
+#   Tabela_8     (class_id=10) → DIK_EGIM
+#   Tabela_9     (class_id=11) → ATIS_BOLGESI
+#   Tabela_stop  (class_id=12) → STOP işareti
+#   hedef_tahtasi(class_id=13) → atış hedefi
+#   trafik_huni  (class_id=14) → trafik konisi
 
 asamalar:
 

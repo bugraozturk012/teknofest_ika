@@ -326,7 +326,7 @@ def generate_launch_description():
             'image_width':       1280,
             'cone_safety_radius_m': 0.4,
             'cone_min_confidence':  0.45,
-            'target_label':      '15',   # 15 = trafik_huni (alfabetik model sırası)
+            'target_label':      '14',   # 14 = trafik_huni (alfabetik model sırası)
         }],
         remappings=[
             ('/ileri_kamera/camera_info', '/camera/camera_info'),
@@ -343,6 +343,17 @@ def generate_launch_description():
             'fire_lock_duration_sec': 0.5,
             'fire_cooldown_sec':     2.0,
             'publish_debug':         True,
+            # Nişan kamerası HSV kalibrasyonu (2026-07-19, kapalı alan):
+            # halka bu kamerada H=165-169, turuncu bant sahte tespit üretiyor
+            # ve aralık dışında; V>=70 karanlık sahteleri kesiyor. Yarışma
+            # günü gün ışığında yeniden kalibre edilmeli (yöntem:
+            # launch/taret_otonom.launch.py docstring'i).
+            'hsv_lower':             [0, 40, 70],
+            'hsv_upper':             [4, 255, 255],
+            'hsv_lower2':            [150, 40, 70],
+            'hsv_upper2':            [179, 255, 255],
+            'hough_max_radius':      250,
+            'image_timeout_sec':     1.0,
         }]
     )
 

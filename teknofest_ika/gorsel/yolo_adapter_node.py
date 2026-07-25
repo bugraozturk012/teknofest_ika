@@ -11,18 +11,17 @@ Tabela numarası → parkur aşaması (model ALFABETİK sırayla eğitildi, sequ
   class_id= 1  Tabela_10      → DIK_EGIM_CIKIS
   class_id= 2  Tabela_11      → HIZLANMA başlangıcı (§6.11)
   class_id= 3  Tabela_11_son  → HIZLANMA sonu (§6.11)
-  class_id= 4  Tabela_12
-  class_id= 5  Tabela_2       → TASLI_YOL
-  class_id= 6  Tabela_3       → YAN_EGIM
-  class_id= 7  Tabela_4       → DIK_ENGEL
-  class_id= 8  Tabela_5       → KONİLİ_YOL
-  class_id= 9  Tabela_6       → KAYAR_ENGEL
-  class_id=10  Tabela_7       → ENGEBELİ_ARAZİ
-  class_id=11  Tabela_8       → DIK_EGIM
-  class_id=12  Tabela_9       → ATIS_BOLGESI
-  class_id=13  Tabela_stop    → STOP işareti (§6.10)
-  class_id=14  hedef_tahtasi  → hedef_var=True
-  class_id=15  trafik_huni    → koni_var=True
+  class_id= 4  Tabela_2       → TASLI_YOL
+  class_id= 5  Tabela_3       → YAN_EGIM
+  class_id= 6  Tabela_4       → DIK_ENGEL
+  class_id= 7  Tabela_5       → KONİLİ_YOL
+  class_id= 8  Tabela_6       → KAYAR_ENGEL
+  class_id= 9  Tabela_7       → ENGEBELİ_ARAZİ
+  class_id=10  Tabela_8       → DIK_EGIM
+  class_id=11  Tabela_9       → ATIS_BOLGESI
+  class_id=12  Tabela_stop    → STOP işareti (§6.10)
+  class_id=13  hedef_tahtasi  → hedef_var=True
+  class_id=14  trafik_huni    → koni_var=True
 
 Notlar:
   - kayar_yon: YOLO'dan çıkarılamaz — kayar_engel_kalman node'undan /moving_obs/direction gelir,
@@ -48,26 +47,28 @@ from teknofest_ika.otonomi.pure_logic import ConsecutiveFrameFilter
 
 # class_id → parkur aşama adı (sadece loglama için)
 # Model alfabetik sırayla eğitildi:
-#   Tabela_1, Tabela_10, Tabela_11, Tabela_11_son, Tabela_12, Tabela_2, ...
+#   Tabela_1, Tabela_10, Tabela_11, Tabela_11_son, Tabela_2, Tabela_3, ...
+# Sıra topics.YOLO_CLASSES ile birebir aynı olmalıdır.
 TABELA_SINIF = {
     0:  "SULU_YOL",        # Tabela_1
     1:  "DIK_EGIM_CIKIS",  # Tabela_10 — DIK_EGIM çıkış tabelası
-    5:  "TASLI_YOL",       # Tabela_2
-    6:  "YAN_EGIM",        # Tabela_3
-    7:  "DIK_ENGEL",       # Tabela_4
-    8:  "KONİLİ_YOL",     # Tabela_5
-    9:  "KAYAR_ENGEL",     # Tabela_6
-    10: "ENGEBELİ_ARAZİ", # Tabela_7
-    11: "DIK_EGIM",        # Tabela_8
-    12: "ATIS_BOLGESI",    # Tabela_9
+    4:  "TASLI_YOL",       # Tabela_2
+    5:  "YAN_EGIM",        # Tabela_3
+    6:  "DIK_ENGEL",       # Tabela_4
+    7:  "KONİLİ_YOL",     # Tabela_5
+    8:  "KAYAR_ENGEL",     # Tabela_6
+    9:  "ENGEBELİ_ARAZİ", # Tabela_7
+    10: "DIK_EGIM",        # Tabela_8
+    11: "ATIS_BOLGESI",    # Tabela_9
 }
 
+# class_id'ler yeni 15 sınıflı model (best.pt 2026-07-22) ile uyumlu —
+# eski "Tabela_12" (index 4) kaldırıldı, index 4'ten sonrası bir kaydı.
 CLASS_TABELA_11     = 2    # §6.11 hızlanma başlangıcı
 CLASS_TABELA_11_SON = 3    # §6.11 hızlanma sonu
-CLASS_TABELA_12     = 4    # Tabela_12 — görüntü ekibinden netleştirilecek
-CLASS_TABELA_STOP   = 13   # §6.10 ramp STOP işareti
-CLASS_TRAFIK_HUNI   = 15
-CLASS_HEDEF_TAHTASI = 14
+CLASS_TABELA_STOP   = 12   # §6.10 ramp STOP işareti
+CLASS_HEDEF_TAHTASI = 13
+CLASS_TRAFIK_HUNI   = 14
 NO_DETECTION        = 255
 
 # Yanlış pozitife karşı: STOP art arda bu kadar frame gelmeden tetiklenmez
@@ -167,12 +168,6 @@ class YoloAdapterNode(Node):
 
             elif cid == CLASS_TABELA_STOP:
                 stop_goruldu = True
-
-            elif cid == CLASS_TABELA_12:
-                self.get_logger().warn(
-                    'Tabela_12 tespit edildi (class_id=4) — görüntü ekibinden netleştirilecek.',
-                    throttle_duration_sec=5.0,
-                )
 
         # Ardışık frame filtreleri (pure_logic.ConsecutiveFrameFilter) —
         # test_birim.py bu sınıfı doğrudan test eder.

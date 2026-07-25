@@ -231,7 +231,10 @@ BATTERY_TOPIC = "/battery/status"
 SERIAL_LIDAR   = "/dev/lidar"        # YDLidar Tmini Pro
 SERIAL_IMU     = "/dev/imu_arduino"  # Arduino Nano (IMU + servo + lazer) — artık kullanılmıyor, IMU Mega'ya entegre
 SERIAL_ODOM    = "/dev/mega"         # Arduino Mega (enkoder + Karaşimşek + step motor + BMI160 IMU) — udev: 99-ika.rules
-SERIAL_TARET   = "/dev/ttyCH341USB0" # Turret UNO (PCA9685 + BMI160) — henüz udev symlink yok
+SERIAL_TARET   = "/dev/turret"       # Turret UNO (PCA9685 + BMI160) — udev symlink;
+                                     # ham ttyCH341USBx isimleri hub her koptuğunda
+                                     # yeniden numaralanıyor, Mega'nın portuna denk
+                                     # gelme riski var
 SERIAL_BAUD    = 115200
 
 # ─────────────────────────────────────────────
@@ -250,45 +253,48 @@ FRAME_IMU        = "imu_link"
 # ─────────────────────────────────────────────
 #
 # Model ALFABETİK sırayla eğitildi — class_id Tabela numarasıyla örtüşmüyor!
-# Gerçek eşleme (m.names çıktısından doğrulandı 2026-05-16):
-#   0=Tabela_1       5=Tabela_2      10=Tabela_7
-#   1=Tabela_10      6=Tabela_3      11=Tabela_8
-#   2=Tabela_11      7=Tabela_4      12=Tabela_9
-#   3=Tabela_11_son  8=Tabela_5      13=Tabela_stop
-#   4=Tabela_12      9=Tabela_6      14=hedef_tahtasi  15=trafik_huni
+# Gerçek eşleme (best.pt names, 15 sınıf):
+#   0=Tabela_1       4=Tabela_2       9=Tabela_7
+#   1=Tabela_10      5=Tabela_3      10=Tabela_8
+#   2=Tabela_11      6=Tabela_4      11=Tabela_9
+#   3=Tabela_11_son  7=Tabela_5      12=Tabela_stop
+#                    8=Tabela_6      13=hedef_tahtasi  14=trafik_huni
 
 CLASS_SULU_YOL       = "Tabela_1"   # class_id= 0
 CLASS_DIK_EGIM_CIKIS = "Tabela_10"  # class_id= 1
-CLASS_TASLI_YOL      = "Tabela_2"   # class_id= 5
-CLASS_YAN_EGIM       = "Tabela_3"   # class_id= 6
-CLASS_DIK_ENGEL      = "Tabela_4"   # class_id= 7
-CLASS_KONILI_YOL     = "Tabela_5"   # class_id= 8
-CLASS_KAYAR_ENGEL    = "Tabela_6"   # class_id= 9
-CLASS_ENGEBELI_ARAZI = "Tabela_7"   # class_id=10
-CLASS_DIK_EGIM       = "Tabela_8"   # class_id=11
-CLASS_ATIS_BOLGESI   = "Tabela_9"   # class_id=12
-CLASS_TRAFIK_HUNI    = "trafik_huni"    # class_id=15
-CLASS_HEDEF_TAHTASI  = "hedef_tahtasi"  # class_id=14
+CLASS_TASLI_YOL      = "Tabela_2"   # class_id= 4
+CLASS_YAN_EGIM       = "Tabela_3"   # class_id= 5
+CLASS_DIK_ENGEL      = "Tabela_4"   # class_id= 6
+CLASS_KONILI_YOL     = "Tabela_5"   # class_id= 7
+CLASS_KAYAR_ENGEL    = "Tabela_6"   # class_id= 8
+CLASS_ENGEBELI_ARAZI = "Tabela_7"   # class_id= 9
+CLASS_DIK_EGIM       = "Tabela_8"   # class_id=10
+CLASS_ATIS_BOLGESI   = "Tabela_9"   # class_id=11
+CLASS_TRAFIK_HUNI    = "trafik_huni"    # class_id=14
+CLASS_HEDEF_TAHTASI  = "hedef_tahtasi"  # class_id=13
 
 # class_id → label (alfabetik model sırası) — referans tablo
 # yolo_adapter_node ve terrain_adapter kendi dict'lerini kullanır
+# Sınıf sırası model ile birebir aynı olmalı (best.pt names, 2026-07-22).
+# YENİ MODEL 15 sınıf — eski 16 sınıflı sürümdeki "Tabela_12" KALDIRILDI,
+# index 4'ten sonrası bir kaydı: Tabela_stop 13→12, hedef_tahtasi 14→13,
+# trafik_huni 15→14. Model değişirse bu liste model.names ile eşitlenmeli.
 YOLO_CLASSES = [
     "Tabela_1",       # 0  → SULU_YOL
     "Tabela_10",      # 1  → DIK_EGIM_CIKIS
     "Tabela_11",      # 2  → HIZLANMA başlangıcı
     "Tabela_11_son",  # 3  → HIZLANMA sonu
-    "Tabela_12",      # 4  → görüntü ekibinden netleştirilecek
-    "Tabela_2",       # 5  → TASLI_YOL
-    "Tabela_3",       # 6  → YAN_EGIM
-    "Tabela_4",       # 7  → DIK_ENGEL
-    "Tabela_5",       # 8  → KONİLİ_YOL
-    "Tabela_6",       # 9  → KAYAR_ENGEL
-    "Tabela_7",       # 10 → ENGEBELİ_ARAZİ
-    "Tabela_8",       # 11 → DIK_EGIM
-    "Tabela_9",       # 12 → ATIS_BOLGESI
-    "Tabela_stop",    # 13 → STOP işareti
-    "hedef_tahtasi",  # 14 → atış hedefi
-    "trafik_huni",    # 15 → trafik konisi
+    "Tabela_2",       # 4  → TASLI_YOL
+    "Tabela_3",       # 5  → YAN_EGIM
+    "Tabela_4",       # 6  → DIK_ENGEL
+    "Tabela_5",       # 7  → KONİLİ_YOL
+    "Tabela_6",       # 8  → KAYAR_ENGEL
+    "Tabela_7",       # 9  → ENGEBELİ_ARAZİ
+    "Tabela_8",       # 10 → DIK_EGIM
+    "Tabela_9",       # 11 → ATIS_BOLGESI
+    "Tabela_stop",    # 12 → STOP işareti
+    "hedef_tahtasi",  # 13 → atış hedefi
+    "trafik_huni",    # 14 → trafik konisi
 ]
 
 # Tabela label → FSM waypoint eşlemesi

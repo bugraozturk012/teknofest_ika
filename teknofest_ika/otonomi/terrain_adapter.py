@@ -89,28 +89,28 @@ NO_DETECTION = 255
 #    KAYAR_ENGEL, ENGEBELİ_ARAZİ, DIK_EGIM, ATIS_BOLGESI, YAN_EGIM_2]
 # ─────────────────────────────────────────────────────────────────────────────
 # Model alfabetik sırayla eğitildi — class_id Tabela numarasıyla örtüşmüyor.
-# Gerçek eşleme (m.names çıktısından doğrulandı 2026-05-16):
-#   0=Tabela_1  1=Tabela_10  2=Tabela_11  3=Tabela_11_son  4=Tabela_12
-#   5=Tabela_2  6=Tabela_3   7=Tabela_4   8=Tabela_5       9=Tabela_6
-#   10=Tabela_7 11=Tabela_8  12=Tabela_9  13=Tabela_stop   14=hedef_tahtasi
-#   15=trafik_huni
+# Gerçek eşleme (best.pt names, 15 sınıf):
+#   0=Tabela_1  1=Tabela_10  2=Tabela_11  3=Tabela_11_son
+#   4=Tabela_2  5=Tabela_3   6=Tabela_4   7=Tabela_5       8=Tabela_6
+#   9=Tabela_7  10=Tabela_8  11=Tabela_9  12=Tabela_stop   13=hedef_tahtasi
+#   14=trafik_huni
+# Sıra topics.YOLO_CLASSES ile birebir aynı olmalıdır.
 CLASS_TO_TERRAIN = {
     0:  'wet',      # Tabela_1   SULU_YOL        — μ≈0.3, fren mesafesi artar
     1:  'normal',   # Tabela_10  DIK_EGIM_CIKIS  — rampa çıkış, düz zemin
     2:  'fast',     # Tabela_11  HIZLANMA        — HizlanmaState Nav2'yi bypass eder
     3:  'normal',   # Tabela_11_son HIZLANMA_SON — hızlanma bitiyor, normale dön
-    4:  'normal',   # Tabela_12  — görüntü ekibinden netleştirilecek
-    5:  'gravel',   # Tabela_2   TASLI_YOL       — lateral stabilite azalır
-    6:  'slope',    # Tabela_3   YAN_EGIM        — F_lat = m·g·sin(θ)
-    7:  'obstacle', # Tabela_4   DIK_ENGEL       — lokal costmap kaçınır
-    8:  'normal',   # Tabela_5   KONİLİ_YOL     — Nav2 local costmap yeterli
-    9:  'normal',   # Tabela_6   KAYAR_ENGEL     — Nav2 local costmap yeterli
-    10: 'rough',    # Tabela_7   ENGEBELİ_ARAZİ — titreşim + düzensiz zemin
-    11: 'rough',    # Tabela_8   DIK_EGIM        — eğim + zemin: en kısıtlı profil
-    12: 'slow',     # Tabela_9   ATIS_BOLGESI    — dur, nişan al
-    13: 'normal',   # Tabela_stop STOP işareti   — terrain değişmez, FSM halleder
-    14: 'slow',     # hedef_tahtasi              — atış bölgesine yakın, yavaş
-    15: 'normal',   # trafik_huni                — Nav2 costmap halleder
+    4:  'gravel',   # Tabela_2   TASLI_YOL       — lateral stabilite azalır
+    5:  'slope',    # Tabela_3   YAN_EGIM        — F_lat = m·g·sin(θ)
+    6:  'obstacle', # Tabela_4   DIK_ENGEL       — lokal costmap kaçınır
+    7:  'normal',   # Tabela_5   KONİLİ_YOL     — Nav2 local costmap yeterli
+    8:  'normal',   # Tabela_6   KAYAR_ENGEL     — Nav2 local costmap yeterli
+    9:  'rough',    # Tabela_7   ENGEBELİ_ARAZİ — titreşim + düzensiz zemin
+    10: 'rough',    # Tabela_8   DIK_EGIM        — eğim + zemin: en kısıtlı profil
+    11: 'slow',     # Tabela_9   ATIS_BOLGESI    — dur, nişan al
+    12: 'normal',   # Tabela_stop STOP işareti   — terrain değişmez, FSM halleder
+    13: 'slow',     # hedef_tahtasi              — atış bölgesine yakın, yavaş
+    14: 'normal',   # trafik_huni                — Nav2 costmap halleder
     NO_DETECTION: 'normal',
 }
 

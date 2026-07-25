@@ -31,7 +31,7 @@ class ConeFusionNode(Node):
         self.declare_parameter("lidar_window", 8)
         # yolo_detection_node class_id'yi integer string olarak yayınlar: str(13) = "13"
         # "trafik_huni" string karşılaştırması YANLIŞ — hiç eşleşmez.
-        self.declare_parameter("target_label", "15")
+        self.declare_parameter("target_label", "14")
         self.declare_parameter("safety_sphere_points", 20)
 
         self.fov_deg = self.get_parameter("camera_fov_deg").value
