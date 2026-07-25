@@ -106,19 +106,27 @@ class PreprocessingNode(Node):
         cv_img = self.bridge.imgmsg_to_cv2(msg, "bgr8")
         out = self._process_image(cv_img, self.ema_main)
         self.ema_main = out.astype(np.float32)
-        self.pub_main.publish(self.bridge.cv2_to_imgmsg(out, "bgr8"))
+        self.pub_main.publish(self._msg_yap(out, msg))
 
     def cb_aux_camera(self, msg: Image):
         cv_img = self.bridge.imgmsg_to_cv2(msg, "bgr8")
         out = self._process_image(cv_img, self.ema_aux)
         self.ema_aux = out.astype(np.float32)
-        self.pub_aux.publish(self.bridge.cv2_to_imgmsg(out, "bgr8"))
+        self.pub_aux.publish(self._msg_yap(out, msg))
 
     def cb_taret_camera(self, msg: Image):
         cv_img = self.bridge.imgmsg_to_cv2(msg, "bgr8")
         out = self._process_image(cv_img, self.ema_taret)
         self.ema_taret = out.astype(np.float32)
-        self.pub_taret.publish(self.bridge.cv2_to_imgmsg(out, "bgr8"))
+        self.pub_taret.publish(self._msg_yap(out, msg))
+
+    def _msg_yap(self, out: np.ndarray, kaynak: Image) -> Image:
+        # Kaynak header'ı (stamp + frame_id) korunur — tüketiciler (targeting_node
+        # kare tekrarı ayıklama, TF eşleme) stamp'in gerçek olmasına dayanır;
+        # boş header her karenin stamp=0 görünüp elenmesine yol açıyordu.
+        cikti = self.bridge.cv2_to_imgmsg(out, "bgr8")
+        cikti.header = kaynak.header
+        return cikti
 
     def _process_image(self, img: np.ndarray, prev_ema) -> np.ndarray:
         # 1) Gaussian denoising
