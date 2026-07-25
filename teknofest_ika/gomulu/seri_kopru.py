@@ -52,6 +52,7 @@ from teknofest_ika.otonomi.topics import (
     ACKERMANN_CMD_TOPIC, SHOOT_RESULT_TOPIC, TARET_PAN_TOPIC, TARET_TILT_TOPIC,
     ODOM_TOPIC, IMU_TOPIC, BATTERY_TOPIC, RC_INPUT_TOPIC,
     E_STOP_FORCE_SERIAL_TOPIC, E_STOP_TOPIC, SHOOT_CMD_TOPIC, FREN_KOMUT_TOPIC,
+    SERIAL_ODOM,
 )
 from teknofest_ika.otonomi.pure_logic import (
     paket_olustur, paket_dogrula, encoder_delta, batarya_yuzdesi,
@@ -138,7 +139,9 @@ class SeriKopru(Node):
         super().__init__('seri_kopru')
 
         # Parametreler
-        self.declare_parameter('port',        '/dev/ttyUSB0')
+        # Varsayılan udev symlink'idir; ham /dev/ttyUSB0 artık LiDAR'a ait,
+        # oraya HB paketi yazmak LiDAR'ı bozar.
+        self.declare_parameter('port',        SERIAL_ODOM)
         self.declare_parameter('baud',        115200)
         self.declare_parameter('cmd_timeout', 0.5)
         self.declare_parameter('sim_mode',    False)
@@ -150,9 +153,16 @@ class SeriKopru(Node):
 
         # Seri Port
         self._ser = None
+        # Port açılışı DTR ile Mega'yı resetler; bootloader penceresinde (~2s)
+        # seri hatta yazılan her byte kartı tekrar resetleyip sonsuz döngüde
+        # tutar. İlk geçerli paket alınana kadar gönderim kapalı kalır.
+        self._link_hazir = False
         if not self._sim_mode:
             try:
-                self._ser = serial.Serial(self._port, self._baud, timeout=0.1)
+                # exclusive: ikinci bir instance porta bağlanırsa sessizce
+                # banner'ı paylaşıp ölü kalmak yerine burada hata alsın.
+                self._ser = serial.Serial(self._port, self._baud, timeout=0.1,
+                                          exclusive=True)
                 self.get_logger().info(f'Seri port: {self._port} @ {self._baud}')
             except serial.SerialException as e:
                 self.get_logger().error(f'Port açılamadı: {e}')
@@ -339,6 +349,11 @@ class SeriKopru(Node):
                         throttle_duration_sec=5.0
                     )
                     continue
+
+                if not self._link_hazir:
+                    self._link_hazir = True
+                    self.get_logger().info(
+                        'Mega bağlantısı doğrulandı — gönderim aktif.')
 
                 self._paket_isle(ham)
 
@@ -582,6 +597,8 @@ class SeriKopru(Node):
                 f'[SIM] PKT 0x{komut:02X} v0={v0} v1={v1} → {pkt.hex()}'
             )
             return
+        if not self._link_hazir:
+            return
         try:
             self._ser.write(pkt)
         except serial.SerialException as e:
@@ -591,7 +608,8 @@ class SeriKopru(Node):
         self._calisıyor = False
         if self._ser and self._ser.is_open:
             try:
-                self._ser.write(_paket_olustur(PKT_DUR, 0, 0))
+                if self._link_hazir:
+                    self._ser.write(_paket_olustur(PKT_DUR, 0, 0))
                 self._ser.close()
             except Exception:
                 pass
