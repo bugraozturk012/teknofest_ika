@@ -144,7 +144,7 @@ def generate_launch_description():
     else:
         # Harita yoksa önce harita al:
         #   ros2 launch teknofest_ika slam_haritalama.launch.py
-        #   ros2 run nav2_map_server map_saver_cli -f ~/ika_ws/maps/test_harita
+        #   ros2 run nav2_map_server map_saver_cli -f ~/lydia_ws/maps/test_harita
         slam_exe   = 'async_slam_toolbox_node'
         slam_extra = {'use_sim_time': False}
 

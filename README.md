@@ -137,7 +137,7 @@ lora_gcs GCS komutu       ──┘                                (GPIO kurulum
 ## 4. ROS2 Paket Yapısı
 
 ```
-~/ika_ws/
+~/lydia_ws/
 ├── teknofest_ika/
 │   ├── otonomi/
 │   │   ├── topics.py               # Topic sabit tanımları
@@ -419,10 +419,10 @@ colcon build --symlink-install
 echo "source ~/eys3d_ws/install/setup.bash" >> ~/.bashrc
 
 # Workspace build
-cd ~/ika_ws
+cd ~/lydia_ws
 colcon build --packages-select teknofest_ika --symlink-install
 source install/setup.bash
-echo "source ~/ika_ws/install/setup.bash" >> ~/.bashrc
+echo "source ~/lydia_ws/install/setup.bash" >> ~/.bashrc
 ```
 
 ---
@@ -434,7 +434,7 @@ echo "source ~/ika_ws/install/setup.bash" >> ~/.bashrc
 ```bash
 # Harita alma (sahada, ilk çalıştırma)
 ros2 launch teknofest_ika gercek_harita.launch.py
-ros2 run nav2_map_server map_saver_cli -f ~/ika_ws/maps/gercek_harita
+ros2 run nav2_map_server map_saver_cli -f ~/lydia_ws/maps/gercek_harita
 
 # Yarışma
 ros2 launch teknofest_ika gercek_arac.launch.py
@@ -481,7 +481,7 @@ ros2 launch teknofest_ika test_arac.launch.py
 # Harita varsa → localization modunda başlar
 
 # Arduino firmware derleme ve yükleme (Jetson'da)
-cd ~/ika_ws/arduino
+cd ~/lydia_ws/arduino
 avr-gcc -mmcu=atmega328p -std=gnu99 -Os firmware.c -o fw.elf
 avr-objcopy -O ihex fw.elf fw.hex
 avrdude -p atmega328p -c arduino -P /dev/ttyACM0 -b 115200 -U flash:w:fw.hex:i

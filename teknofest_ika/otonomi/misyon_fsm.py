@@ -922,7 +922,7 @@ def main():
         pkg_share = get_package_share_directory('teknofest_ika')
         wp_path   = os.path.join(pkg_share, 'config', 'waypoints.yaml')
     except Exception:
-        wp_path = os.path.expanduser('~/ika_ws/config/waypoints.yaml')
+        wp_path = os.path.expanduser('~/lydia_ws/config/waypoints.yaml')
 
     waypoints, parametreler = load_waypoints(wp_path)
 

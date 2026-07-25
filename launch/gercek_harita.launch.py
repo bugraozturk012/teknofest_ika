@@ -7,12 +7,15 @@ Nav2 YOKTUR — sadece SLAM çalışır.
 Başlatma:
   ros2 launch teknofest_ika gercek_harita.launch.py
 
-Harita Kaydetme (ayrı terminalde):
-  ros2 run nav2_map_server map_saver_cli -f ~/teknofest_ika_yazilim/maps/teknofest_harita
-  cd ~/ika_ws && colcon build --packages-select teknofest_ika --symlink-install
-  # ÖNEMLİ: gercek_arac.launch.py haritayı pkg_share/maps/teknofest_harita.pgm'den
-  # okur (install dizini) — dosya adı/dizin farklı olursa veya rebuild atlanırsa
-  # localization modu hiç tetiklenmez, araç sessizce mapping modunda kalır.
+Harita Kaydetme (ayrı terminalde, tur bitince):
+  ros2 run nav2_map_server map_saver_cli -f ~/lydia_ws/maps/teknofest_harita
+  ros2 service call /slam_toolbox/serialize_map slam_toolbox/srv/SerializePoseGraph \
+    "{filename: '/home/lydia/lydia_ws/maps/teknofest_harita'}"
+  # ÖNEMLİ: gercek_arac.launch.py localization_slam_toolbox_node için .pgm DEĞİL,
+  # yukarıdaki serialize_map servisinin ürettiği .posegraph + .data dosyalarını
+  # okur — sadece map_saver_cli çalıştırılırsa (.pgm/.yaml) bu dosyalar hiç
+  # oluşmaz ve localization modu tetiklenmeden araç sessizce mapping modunda kalır.
+  cd ~/lydia_ws && colcon build --packages-select teknofest_ika --symlink-install
 
 Sıralama:
   0s  → robot_state_publisher
@@ -102,9 +105,18 @@ def generate_launch_description():
         parameters=[slam_params, {'use_sim_time': False}]
     )
 
+    # /map (OccupancyGrid) → /map/image (Image) — GCS dashboard'un SLAM Haritası
+    # panelinde canlı önizleme için (slam_toolbox'tan sonra başlamalı)
+    map_image = Node(
+        package='teknofest_ika', executable='map_image_node',
+        name='map_image_node', output='screen',
+        parameters=[{'use_sim_time': False}]
+    )
+
     return LaunchDescription([
         rsp,
         TimerAction(period=1.0, actions=[seri_kopru, lidar]),
         TimerAction(period=3.0, actions=[ekf]),
         TimerAction(period=5.0, actions=[slam]),
+        TimerAction(period=7.0, actions=[map_image]),
     ])

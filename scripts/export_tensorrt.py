@@ -6,7 +6,7 @@ JETSON'DA çalıştırılır — TensorRT engine mimariye özgüdür.
 x86/WSL'de üretilen engine Jetson'da ÇALIŞMAZ.
 
 Kullanım:
-    cd ~/ika_ws
+    cd ~/lydia_ws
     python3 scripts/export_tensorrt.py
 
     # Farklı parametrelerle:

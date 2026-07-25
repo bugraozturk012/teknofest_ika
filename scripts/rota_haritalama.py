@@ -12,8 +12,8 @@ GÜVENLİK ŞARTI:
 
 Kullanım (Jetson'da):
   Terminal 1: ros2 launch teknofest_ika gercek_harita.launch.py
-  Terminal 2: python3 ~/ika_ws/scripts/rota_haritalama.py
-  Bitti:      ros2 run nav2_map_server map_saver_cli -f ~/ika_ws/maps/gercek_harita
+  Terminal 2: python3 ~/lydia_ws/scripts/rota_haritalama.py
+  Bitti:      ros2 run nav2_map_server map_saver_cli -f ~/lydia_ws/maps/gercek_harita
 
 NOT: Harita kaydedildikten sonra bu script bir daha kullanılmaz.
      Yarışmada misyon_fsm.py + Nav2 navigasyonu devralır.
@@ -349,7 +349,7 @@ class RotaHaritalama(Node):
             f'\n=== TAMAMLANDI: {basarili}/{toplam} başarılı ===\n'
             f'Haritayı kaydet:\n'
             f'  ros2 run nav2_map_server map_saver_cli '
-            f'-f ~/ika_ws/maps/gercek_harita'
+            f'-f ~/lydia_ws/maps/gercek_harita'
         )
 
 
