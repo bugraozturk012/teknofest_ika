@@ -148,6 +148,10 @@ class ModYoneticisi(Node):
         with self._lock:
             self._ch1  = float(msg.data[0])
             self._ch2  = float(msg.data[1])
+            # data[2] = firmware'in RC_CH_MOD olarak seçtiği kanalın değeri.
+            # Mega kanalları ham sırayla değil anlamlarına göre gönderir
+            # (PKT_RC2.v0 = mod anahtarı), bu yüzden dizi indeksi kumandadaki
+            # kanal numarasıyla örtüşmez.
             self._ch5  = float(msg.data[2])
             self._ch3  = float(msg.data[3]) if len(msg.data) > 3 else RC_MIN
             self._rc_son = time.time()
@@ -263,12 +267,17 @@ class ModYoneticisi(Node):
                 self._lazer_kontrol(ch3)
 
         elif mod == MOD_SEMI_AUTO:
+            # seri_kopru lazer aktifken hareketi kilitler; MANUAL'de açık kalan
+            # lazer otonomda aracı dondurur. AUX kanalı (CH4) direksiyonla ortak
+            # olduğu için stick sağa itildikçe tetiklenebiliyor.
+            self._lazer_kapat()
             rc_cmd = self._rc_twist(ch1, ch2)
             rc_norm = (abs(rc_cmd.linear.x) / MANUAL_MAX_SPEED +
                        abs(rc_cmd.angular.z) / MANUAL_MAX_ANGULAR) / 2.0
             out = rc_cmd if rc_norm > SEMI_OVERRIDE_THRESHOLD else nav2
 
         else:   # FULL_AUTO
+            self._lazer_kapat()
             out = nav2
 
         # imu_guvenlik hız sınırı (devrilme/düşük batarya vb.) — FULL_AUTO'da
@@ -280,6 +289,13 @@ class ModYoneticisi(Node):
         self._mux_pub.publish(out)
 
     # ── MANUAL Lazer Tetikleme (ch3 aux) ────────────────────────────────────
+    def _lazer_kapat(self) -> None:
+        """Otonom modlara geçerken lazeri güvenceye alır."""
+        if self._lazer_acik:
+            self._lazer_acik = False
+            self._shoot_pub.publish(Bool(data=False))
+            self.get_logger().info('Otonom moda geçildi — lazer kapatıldı.')
+
     def _lazer_kontrol(self, ch3: float):
         if ch3 > RC_CH3_LAZER_ON and not self._lazer_acik:
             self._lazer_acik = True
