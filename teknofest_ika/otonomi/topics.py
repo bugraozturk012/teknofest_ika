@@ -21,6 +21,10 @@ KURAL: Topic adı değiştirilecekse bu dosyada değiştirilir,
 # Tüketen: Otomasyon (EKF, SLAM, Nav2)
 # ─────────────────────────────────────────────
 
+# YDLidar sürücüsünün doğrudan çıkışı (ydlidar_launch.py varsayılanı)
+# Üretici: ydlidar_ros2_driver  |  Tüketen: scan_relay, reaktif sürüş betikleri
+SCAN_TOPIC = "/scan"
+
 # scan_relay çıkışı — timestamp/frame_id düzeltilmiş ham LiDAR
 # Üretici: scan_relay  |  Tüketen: preprocessing_node
 SCAN_LIDAR_TOPIC = "/scan_lidar"
@@ -78,6 +82,11 @@ CAMERA_REAR_TOPIC = "/camera/rear/image_raw"
 
 # Microcase 720P — Nişan kamerası (taret üzeri)
 CAMERA_TARET_TOPIC = "/camera/taret/image_raw"
+
+# Derinlik kamerası (eYs3D OS30A) — apc_camera_node renklendirmeyi kendisi
+# yapar, yayın rgb8'dir (yakın sarı/turuncu, uzak koyu). Ham mesafe için
+# /apc/points/data_raw (PointCloud2) kullanılır.
+DEPTH_IMAGE_TOPIC = "/apc/depth/image_raw"
 
 # ─────────────────────────────────────────────
 # GÖRÜNTÜ İŞLEME TOPIC'LERİ

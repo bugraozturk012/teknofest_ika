@@ -39,7 +39,7 @@ from rclpy.qos import qos_profile_sensor_data
 
 from std_msgs.msg import Bool, UInt8, String
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import BatteryState, Imu, Image, CompressedImage
+from sensor_msgs.msg import BatteryState, Imu, Image, CompressedImage, LaserScan
 from cv_bridge import CvBridge
 
 from teknofest_ika.otonomi.topics import (
@@ -47,7 +47,7 @@ from teknofest_ika.otonomi.topics import (
     BATTERY_TOPIC, IMU_TOPIC, EKF_ODOM_TOPIC, MISYON_WP_INDEX_TOPIC,
     TARGETING_STATUS_TOPIC, TARGETING_DEBUG_TOPIC, SHOOT_RESULT_TOPIC,
     CAMERA_IMAGE_TOPIC, CAMERA_TARET_TOPIC, YOLO_RAW_DEBUG_TOPIC,
-    MAP_IMAGE_TOPIC,
+    MAP_IMAGE_TOPIC, DEPTH_IMAGE_TOPIC, SCAN_TOPIC,
 )
 
 # ── Ayarlar ───────────────────────────────────────────────────────────────────
@@ -55,6 +55,18 @@ PORT        = 8080
 JPEG_KALITE = 35     # düşük = küçük dosya, kablosuz için uygun
 MAKS_GENIS  = 480    # kameralar bu genişliğe küçültülür (en-boy korunur)
 AKIS_FPS    = 12     # MJPEG akış tavanı (izleme için yeterli)
+PANELLER    = {'on', 'yolo', 'nisan', 'harita', 'derinlik', 'lidar'}
+# Bu süreden eski kare "sinyal yok" sayılır — donmuş görüntü canlı sanılırsa
+# yanlış karar verdirir. SLAM haritası seyrek yayınlandığı için (~5 s) kamera
+# eşiğine tabi tutulursa panel sürekli boş görünür, ayrı eşiği var.
+KARE_TAZE_S = 3.0
+KARE_TAZE_OZEL = {'harita': 30.0}
+LIDAR_PANEL_PX  = 400   # radar görüntüsü kenar uzunluğu [px]
+LIDAR_MENZIL_M  = 5.0   # panelin kapsadığı yarıçap [m]
+# LiDAR montaj yönünü ekran eksenine çevirir: X'te aynalayıp saat yönünde 90°
+# döndürünce "yukarı = aracın önü" olur. Yalnız görselleştirme, /scan değişmez.
+LIDAR_AYNA_X    = True
+LIDAR_DONDUR    = -math.pi / 2.0   # saat yönünde 90°
 NISAN_DEBUG_TAZE_S = 1.5   # işaretli nişan görüntüsü bu kadar tazeyse ham yerine o
 
 # Eski dashboard renk paleti (birebir korundu)
@@ -75,7 +87,8 @@ class Ortak:
         # panel adı → (bgr numpy, zaman)
         self.kareler = {'on': (None, 0.0), 'yolo': (None, 0.0),
                         'harita': (None, 0.0), 'nisan_ham': (None, 0.0),
-                        'nisan_dbg': (None, 0.0)}
+                        'nisan_dbg': (None, 0.0), 'derinlik': (None, 0.0),
+                        'lidar': (None, 0.0)}
         self.sensor = {
             'e_stop': False, 'mod': 0, 'fsm': '—',
             'batarya': -1.0, 'voltaj': 0.0, 'akim': 0.0,
@@ -121,6 +134,11 @@ class WebDashboardNode(Node):
                                  lambda m: self._ham_kare('harita', m), be)
         self.create_subscription(Image, CAMERA_TARET_TOPIC,
                                  lambda m: self._ham_kare('nisan_ham', m), be)
+        # Derinlik kamerası — sürücü rgb8 yayınlar (renklendirme kendisinde),
+        # cv_bridge bgr8'e çevirir, ek işlem gerekmez.
+        self.create_subscription(Image, DEPTH_IMAGE_TOPIC,
+                                 lambda m: self._ham_kare('derinlik', m), be)
+        self.create_subscription(LaserScan, SCAN_TOPIC, self._tarama, be)
         # Nişan işaretli görüntü — targeting_node JPEG yayını (kablosuz dostu).
         self.create_subscription(CompressedImage, TARGETING_DEBUG_TOPIC + '/compressed',
                                  self._sik_nisan, be)
@@ -131,6 +149,44 @@ class WebDashboardNode(Node):
     def _ham_kare(self, ad, msg):
         try:
             ortak.kare_yaz(ad, self._kopru.imgmsg_to_cv2(msg, 'bgr8'))
+            ortak.son_ros = time.time()
+        except Exception:
+            pass
+
+    def _tarama(self, msg: LaserScan):
+        """Ham LaserScan'i tepeden bakışlı radar görüntüsüne çizer.
+
+        SLAM haritası birikimlidir ve gecikmelidir; bu panel o anki lazer
+        dönüşünü gösterir, engel aniden girdiğinde ilk oradan görülür.
+        """
+        try:
+            boy = LIDAR_PANEL_PX
+            im = np.zeros((boy, boy, 3), np.uint8)
+            mrk = boy // 2
+            olcek = (boy / 2 - 6) / max(LIDAR_MENZIL_M, 0.1)
+
+            # menzil halkaları (1 m aralık) + eksen çizgileri
+            for r in range(1, int(LIDAR_MENZIL_M) + 1):
+                cv2.circle(im, (mrk, mrk), int(r * olcek), (38, 38, 38), 1)
+            cv2.line(im, (mrk, 0), (mrk, boy), (30, 30, 30), 1)
+            cv2.line(im, (0, mrk), (boy, mrk), (30, 30, 30), 1)
+
+            aci = msg.angle_min
+            for mesafe in msg.ranges:
+                if 0.02 < mesafe < LIDAR_MENZIL_M:
+                    # ROS: +x ileri, +y sola. Ekran: yukarı = ileri.
+                    g = (-aci if LIDAR_AYNA_X else aci) + LIDAR_DONDUR
+                    x = int(mrk + mesafe * math.sin(g) * olcek)
+                    y = int(mrk - mesafe * math.cos(g) * olcek)
+                    if 0 <= x < boy and 0 <= y < boy:
+                        # tek piksel JPEG sıkıştırmasında kayboluyor
+                        cv2.circle(im, (x, y), 1, (90, 255, 90), -1)
+                aci += msg.angle_increment
+
+            cv2.circle(im, (mrk, mrk), 2, (60, 160, 255), -1)   # araç
+            cv2.putText(im, f'{LIDAR_MENZIL_M:.0f}m', (6, boy - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, (120, 120, 120), 1)
+            ortak.kare_yaz('lidar', im)
             ortak.son_ros = time.time()
         except Exception:
             pass
@@ -225,14 +281,20 @@ def kucult_kodla(bgr):
 
 
 def panel_kare(ad):
-    """Panel adına göre gösterilecek ham BGR kareyi seçer."""
+    """Panel adına göre gösterilecek ham BGR kareyi seçer.
+
+    Bayat kare döndürülmez: kaynak sustuğunda panel donmuş görüntü yerine
+    "sinyal yok" göstersin.
+    """
     if ad == 'nisan':
         dbg, tdbg = ortak.kare_oku('nisan_dbg')
         if dbg is not None and (time.time() - tdbg) < NISAN_DEBUG_TAZE_S:
             return dbg
-        ham, _ = ortak.kare_oku('nisan_ham')
-        return ham
-    return ortak.kare_oku(ad)[0]
+        ham, tham = ortak.kare_oku('nisan_ham')
+        return ham if (ham is not None and time.time() - tham < KARE_TAZE_S) else None
+    kare, t = ortak.kare_oku(ad)
+    esik = KARE_TAZE_OZEL.get(ad, KARE_TAZE_S)
+    return kare if (kare is not None and time.time() - t < esik) else None
 
 
 # ── HTML sayfası ──────────────────────────────────────────────────────────────
@@ -248,7 +310,10 @@ body{background:%(BG)s;color:%(TEXT)s;font:13px 'Segoe UI',system-ui,sans-serif}
 #bag{font-size:12px;color:%(DIM)s}#saat{font-size:13px;color:%(DIM)s;font-family:monospace}
 #ana{display:flex;gap:6px;margin:0 6px 6px}
 #sol{width:178px;display:flex;flex-direction:column;gap:6px}
-#orta{flex:1;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:6px}
+/* minmax(0,1fr): hücre tabanı içerikten bağımsız olsun. Düz 1fr min-content'i
+   taban alır, SLAM haritası büyüdükçe panel boyu da oynar. */
+#orta{flex:1;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr));gap:6px;min-height:0}
+.vid{min-width:0;min-height:0;overflow:hidden}
 #sag{width:200px;display:flex;flex-direction:column;gap:6px}
 .kart{background:%(CARD)s;border:1px solid %(LINE)s;border-radius:6px;padding:8px 10px}
 .kart .b{font-size:11px;color:%(DIM)s;margin-bottom:3px}
@@ -257,9 +322,14 @@ body{background:%(BG)s;color:%(TEXT)s;font:13px 'Segoe UI',system-ui,sans-serif}
  display:flex;flex-direction:column;min-height:0}
 .vid .h{height:20px;background:%(LINE)s;display:flex;align-items:center;padding:0 8px;
  font-size:11px;color:%(DIM)s}
-.vid .g{flex:1;display:flex;align-items:center;justify-content:center;min-height:0;position:relative}
-.vid img{max-width:100%%;max-height:100%%;object-fit:contain}
-.vid .yok{position:absolute;color:%(DIM)s;font-size:12px}
+.vid .g{flex:1;min-height:0;min-width:0;position:relative;overflow:hidden}
+/* Mutlak konum: kare boyutu değiştiğinde (SLAM haritası büyürken olduğu gibi)
+   hücreyi itip paneli büyütmez. */
+.vid img{position:absolute;top:0;left:0;width:100%%;height:100%%;object-fit:contain}
+/* SLAM haritası OccupancyGrid çözünürlüğünde gelir (~230px) — panele
+   büyütülürken hücre sınırları keskin kalsın, bulanıklaşmasın. */
+#cam_harita{image-rendering:pixelated}
+.vid .yok{position:absolute;top:50%%;left:50%%;transform:translate(-50%%,-50%%);color:%(DIM)s;font-size:12px}
 button{border:none;border-radius:4px;cursor:pointer;font-family:inherit}
 #estop{background:%(RED)s;color:#fff;font-weight:bold;font-size:14px;padding:8px;width:100%%}
 #estop:hover{background:#d32f2f}
@@ -296,6 +366,10 @@ button{border:none;border-radius:4px;cursor:pointer;font-family:inherit}
    <span class=yok>sinyal yok</span><img id=cam_nisan></div></div>
   <div class=vid><div class=h>SLAM Haritası</div><div class=g>
    <span class=yok>sinyal yok</span><img id=cam_harita></div></div>
+  <div class=vid><div class=h>Derinlik Kamerası</div><div class=g>
+   <span class=yok>sinyal yok</span><img id=cam_derinlik></div></div>
+  <div class=vid><div class=h>LiDAR (anlık)</div><div class=g>
+   <span class=yok>sinyal yok</span><img id=cam_lidar></div></div>
  </div>
  <div id=sag>
   <div class=kart style=padding:0>
@@ -312,13 +386,23 @@ button{border:none;border-radius:4px;cursor:pointer;font-family:inherit}
  </div>
 </div>
 <script>
-// Kamera akışları — MJPEG, tarayıcı img ile doğrudan gösterir
+// Kamera panelleri — her kare ayrı istek. MJPEG bağlantıyı süresiz açık tutar,
+// 6 panel + SSE tarayıcının 6 eşzamanlı bağlantı sınırını doldurur.
 for(const [id,ad] of [['cam_on','on'],['cam_yolo','yolo'],
-                      ['cam_nisan','nisan'],['cam_harita','harita']]){
+                      ['cam_nisan','nisan'],['cam_harita','harita'],
+                      ['cam_derinlik','derinlik'],['cam_lidar','lidar']]){
   const im=document.getElementById(id), yok=im.previousElementSibling;
-  im.src='/stream/'+ad;
-  im.onload=()=>{yok.style.display='none'};
-  im.onerror=()=>{yok.style.display='block'};
+  let bekliyor=false;
+  const cek=()=>{
+    if(bekliyor) return;              // önceki kare inmeden yenisini isteme
+    bekliyor=true;
+    const y=new Image();
+    y.onload=()=>{im.src=y.src; yok.style.display='none'; bekliyor=false};
+    y.onerror=()=>{yok.style.display='block'; bekliyor=false};
+    y.src='/kare/'+ad+'?t='+Date.now();
+  };
+  cek();
+  setInterval(cek, 100);              // ~10 fps tavan
 }
 // Sensör akışı — SSE
 const es=new EventSource('/veri');
@@ -370,6 +454,8 @@ class Isleyici(BaseHTTPRequestHandler):
             self.send_header('Content-Length', str(len(govde)))
             self.end_headers()
             self.wfile.write(govde)
+        elif self.path.startswith('/kare/'):
+            self._tek_kare(self.path[len('/kare/'):].split('?')[0])
         elif self.path.startswith('/stream/'):
             self._mjpeg(self.path[len('/stream/'):])
         elif self.path == '/veri':
@@ -390,8 +476,34 @@ class Isleyici(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    def _tek_kare(self, ad):
+        """Tek JPEG döner ve bağlantıyı kapatır.
+
+        MJPEG akışı bağlantıyı süresiz açık tutar; tarayıcılar aynı sunucuya
+        en fazla 6 eşzamanlı bağlantı açtığı için 6 panel + SSE havuzu
+        doldurur ve sayfa kilitlenir. Kare bazlı çekimde her istek
+        milisaniyeler içinde kapanır, havuz serbest kalır.
+        """
+        if ad not in PANELLER:
+            self.send_error(404)
+            return
+        bgr = panel_kare(ad)
+        jpg = kucult_kodla(bgr) if bgr is not None else None
+        if jpg is None:
+            self.send_error(503)
+            return
+        self.send_response(200)
+        self.send_header('Content-Type', 'image/jpeg')
+        self.send_header('Content-Length', str(len(jpg)))
+        self.send_header('Cache-Control', 'no-store')
+        self.end_headers()
+        try:
+            self.wfile.write(jpg)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def _mjpeg(self, ad):
-        gecerli = {'on', 'yolo', 'nisan', 'harita'}
+        gecerli = PANELLER
         if ad not in gecerli:
             self.send_error(404)
             return
