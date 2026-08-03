@@ -36,6 +36,11 @@ class PreprocessingNode(Node):
         super().__init__("preprocessing_node")
 
         # Parameters
+        # Kameralar araca ters monte edilebiliyor; görüntü kaynakta çevrilir ki
+        # hem YOLO hem panel düz görsün (model düz görüntüyle eğitildi).
+        self.declare_parameter("flip_ana", False)
+        self.declare_parameter("flip_yardimci", False)
+        self.declare_parameter("flip_taret", False)
         self.declare_parameter("gaussian_kernel", 5)
         self.declare_parameter("temporal_alpha", 0.3)
         self.declare_parameter("enable_rain_inpaint", True)
@@ -46,6 +51,10 @@ class PreprocessingNode(Node):
         self.declare_parameter("lidar_ma_window", 5)
         self.declare_parameter("depth_ror_nb_points", 6)
         self.declare_parameter("depth_ror_radius", 0.05)
+
+        self._flip_ana = bool(self.get_parameter("flip_ana").value)
+        self._flip_aux = bool(self.get_parameter("flip_yardimci").value)
+        self._flip_taret = bool(self.get_parameter("flip_taret").value)
 
         self.gaussian_kernel = self.get_parameter("gaussian_kernel").value
         self.temporal_alpha = self.get_parameter("temporal_alpha").value
@@ -104,18 +113,24 @@ class PreprocessingNode(Node):
     # ------------------------------------------------------------------
     def cb_main_camera(self, msg: Image):
         cv_img = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+        if self._flip_ana:
+            cv_img = cv2.flip(cv_img, -1)      # 180°
         out = self._process_image(cv_img, self.ema_main)
         self.ema_main = out.astype(np.float32)
         self.pub_main.publish(self._msg_yap(out, msg))
 
     def cb_aux_camera(self, msg: Image):
         cv_img = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+        if self._flip_aux:
+            cv_img = cv2.flip(cv_img, -1)
         out = self._process_image(cv_img, self.ema_aux)
         self.ema_aux = out.astype(np.float32)
         self.pub_aux.publish(self._msg_yap(out, msg))
 
     def cb_taret_camera(self, msg: Image):
         cv_img = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+        if self._flip_taret:
+            cv_img = cv2.flip(cv_img, -1)
         out = self._process_image(cv_img, self.ema_taret)
         self.ema_taret = out.astype(np.float32)
         self.pub_taret.publish(self._msg_yap(out, msg))
