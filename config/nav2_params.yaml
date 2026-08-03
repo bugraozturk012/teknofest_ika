@@ -390,9 +390,8 @@ amcl:
     recovery_alpha_fast: 0.0
     recovery_alpha_slow: 0.0
     resample_interval: 1
-    # Ackermann kinematikli gerçek araç — DifferentialMotionModel YANLIŞTI
-    # (bu dosya gercek_arac için; test_arac diferansiyel sürüşlü olduğundan
-    # nav2_params_test.yaml'da Differential doğru kalır).
+    # Ackermann kinematikli araç — DifferentialMotionModel yanlış sonuç verir
+    # (yerinde dönüş varsayar, araç dönemez).
     robot_model_type: nav2_amcl::AckermannMotionModel
     save_pose_rate: 0.5
     sigma_hit: 0.2

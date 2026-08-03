@@ -21,8 +21,7 @@
 11. [Parkur Aşamaları](#11-parkur-aşamaları)
 12. [Kurulum](#12-kurulum)
 13. [Çalıştırma](#13-çalıştırma)
-14. [Test Aracı](#14-test-aracı)
-15. [Bekleyen Kalibrasyonlar](#15-bekleyen-kalibrasyonlar)
+14. [Bekleyen Kalibrasyonlar](#14-bekleyen-kalibrasyonlar)
 
 ---
 
@@ -167,13 +166,10 @@ lora_gcs GCS komutu       ──┘                                (GPIO kurulum
 │       └── cone_fusion_node.py     # Lidar + kamera koni füzyonu
 ├── launch/
 │   ├── gercek_arac.launch.py       # Gerçek araç — tam stack
-│   ├── gercek_harita.launch.py     # Gerçek araç — harita alma
-│   └── test_arac.launch.py         # Test aracı (DC motor, diferansiyel)
+│   └── gercek_harita.launch.py     # Gerçek araç — harita alma
 ├── config/
 │   ├── nav2_params.yaml            # Gerçek araç Nav2 parametreleri
-│   ├── nav2_params_test.yaml       # Test aracı Nav2 parametreleri
 │   ├── ekf.yaml                    # Gerçek araç EKF konfigürasyonu
-│   ├── ekf_test.yaml               # Test aracı EKF konfigürasyonu
 │   ├── mapper_params_online_sync.yaml  # SLAM Toolbox konfigürasyonu
 │   └── waypoints.yaml              # Parkur waypoint koordinatları
 ├── urdf/
@@ -182,10 +178,12 @@ lora_gcs GCS komutu       ──┘                                (GPIO kurulum
 │   ├── govde.stl
 │   └── tekerlek.stl
 ├── maps/                           # Kaydedilen SLAM haritaları
-├── arduino/
-│   └── firmware.c                  # Test aracı Arduino firmware
+├── arduino/                       # Mega 2560 firmware (PlatformIO)
+│   ├── src/main.cpp
+│   ├── include/config.h
+│   └── platformio.ini
 ├── models/
-│   └── best.pt                     # YOLOv8 model (16 sınıf)
+│   └── best.pt                     # YOLO model (15 sınıf)
 ├── package.xml
 └── setup.py
 ```
@@ -329,17 +327,6 @@ controller: RegulatedPurePursuitController
   desired_linear_vel: 2.0
 ```
 
-### Test Aracı (Diferansiyel)
-
-```yaml
-planner: NavfnPlanner (A*)
-
-controller: RegulatedPurePursuitController
-  use_rotate_to_heading: true   # Diferansiyel yerinde döner
-  desired_linear_vel: 0.20
-  transform_tolerance: 0.5
-```
-
 ---
 
 ## 9. Sensör Füzyonu (EKF)
@@ -348,8 +335,6 @@ controller: RegulatedPurePursuitController
 /odom (dead reckoning)   ──▶ EKF ──▶ /odometry/filtered
 /imu/data (MPU9250)      ──┘          child_frame: base_footprint
 ```
-
-Test aracında IMU devre dışı — yalnızca odometri kullanılır.
 
 ---
 
@@ -460,36 +445,7 @@ ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose \
 
 ---
 
-## 14. Test Aracı
-
-DC motorlu diferansiyel test aracı — gerçek araç yazılımını doğrulamak için kullanılır.
-
-| Özellik | Değer |
-|---|---|
-| MCU | Arduino UNO (ATmega328P) |
-| Motor sürücü | L298N Mini |
-| Baud rate | 500.000 bps |
-| Planner | NavfnPlanner (A*) |
-| Controller | RegulatedPurePursuitController |
-| Hız | 0.20 m/s |
-
-```bash
-# Test aracı başlatma
-ros2 launch teknofest_ika test_arac.launch.py
-
-# Harita alma (test_harita.pgm yoksa otomatik mapping moduna girer)
-# Harita varsa → localization modunda başlar
-
-# Arduino firmware derleme ve yükleme (Jetson'da)
-cd ~/lydia_ws/arduino
-avr-gcc -mmcu=atmega328p -std=gnu99 -Os firmware.c -o fw.elf
-avr-objcopy -O ihex fw.elf fw.hex
-avrdude -p atmega328p -c arduino -P /dev/ttyACM0 -b 115200 -U flash:w:fw.hex:i
-```
-
----
-
-## 15. Bekleyen Kalibrasyonlar
+## 14. Bekleyen Kalibrasyonlar
 
 | Görev | Dosya | Parametre |
 |---|---|---|
@@ -499,7 +455,7 @@ avrdude -p atmega328p -c arduino -P /dev/ttyACM0 -b 115200 -U flash:w:fw.hex:i
 | Parkur waypoint koordinatları | `waypoints.yaml` | Tüm x/y değerleri |
 | Enkoder ölçeği | `seri_kopru.py` | `WHEEL_RADIUS`, `TRACK_WIDTH` |
 | TensorRT engine | `models/best.engine` | `export_tensorrt.py` ile üret |
-| Gerçek Mega/Nano firmware | `arduino/` | Repoda yok — sadece test aracı (UNO) firmware'i var; lazer/servo/e-stop donanım mantığı doğrulanmadı |
+| Araçtaki firmware | `arduino/` | Röle direksiyon + CH4 değişikliği Jetson'da, repoya alınmadı |
 
 ---
 
