@@ -133,7 +133,11 @@ def generate_launch_description():
         output='screen',
         parameters=[{'use_sim_time': False,
                      'port': '/dev/mega',
-                     'baud': 115200}]
+                     'baud': 115200,
+                     # odom → base_footprint TF'i aşağıdaki EKF yayınlar
+                     'publish_tf': False,
+                     # tek enkoder Mega'nın A0'ında; A1 boşta gürültü okur
+                     'enkoder_kanali': 'sol'}]
     )
 
     # ── EKF (odom + IMU füzyon) ───────────────────────────────────────────────

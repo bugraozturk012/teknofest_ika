@@ -52,6 +52,15 @@ IMU_TOPIC = "/imu/data"
 # Frame      : odom → base_link
 ODOM_TOPIC = "/odom"
 
+# AS5600 ham ADC — kalibrasyon/teşhis
+# Mesaj tipi : std_msgs/UInt16MultiArray  → [sol_adc, sag_adc], 0–1023
+# Frekans    : 50 Hz (enkoder paketiyle aynı)
+# Üretici    : seri_kopru (yalnız ham_enkoder=True iken)
+# Tüketen    : scripts/sensor_dogrula.py --mod ham
+# Hangi analog pinin bağlı olduğunu, tur başına düşen tick'i ve okuma
+# gürültüsünü görmek için; normal sürüşte kapalıdır.
+ENKODER_HAM_TOPIC = "/enkoder/ham"
+
 # EKF çıktısı — Füzyon sonrası hassas konum
 # Mesaj tipi : nav_msgs/Odometry
 # Frekans    : 30 Hz

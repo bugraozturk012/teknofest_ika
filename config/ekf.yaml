@@ -2,8 +2,12 @@
 # robot_localization paketi — EKF node
 #
 # Füzyon kaynakları:
-#   odom0 : /odom          → diferansiyel enkoder odometrisi (AS5600 analog)
-#   imu0  : /imu/data      → MPU9250 + Madgwick AHRS (Nano üzerinden)
+#   odom0 : /odom          → tekerlek enkoderi (AS5600 analog, Mega üzerinden)
+#   imu0  : /imu/data      → BMI160 + Madgwick AHRS (Mega üzerinden)
+#
+# Arka aks TEK PARÇA (diferansiyelsiz, zincirle tahrik): iki tekerlek mekanik
+# olarak kilitli döner, sol/sağ farkından yön çıkarılamaz. Bu yüzden tekerlekten
+# yalnız ileri hız (vx) alınır; yön ve konum IMU + EKF integrasyonundan gelir.
 #
 # Çıkış:
 #   /odometry/filtered     → EKF füzyon çıkışı
@@ -51,22 +55,26 @@ ekf_filter_node:
     print_diagnostics: true
     debug: false
 
-    # ── Kaynak 0: Enkoder odometrisi ─────────────────────────────────────
-    # /odom mesajı → seri_kopru.py'dan geliyor
-    # Nano'dan gelen ODO:linear,angular,x,y,theta parse edilecek (protokol güncellenince)
+    # ── Kaynak 0: Tekerlek enkoderi ──────────────────────────────────────
+    # /odom mesajı → seri_kopru.py'dan geliyor.
+    #
+    # Yalnız vx alınır. Tek parça aksta seri_kopru'nun ürettiği theta hep 0
+    # kalır, dolayısıyla /odom'un pose'u (x, y) araç dönse bile düz bir çizgi
+    # gösterir ve vyaw sürekli 0 okur — ikisi de füzyona sokulursa EKF'i
+    # yanıltır. Konum, IMU yönüyle birlikte EKF içinde integre edilir.
     odom0: /odom
     #                    x      y      z      roll   pitch  yaw    vx     vy     vz     vroll  vpitch vyaw
-    odom0_config:     [true,  true,  false,  false, false, false, true,  false, false, false, false, true,
-    #                    ax     ay     az                          ^ yaw IMU'dan alınır, odom'dan değil
+    odom0_config:     [false, false, false,  false, false, false, true,  false, false, false, false, false,
+    #                    ax     ay     az                          ^ yalnız ileri hız
                        false, false, false]
     odom0_queue_size:    10
     odom0_nodelay:       false
-    odom0_differential:  false   # Mutlak konum veriyoruz (kümülatif ticks)
+    odom0_differential:  false
     odom0_relative:      false
 
-    # ── Kaynak 1: IMU (MPU9250 + Madgwick) ───────────────────────────────
-    # Mevcut durumda sadece orientation geliyor (angular_velocity_cov[0]=-1)
-    # Protokol güncellenince ax, ay, gx, gy, gz de eklenebilir
+    # ── Kaynak 1: IMU (BMI160 + Madgwick) ────────────────────────────────
+    # Yalnız orientation geliyor (angular_velocity_cov[0]=-1); ham ivme ve
+    # gyro eklenirse ax, ay, gz de füzyona alınabilir.
     imu0: /imu/data
     #                    x      y      z      roll   pitch  yaw    vx     vy     vz     vroll  vpitch vyaw
     imu0_config:      [false, false, false,  true,  true,  true,  false, false, false, false, false, true,

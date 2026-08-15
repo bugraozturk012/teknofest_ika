@@ -26,10 +26,14 @@ PROTOKOL (115200 baud, 8N1 — ASCII YOK, saf binary):
 ENKODER:
   AS5600 analog → MCU ADC → 10-bit (0–1023)
   TICKS_PER_REV = 1024
+  Aksa takılır (motor şaftına değil) ve 5 V ile beslenir — 3.3 V'ta analog
+  çıkışın tepe değeri ADC tavanına ulaşmaz, tur başına ~675 tick okunur ve
+  araç aldığı yolu olduğundan fazla sanar.
 
 KİNEMATİK:
   Ackermann: δ = arctan(L × ω / v)
-  Odometri : diferansiyel enkoder (sol + sağ tekerlek)
+  Odometri : tek tekerlek enkoderi → yalnız ileri hız (arka aks tek parça,
+             yön IMU'dan gelir; bkz. enkoder_kanali parametresi)
 """
 
 import math
@@ -44,13 +48,13 @@ from geometry_msgs.msg import TransformStamped
 from ackermann_msgs.msg import AckermannDriveStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu, BatteryState
-from std_msgs.msg import Bool, Int16, UInt16, Float32MultiArray
+from std_msgs.msg import Bool, Int16, UInt16, Float32MultiArray, UInt16MultiArray
 from tf2_ros import TransformBroadcaster
 import serial
 
 from teknofest_ika.otonomi.topics import (
     ACKERMANN_CMD_TOPIC, SHOOT_RESULT_TOPIC, TARET_PAN_TOPIC, TARET_TILT_TOPIC,
-    ODOM_TOPIC, IMU_TOPIC, BATTERY_TOPIC, RC_INPUT_TOPIC,
+    ODOM_TOPIC, IMU_TOPIC, BATTERY_TOPIC, RC_INPUT_TOPIC, ENKODER_HAM_TOPIC,
     E_STOP_FORCE_SERIAL_TOPIC, E_STOP_TOPIC, SHOOT_CMD_TOPIC, FREN_KOMUT_TOPIC,
     SERIAL_ODOM,
 )
@@ -145,11 +149,34 @@ class SeriKopru(Node):
         self.declare_parameter('baud',        115200)
         self.declare_parameter('cmd_timeout', 0.5)
         self.declare_parameter('sim_mode',    False)
+        # odom → base_footprint dönüşümünü tek bir düğüm yayınlamalı. EKF
+        # çalışırken (gercek_arac.launch.py) füzyon çıkışı otorite olur ve
+        # burası kapatılır; iki yayıncı TF ağacını titretir. EKF'siz çalışan
+        # kurulumlarda odometrinin TF'i yine buradan gelir.
+        self.declare_parameter('publish_tf',  True)
+        # Arka aks tek parça (diferansiyelsiz, zincirle tahrik): iki tekerlek
+        # mekanik olarak kilitli döner, sol/sağ farkından yön çıkmaz. Araçta
+        # tek AS5600 var ve Mega'nın A0'ına (ENC_SOL_PIN) bağlı; A1 boşta
+        # durduğu için gürültü okur. Mega paketi yine iki kanal gönderdiğinden
+        # kullanılacak kanal burada seçilir: 'sol' | 'sag' | 'cift'.
+        self.declare_parameter('enkoder_kanali', 'sol')
+        # Ham AS5600 ADC'sini /enkoder/ham'a yayınlar — kanal tespiti, tur
+        # başına tick sayımı ve gürültü ölçümü için. Sürüşte kapalı tutulur.
+        self.declare_parameter('ham_enkoder', False)
 
         self._port        = self.get_parameter('port').value
         self._baud        = self.get_parameter('baud').value
         self._cmd_timeout = self.get_parameter('cmd_timeout').value
         self._sim_mode    = self.get_parameter('sim_mode').value
+        self._publish_tf  = bool(self.get_parameter('publish_tf').value)
+
+        kanal = str(self.get_parameter('enkoder_kanali').value).lower()
+        if kanal not in ('sol', 'sag', 'cift'):
+            self.get_logger().warn(
+                f"enkoder_kanali '{kanal}' geçersiz — 'sol' varsayıldı.")
+            kanal = 'sol'
+        self._enk_kanali = kanal
+        self._ham_enkoder = bool(self.get_parameter('ham_enkoder').value)
 
         # Seri Port
         self._ser = None
@@ -209,7 +236,10 @@ class SeriKopru(Node):
                                  lambda m: self._paket_gonder(PKT_FREN, m.data, 0), 10)
         self._pub      = self.create_publisher(Odometry, ODOM_TOPIC, qos_odom)
         self._imu_pub  = self.create_publisher(Imu, IMU_TOPIC, qos_odom)
-        self._tf       = TransformBroadcaster(self)
+        self._tf       = TransformBroadcaster(self) if self._publish_tf else None
+        self._ham_pub  = (self.create_publisher(UInt16MultiArray,
+                                               ENKODER_HAM_TOPIC, qos_odom)
+                          if self._ham_enkoder else None)
 
         # Batarya durumu yayıncısı — INA219 → PKT_AKIM → /battery/status
         # 8S LiPo: 33.6V tam, 28.0V boş (4.2V / 3.5V per hücre)
@@ -368,6 +398,8 @@ class SeriKopru(Node):
 
         if komut == PKT_ENC:
             sol, sag = struct.unpack('>HH', ham[2:6])
+            if self._ham_pub is not None:
+                self._ham_pub.publish(UInt16MultiArray(data=[sol, sag]))
             self._odometri(sol, sag)
 
         elif komut == PKT_IMU_YP:
@@ -477,8 +509,16 @@ class SeriKopru(Node):
 
         ds = d_sol * METRE_PER_TICK
         dd = d_sag * METRE_PER_TICK
-        d_merkez = (ds + dd) / 2.0
-        d_theta  = (dd - ds) / TEKERLEK_ARALIGI
+
+        if self._enk_kanali == 'cift':
+            d_merkez = (ds + dd) / 2.0
+            d_theta  = (dd - ds) / TEKERLEK_ARALIGI
+        else:
+            # Tek enkoder: aks tek parça olduğu için okunan tekerlek zaten
+            # aracın ilerlemesini verir; ikiye bölmek mesafeyi yarı okutur.
+            # Yön bu kanaldan çıkmaz, IMU'nun işidir.
+            d_merkez = ds if self._enk_kanali == 'sol' else dd
+            d_theta  = 0.0
 
         self._x     += d_merkez * math.cos(self._theta + d_theta / 2.0)
         self._y     += d_merkez * math.sin(self._theta + d_theta / 2.0)
@@ -500,15 +540,16 @@ class SeriKopru(Node):
         qw = math.cos(self._theta / 2.0)
         t  = stamp.to_msg()
 
-        tf = TransformStamped()
-        tf.header.stamp          = t
-        tf.header.frame_id       = 'odom'
-        tf.child_frame_id        = 'base_footprint'   # ekf_params.yaml ile eşleşmeli
-        tf.transform.translation.x = self._x
-        tf.transform.translation.y = self._y
-        tf.transform.rotation.z    = qz
-        tf.transform.rotation.w    = qw
-        self._tf.sendTransform(tf)
+        if self._tf is not None:
+            tf = TransformStamped()
+            tf.header.stamp          = t
+            tf.header.frame_id       = 'odom'
+            tf.child_frame_id        = 'base_footprint'   # ekf.yaml ile eşleşmeli
+            tf.transform.translation.x = self._x
+            tf.transform.translation.y = self._y
+            tf.transform.rotation.z    = qz
+            tf.transform.rotation.w    = qw
+            self._tf.sendTransform(tf)
 
         odom = Odometry()
         odom.header.stamp            = t
