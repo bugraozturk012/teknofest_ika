@@ -15,7 +15,20 @@ Eski PyQt dashboard'ın (ika_dashboard.py) yerini alır. Fark mimaridedir:
   Taşıma katmanları (hepsi düz HTTP/TCP, DDS'ten bağımsız):
     /stream/<ad>  → MJPEG (kamera akışları, JPEG kalite düşük + 480p)
     /veri         → SSE   (sensör değerleri, hazır metin+renk, 5 Hz)
+    /sinyaller    → JSON  (sinyal kataloğu: birim + kaynak, bir kez okunur)
+    /telemetri    → SSE   (HAM sayılar, 5 Hz)
     /estop  POST  → tarayıcıdan gelen E-STOP'u ROS'a yayınlar
+
+  /veri ile /telemetri arasındaki fark
+  ------------------------------------
+  /veri biçimlenmiş metin ve renk gönderir ({'t': '+1,2°', 'c': '#ef5350'}).
+  Bu, bu dosyanın içindeki SAYFA'yı beslemek için yeterli ama metin grafiğe
+  çizilemez, tamponlanamaz, eşiklenemez. /telemetri aynı değerleri HAM sayı
+  olarak gönderir; renk ve eşik kararı istemciye kalır.
+
+  Kural: kaynağı olmayan sinyal SAYI DEĞİL null döner. Panoda "—" görünür.
+  Uydurulmuş bir sayı ekranda gerçek sanılır — bu dosyada hiçbir sinyal
+  tahminden üretilmez, ölçülmeyen şey null'dır.
 
 Kablosuzda ham görüntü asla taşınmaz — her akış Jetson'da sıkıştırılır,
 yalnız o akışa bir tarayıcı bağlıyken kodlanır (CPU tasarrufu).
@@ -24,7 +37,9 @@ yalnız o akışa bir tarayıcı bağlıyken kodlanır (CPU tasarrufu).
     python3 ~/lydia_ws/src/teknofest_ika_yazilim/scripts/web_dashboard.py
 (ROS ortamı .bashrc'den gelir: ROS_DOMAIN_ID=42 + discovery server.)
 """
+import glob
 import json
+import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -37,7 +52,8 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
-from std_msgs.msg import Bool, UInt8, String
+from std_msgs.msg import Bool, UInt8, String, Float32MultiArray, UInt16MultiArray
+from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import BatteryState, Imu, Image, CompressedImage, LaserScan
 from cv_bridge import CvBridge
@@ -48,7 +64,16 @@ from teknofest_ika.otonomi.topics import (
     TARGETING_STATUS_TOPIC, TARGETING_DEBUG_TOPIC, SHOOT_RESULT_TOPIC,
     CAMERA_IMAGE_TOPIC, CAMERA_TARET_TOPIC, YOLO_RAW_DEBUG_TOPIC,
     MAP_IMAGE_TOPIC, DEPTH_IMAGE_TOPIC, SCAN_TOPIC,
+    RC_INPUT_TOPIC, MUX_CMD_VEL_TOPIC, ODOM_TOPIC, ENKODER_HAM_TOPIC,
+    DETECTIONS_TOPIC,
 )
+
+# vision_msgs kurulu değilse tespit sayacı sessizce kapanır; panonun tamamı
+# bu paket yüzünden düşmemeli.
+try:
+    from vision_msgs.msg import Detection2DArray
+except ImportError:
+    Detection2DArray = None
 
 # ── Ayarlar ───────────────────────────────────────────────────────────────────
 PORT        = 8080
@@ -74,6 +99,70 @@ BG, PANEL, CARD, LINE = '#181818', '#202020', '#242424', '#2e2e2e'
 TEXT, DIM = '#d4d4d4', '#5a5a5a'
 GREEN, RED, AMBER, CYAN = '#4caf50', '#ef5350', '#ffa726', '#26c6da'
 
+# ── /battery/status alanlarının anlamı ────────────────────────────────────────
+# 0x13 paketi depoda "motor akımı [mA] + batarya [cV]" olarak çözülür, ama
+# ARAÇTA KOŞAN firmware (depodakiyle aynı sürüm değil) aynı iki alanı başka
+# şey için kullanıyor:
+#     bat.current × 10 = gaz voltajı   [V]
+#     bat.voltage × 10 = direksiyon açısı [°]
+# Bunun sonucu: bu araçta batarya gerilimi ve motor akımı ÖLÇÜLMÜYOR, ölçüm
+# alanları dolu. Depodaki firmware bir gün yüklenirse bunu False yap.
+ARAC_FIRMWARE_0X13 = True
+
+# ── Sinyal kataloğu — hangi sayının gerçekten kaynağı var ─────────────────────
+# İstemci bunu /sinyaller'den bir kez okur ve panoyu buna göre kurar.
+# 'kaynak' None ise sinyalin bu araçta karşılığı yoktur; /telemetri onu her
+# zaman null döndürür ve panoda "—" görünür. Değer üretebilir hale gelen bir
+# sinyalin kaynağı burada doldurulur — tek düzenlenecek yer burasıdır.
+SINYAL_KATALOG = [
+    # anahtar,        ad,               grup,       birim,    kaynak
+    ('gaz_v',         'gaz_v',          'Sürüş',    'V',      '/battery/status current×10'),
+    ('gaz_kom',       'gaz_kom',        'Sürüş',    'V',      None),
+    ('hiz',           'hiz',            'Sürüş',    'm/s',    '/odometry/filtered (EKF)'),
+    ('hiz_komut',     'hiz_komut',      'Sürüş',    'm/s',    '/mux/cmd_vel linear.x'),
+    ('steer_aci',     'steer_aci',      'Sürüş',    '°',      '/battery/status voltage×10'),
+    ('steer_akim',    'steer_akim',     'Sürüş',    'A',      None),
+    ('fren_pwm',      'fren_pwm',       'Sürüş',    'µs',     None),
+
+    ('rc_gaz',        'rc_gaz',         'Kumanda',  'µs',     '/rc_input[0]'),
+    ('rc_direksiyon', 'rc_direksiyon',  'Kumanda',  'µs',     '/rc_input[1]'),
+    ('rc_mod',        'rc_mod',         'Kumanda',  'µs',     '/rc_input[2]'),
+    ('rc_aux',        'rc_aux',         'Kumanda',  'µs',     '/rc_input[3]'),
+    ('rc_fren',       'rc_fren',        'Kumanda',  'µs',     None),
+
+    ('v48',           'v48',            'Sensör',   'V',      None),
+    ('v12',           'v12',            'Sensör',   'V',      None),
+    ('encp',          'encp',           'Sensör',   'sayım',  '/enkoder/ham[0]'),
+    ('enc_mesafe',    'enc_mesafe',     'Sensör',   'm',      '/odom pose.x'),
+    ('yatis',         'yatis',          'Sensör',   '°',      '/imu/data'),
+    ('yunuslama',     'yunuslama',      'Sensör',   '°',      '/imu/data'),
+
+    ('engel',         'engel',          'Algı',     'm',      '/scan en yakın ışın'),
+    ('tespit',        'tespit',         'Algı',     'adet',   '/ika/detections'),
+    ('fps',           'fps',            'Algı',     'Hz',     'ön kamera kare hızı'),
+
+    ('wp',            'wp_aktif',       'Sistem',   'nokta',  '/misyon/wp_index'),
+    ('cpu',           'cpu',            'Sistem',   '%',      '/proc/stat'),
+    ('gpu',           'gpu',            'Sistem',   '%',      'sysfs gpu load'),
+    ('sicaklik',      'sicaklik',       'Sistem',   '°C',     'sysfs thermal_zone'),
+    ('ram',           'ram',            'Sistem',   'MB',     '/proc/meminfo'),
+    ('yas',           'yas',            'Sistem',   'sn',     'son ROS mesajından beri'),
+]
+
+# Kaynağı olmayan sinyaller — telemetri bunları her zaman null döndürür.
+KAYNAKSIZ = frozenset(k for k, _a, _g, _b, kaynak in SINYAL_KATALOG if kaynak is None)
+
+if not ARAC_FIRMWARE_0X13:
+    # Depo firmware'i: aynı iki alan gerçek batarya/akım taşır.
+    SINYAL_KATALOG = [
+        (k, a, g, b,
+         '/battery/status voltage' if k == 'v48' else
+         '/battery/status current' if k == 'steer_akim' else
+         None if k in ('gaz_v', 'steer_aci') else kaynak)
+        for k, a, g, b, kaynak in SINYAL_KATALOG
+    ]
+    KAYNAKSIZ = frozenset(k for k, _a, _g, _b, kk in SINYAL_KATALOG if kk is None)
+
 MOD_ISIMLER = {0: 'MANUAL', 1: 'SEMI AUTO', 2: 'FULL AUTO'}
 MOD_RENK    = {'MANUAL': AMBER, 'SEMI AUTO': CYAN, 'FULL AUTO': GREEN}
 TARGETING_R = {'SEARCHING': AMBER, 'LOCKED': GREEN, 'ALIGNED': CYAN,
@@ -96,6 +185,22 @@ class Ortak:
             'targeting': '—', 'shoot': False,
         }
         self.son_ros = 0.0   # en son herhangi bir ROS mesajı zamanı
+
+        # /telemetri için ham sayılar. Başlangıç değeri None — "henüz mesaj
+        # gelmedi" ile "değer sıfır" ayrı şeyler; 0.0 ile başlatmak donmuş bir
+        # sensörü çalışıyor gibi gösterir.
+        self.ham = {k: None for k, _a, _g, _b, _s in SINYAL_KATALOG}
+        # Kaynağı olan bir sinyalin en son ne zaman güncellendiği. Mesaj
+        # kesilirse değer bayatlar; BAYAT_S sonrası null'a döner.
+        self.ham_zaman = {k: 0.0 for k in self.ham}
+
+    def ham_yaz(self, anahtar, deger):
+        """Ham sinyal yazar. Kaynağı olmayan anahtar sessizce yok sayılır."""
+        if anahtar in KAYNAKSIZ:
+            return
+        with self.kilit:
+            self.ham[anahtar] = deger
+            self.ham_zaman[anahtar] = time.time()
 
     def kare_yaz(self, ad, bgr):
         with self.kilit:
@@ -143,13 +248,36 @@ class WebDashboardNode(Node):
         self.create_subscription(CompressedImage, TARGETING_DEBUG_TOPIC + '/compressed',
                                  self._sik_nisan, be)
 
+        # — /telemetri için ek kaynaklar (mevcut panelleri etkilemez) —
+        self.create_subscription(Float32MultiArray, RC_INPUT_TOPIC, self._rc, be)
+        self.create_subscription(Twist, MUX_CMD_VEL_TOPIC, self._komut, 10)
+        self.create_subscription(Odometry, ODOM_TOPIC, self._enk_odom, be)
+        self.create_subscription(UInt16MultiArray, ENKODER_HAM_TOPIC, self._enk_ham, be)
+        if Detection2DArray is not None:
+            self.create_subscription(Detection2DArray, DETECTIONS_TOPIC,
+                                     self._tespit, be)
+        else:
+            self.get_logger().warn(
+                'vision_msgs yok — tespit sayacı kapalı, /telemetri null döner.')
+
         self._estop_pub = self.create_publisher(Bool, E_STOP_FORCE_GCS_TOPIC, 10)
+
+        # Ön kamera kare hızı: kare sayılır, saniyede bir orana çevrilir.
+        self._fps_sayac = 0
+        self._fps_zaman = time.time()
+        self.create_timer(1.0, self._fps_hesapla)
+        # Jetson kaynakları — sysfs okuması ucuz ama her SSE karesinde değil,
+        # saniyede bir örneklenir.
+        self._cpu_onceki = None
+        self.create_timer(1.0, self._kaynak_ornekle)
 
     # — görüntü —
     def _ham_kare(self, ad, msg):
         try:
             ortak.kare_yaz(ad, self._kopru.imgmsg_to_cv2(msg, 'bgr8'))
             ortak.son_ros = time.time()
+            if ad == 'on':
+                self._fps_sayac += 1
         except Exception:
             pass
 
@@ -170,6 +298,12 @@ class WebDashboardNode(Node):
                 cv2.circle(im, (mrk, mrk), int(r * olcek), (38, 38, 38), 1)
             cv2.line(im, (mrk, 0), (mrk, boy), (30, 30, 30), 1)
             cv2.line(im, (0, mrk), (boy, mrk), (30, 30, 30), 1)
+
+            # En yakın geçerli ışın — panelde çizilen halkalardan bağımsız,
+            # /telemetri'nin 'engel' sinyali. Menzil filtresi çizimle aynı
+            # olmalı ki paneldeki nokta ile sayı çelişmesin.
+            gecerli = [r for r in msg.ranges if 0.02 < r < LIDAR_MENZIL_M]
+            ortak.ham_yaz('engel', round(min(gecerli), 2) if gecerli else None)
 
             aci = msg.angle_min
             for mesafe in msg.ranges:
@@ -207,7 +341,11 @@ class WebDashboardNode(Node):
     def _estop(self, m):     ortak.sensor['e_stop'] = m.data; self._dokun()
     def _mod(self, m):       ortak.sensor['mod'] = int(m.data); self._dokun()
     def _fsm(self, m):       ortak.sensor['fsm'] = m.data; self._dokun()
-    def _wp(self, m):        ortak.sensor['wp'] = int(m.data); self._dokun()
+    def _wp(self, m):
+        ortak.sensor['wp'] = int(m.data)
+        ortak.ham_yaz('wp', int(m.data))
+        self._dokun()
+
     def _targeting(self, m): ortak.sensor['targeting'] = m.data; self._dokun()
     def _shoot(self, m):     ortak.sensor['shoot'] = m.data; self._dokun()
 
@@ -215,22 +353,200 @@ class WebDashboardNode(Node):
         ortak.sensor['batarya'] = m.percentage * 100 if m.percentage >= 0 else -1.0
         ortak.sensor['voltaj'] = m.voltage
         ortak.sensor['akim'] = m.current
+        # Araç firmware'i bu iki alanı batarya için değil gaz voltajı ve
+        # direksiyon açısı için kullanıyor — bkz. ARAC_FIRMWARE_0X13.
+        if ARAC_FIRMWARE_0X13:
+            ortak.ham_yaz('gaz_v', round(m.current * 10.0, 2))
+            ortak.ham_yaz('steer_aci', round(m.voltage * 10.0, 1))
+        else:
+            ortak.ham_yaz('v48', round(m.voltage, 2))
+            ortak.ham_yaz('steer_akim', round(m.current, 2))
         self._dokun()
 
     def _imu(self, m):
         q = m.orientation
-        ortak.sensor['roll'] = math.degrees(
+        roll = math.degrees(
             math.atan2(2 * (q.w * q.x + q.y * q.z), 1 - 2 * (q.x ** 2 + q.y ** 2)))
         sinp = 2 * (q.w * q.y - q.z * q.x)
-        ortak.sensor['pitch'] = math.degrees(math.asin(max(-1.0, min(1.0, sinp))))
+        pitch = math.degrees(math.asin(max(-1.0, min(1.0, sinp))))
+        ortak.sensor['roll'] = roll
+        ortak.sensor['pitch'] = pitch
+        ortak.ham_yaz('yatis', round(roll, 2))
+        ortak.ham_yaz('yunuslama', round(pitch, 2))
         self._dokun()
 
     def _odom(self, m):
         ortak.sensor['hiz'] = m.twist.twist.linear.x
+        ortak.ham_yaz('hiz', round(m.twist.twist.linear.x, 3))
         self._dokun()
+
+    # — /telemetri ham kaynakları —
+    def _rc(self, m):
+        """RC dizisi kanal SIRASINA göre değil ANLAMINA göre gelir.
+
+        Mega [gaz, direksiyon, mod, aux] gönderir; dizi indeksi kumandadaki
+        kanal numarasıyla örtüşmez (mod_yoneticisi._rc_cb ile aynı yorum).
+        Bu yüzden burada ch2/ch3/ch4 değil anlam adları kullanılıyor.
+        """
+        d = m.data
+        for i, ad in enumerate(('rc_gaz', 'rc_direksiyon', 'rc_mod', 'rc_aux')):
+            if len(d) > i:
+                ortak.ham_yaz(ad, round(float(d[i]), 1))
+        self._dokun()
+
+    def _komut(self, m):
+        ortak.ham_yaz('hiz_komut', round(m.linear.x, 3))
+        self._dokun()
+
+    def _enk_odom(self, m):
+        # Arka aks tek parça, diferansiyel yok → /odom pose'u yalnız kat edilen
+        # mesafeyi taşır, yön bilgisi içermez (bkz. seri_kopru._odometri).
+        ortak.ham_yaz('enc_mesafe', round(m.pose.pose.position.x, 3))
+        self._dokun()
+
+    def _enk_ham(self, m):
+        if len(m.data) > 0:
+            ortak.ham_yaz('encp', int(m.data[0]))
+        self._dokun()
+
+    def _tespit(self, m):
+        ortak.ham_yaz('tespit', len(m.detections))
+        self._dokun()
+
+    def _fps_hesapla(self):
+        simdi = time.time()
+        dt = simdi - self._fps_zaman
+        if dt > 0:
+            ortak.ham_yaz('fps', round(self._fps_sayac / dt, 1))
+        self._fps_sayac = 0
+        self._fps_zaman = simdi
+
+    def _cpu_yuzde(self):
+        """/proc/stat iki örnek arasındaki meşguliyet oranı."""
+        try:
+            with open('/proc/stat') as f:
+                alan = [float(x) for x in f.readline().split()[1:]]
+        except OSError:
+            return None
+        toplam, bosta = sum(alan), alan[3] + (alan[4] if len(alan) > 4 else 0.0)
+        onceki, self._cpu_onceki = self._cpu_onceki, (toplam, bosta)
+        if onceki is None:
+            return None
+        d_top, d_bos = toplam - onceki[0], bosta - onceki[1]
+        if d_top <= 0:
+            return None
+        return round(100.0 * (1.0 - d_bos / d_top), 1)
+
+    def _kaynak_ornekle(self):
+        ortak.ham_yaz('cpu', self._cpu_yuzde())
+        ortak.ham_yaz('gpu', gpu_yuzde())
+        ortak.ham_yaz('sicaklik', sicaklik_c())
+        ortak.ham_yaz('ram', ram_mb())
 
     def gcs_estop(self, aktif):
         self._estop_pub.publish(Bool(data=bool(aktif)))
+
+
+# ── Jetson kaynakları (sysfs) ─────────────────────────────────────────────────
+# Yollar JetPack sürümüne göre değişiyor; hiçbiri bulunamazsa None döner ve
+# panoda "—" görünür. Tahmin üretilmez.
+def _ilk_sayi(kaliplar):
+    for kalip in kaliplar:
+        for yol in sorted(glob.glob(kalip)):
+            try:
+                with open(yol) as f:
+                    return float(f.read().strip())
+            except (OSError, ValueError):
+                continue
+    return None
+
+
+def gpu_yuzde():
+    """GPU yükü. sysfs binde (0–1000) verir."""
+    ham = _ilk_sayi(['/sys/devices/platform/gpu.0/load',
+                     '/sys/devices/gpu.0/load',
+                     '/sys/devices/platform/*.gpu/load'])
+    return None if ham is None else round(ham / 10.0, 1)
+
+
+def sicaklik_c():
+    """CPU termal bölgesi. Tercihen adı CPU olan bölge, yoksa en sıcak bölge."""
+    try:
+        bolgeler = sorted(glob.glob('/sys/class/thermal/thermal_zone*'))
+    except OSError:
+        return None
+    en_sicak = None
+    for b in bolgeler:
+        try:
+            with open(os.path.join(b, 'type')) as f:
+                tip = f.read().strip().lower()
+            with open(os.path.join(b, 'temp')) as f:
+                c = float(f.read().strip()) / 1000.0
+        except (OSError, ValueError):
+            continue
+        if not -20.0 < c < 150.0:
+            continue
+        if 'cpu' in tip:
+            return round(c, 1)
+        en_sicak = c if en_sicak is None else max(en_sicak, c)
+    return None if en_sicak is None else round(en_sicak, 1)
+
+
+def ram_mb():
+    try:
+        with open('/proc/meminfo') as f:
+            satirlar = dict(
+                (p[0].rstrip(':'), float(p[1]))
+                for p in (s.split() for s in f) if len(p) >= 2)
+    except (OSError, ValueError):
+        return None
+    top, uygun = satirlar.get('MemTotal'), satirlar.get('MemAvailable')
+    if top is None or uygun is None:
+        return None
+    return round((top - uygun) / 1024.0, 0)
+
+
+# ── Ham telemetri (yeni pano) ─────────────────────────────────────────────────
+# Kaynağı olan ama bu süredir güncellenmemiş sinyal bayat sayılır ve null'a
+# döner. Donmuş bir sensörün son değerini göstermeye devam etmek, çalışıyor
+# sanılmasına yol açar.
+BAYAT_S = 3.0
+
+
+def sinyal_katalog_json():
+    return [{'k': k, 'ad': ad, 'gr': gr, 'bir': bir, 'kaynak': kaynak}
+            for k, ad, gr, bir, kaynak in SINYAL_KATALOG]
+
+
+def telemetri_json():
+    s = ortak.sensor
+    simdi = time.time()
+    bagli = (simdi - ortak.son_ros) < 3.0
+
+    with ortak.kilit:
+        deger = dict(ortak.ham)
+        zaman = dict(ortak.ham_zaman)
+
+    sinyaller = {}
+    for k in deger:
+        if k in KAYNAKSIZ or zaman[k] == 0.0 or (simdi - zaman[k]) > BAYAT_S:
+            sinyaller[k] = None
+        else:
+            sinyaller[k] = deger[k]
+
+    # 'yas' bayatlığın kendisini ölçer, bayatlık kuralına tabi değil.
+    sinyaller['yas'] = round(simdi - ortak.son_ros, 3) if ortak.son_ros else None
+
+    return {
+        'bagli': bagli,
+        'estop': bool(s['e_stop']),
+        'mod': int(s['mod']),
+        'mod_ad': MOD_ISIMLER.get(s['mod'], '?'),
+        'fsm': s['fsm'],
+        'targeting': s['targeting'],
+        'shoot': bool(s['shoot']),
+        'sinyal': sinyaller,
+    }
 
 
 # ── Sensör → hazır metin + renk (renk mantığı eski dashboard ile birebir) ─────
@@ -460,6 +776,10 @@ class Isleyici(BaseHTTPRequestHandler):
             self._mjpeg(self.path[len('/stream/'):])
         elif self.path == '/veri':
             self._sse()
+        elif self.path == '/sinyaller':
+            self._json(sinyal_katalog_json())
+        elif self.path == '/telemetri':
+            self._sse(telemetri_json)
         else:
             self.send_error(404)
 
@@ -537,7 +857,20 @@ class Isleyici(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
-    def _sse(self):
+    def _json(self, govde):
+        ham = json.dumps(govde, allow_nan=False).encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(ham)))
+        self.send_header('Cache-Control', 'no-store')
+        self.end_headers()
+        try:
+            self.wfile.write(ham)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _sse(self, uretici=None):
+        uretici = uretici or sensor_json
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
         self.send_header('Cache-Control', 'no-cache')
@@ -545,7 +878,13 @@ class Isleyici(BaseHTTPRequestHandler):
         self.end_headers()
         try:
             while True:
-                veri = json.dumps(sensor_json())
+                # allow_nan=False: NaN geçerli JSON değil, JSON.parse patlar ve
+                # akış sessizce ölür. Bir sensör NaN üretirse o kare atlanır.
+                try:
+                    veri = json.dumps(uretici(), allow_nan=False)
+                except ValueError:
+                    time.sleep(0.2)
+                    continue
                 self.wfile.write(('data: %s\n\n' % veri).encode('utf-8'))
                 self.wfile.flush()
                 time.sleep(0.2)   # 5 Hz
