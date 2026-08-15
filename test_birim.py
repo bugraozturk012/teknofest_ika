@@ -357,4 +357,14 @@ check("yumuşatma: dt=0 → değişmez",             fren_yumusat(0.4, 1.0, 0.5,
 print(f"\n{'='*45}")
 print(f"  TOPLAM: {PASS+FAIL} test | {PASS} GEÇTI | {FAIL} BAŞARISIZ")
 print(f"{'='*45}")
-sys.exit(0 if FAIL == 0 else 1)
+
+
+def test_birim_hepsi_gecti():
+    """pytest girişi — dosya import edilirken yukarıdaki kontroller çalışır."""
+    assert FAIL == 0, f"{FAIL} birim testi başarısız"
+
+
+# sys.exit modül düzeyinde çağrılırsa pytest dosyayı toplarken SystemExit
+# alıp collection'ı hataya düşürüyor; çıkış kodu yalnız doğrudan çalıştırmaya ait.
+if __name__ == '__main__':
+    sys.exit(0 if FAIL == 0 else 1)

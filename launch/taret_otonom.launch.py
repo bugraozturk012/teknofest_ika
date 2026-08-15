@@ -125,7 +125,6 @@ def generate_launch_description():
             # 3 kamera USB2'yi paylaşınca işlenmiş akış ~7 Hz'e düşüyor;
             # daha sıkı eşik her kareyi STALE_IMAGE yapıyordu.
             'image_timeout_sec':      1.0,
-            'align_threshold_px':     10.0,
             'fire_lock_duration_sec': 0.5,
             'fire_cooldown_sec':      3.0,
             'publish_debug':          True,
