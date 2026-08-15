@@ -22,7 +22,9 @@ Yöntem — boşluk takibi + koridor dengesi:
 Güvenlik:
   - Kumanda MANUEL'deyken hiçbir komut yazılmaz (mod_yoneticisi /mod/aktif).
   - /e_stop geldiğinde anında sıfır hız.
-  - Önde durma mesafesinden yakın engel varsa tam duruş.
+  - Önde engel varsa durulmaz, boş tarafa kırılarak kaçılır; tam duruş yalnız
+    acil mesafede. Durmak bu araçta kalıcı tıkanma demek (geri vites otonomda
+    kullanılmıyor, Ackermann yerinde dönemiyor).
   - Tarama bayatlarsa (LiDAR susarsa) tam duruş.
 
 Çalıştırma (Jetson):
@@ -90,7 +92,20 @@ class HuniReaktif(Node):
         # Gaz kesmek yetmiyor: araç ataletle kayıyor. Durma mesafesi fren
         # mesafesini kapsayacak kadar büyük olmalı (sahada 0.60 m ile engele
         # çarpma noktasına gelindi).
-        self.declare_parameter('on_durma_m',     1.50)   # önde bu mesafede dur
+        # on_durma_m: bu mesafede DURULMAZ, boş tarafa kırılarak kaçılır.
+        # acil_durma_m: gerçek duruş eşiği — kaçış yeri kalmadığında son çare.
+        self.declare_parameter('on_durma_m',     1.50)   # önde bu mesafede kaç
+        self.declare_parameter('acil_durma_m',   0.35)   # bu mesafede tam duruş
+        self.declare_parameter('kacis_sure_s',   1.50)   # kaçış en az bu kadar sürer
+        # Kaçış kendi dönüşünü kullanıyor: max_donus normal sürüşü yumuşak
+        # tutmak için küçük, ama o değerle kaçış 1.7 saniyede ancak 6 cm yana
+        # kayabiliyor — huniden kurtulmak için ~70 cm gerekiyor.
+        self.declare_parameter('kacis_donus',    0.30)   # kaçışta uygulanan dönüş [rad/s]
+        self.declare_parameter('kacis_koni_deg', 20.0)   # engel arama konisi (±)
+        # Kaçış kendi hızını kullanıyor: tekerlek kırıkken duruştan kalkmak,
+        # düz tekerlekle kalkmaktan belirgin şekilde fazla tork istiyor (sahada
+        # ölçüldü: 30° kırıkken 1.30 V ile araç hiç kımıldamadı).
+        self.declare_parameter('kacis_hiz',      0.80)   # kaçışta uygulanan hız [m/s]
         self.declare_parameter('fren_binde',     1000)   # duruşta fren gücü (0-1000)
 
         # ── Kontrol kazançları ────────────────────────────────────────────
@@ -99,6 +114,26 @@ class HuniReaktif(Node):
         # Sahada ölçüldü (2026-07-22): -1.0 ile araç boşluğun tersine, engele
         # doğru dönüyordu. Firmware ile ROS açı işareti aslında uyumlu.
         self.declare_parameter('yaw_yonu',       1.0)
+        # Hedef açının üstel yumuşatma katsayısı: 1.0 yumuşatma yok, küçüldükçe
+        # karar daha kararlı ama yavaş tepkili olur.
+        self.declare_parameter('hedef_yumusatma', 0.35)
+
+        # ── Boşluk seçimi ─────────────────────────────────────────────────
+        # En geniş boşluk yerine ileri yöne en yakın uygun boşluk seçiliyor.
+        # yeterli_bosluk_m, bir boşluğun aday sayılması için gereken en küçük
+        # yay genişliği; hız formülündeki dar/geniş sınırıyla aynı değer.
+        self.declare_parameter('merkez_tercihi',   True)
+        self.declare_parameter('yeterli_bosluk_m', 0.40)
+
+        # ── Parkur sonu ───────────────────────────────────────────────────
+        # Huniler bitince ön dilimde bu mesafeden yakın hiçbir dönüş kalmıyor;
+        # araç orada duruyor. İki kapı arasındaki boşlukta yanlış tetiklenmesin
+        # diye süre şartı var, ayrıca ilk huni görülmeden hiç tetiklenmiyor —
+        # araç açık alanda başlatılırsa ilk taramada durup kalmasın.
+        self.declare_parameter('bitis_mesafe_m', 4.50)
+        self.declare_parameter('bitis_ilerleme_m', 2.00)  # bitişten sonra düz gidilecek yol
+        self.declare_parameter('bitis_sure_s',   1.50)
+        self.declare_parameter('bitis_kilit',    True)   # bitti sayılınca kilitle
 
         # ── Güvenlik / mod ────────────────────────────────────────────────
         self.declare_parameter('mod_takip',      True)   # MANUEL'de komut yazma
@@ -118,17 +153,40 @@ class HuniReaktif(Node):
         self.govde_r    = float(g('govde_yaricapi_m'))
         self.balon_esik = float(g('balon_esik_m'))
         self.on_durma   = float(g('on_durma_m'))
+        self.acil_durma = float(g('acil_durma_m'))
+        self.kacis_sure = float(g('kacis_sure_s'))
+        self.kacis_donus = float(g('kacis_donus'))
+        self.kacis_koni  = math.radians(float(g('kacis_koni_deg')))
+        self.kacis_hiz   = float(g('kacis_hiz'))
         self.fren_binde = int(g('fren_binde'))
         self.k_yaw      = float(g('yaw_kazanci'))
         self.k_denge    = float(g('denge_kazanci'))
         self.yaw_yonu   = float(g('yaw_yonu'))
+        self.hedef_yum  = float(g('hedef_yumusatma'))
         self.mod_takip  = bool(g('mod_takip'))
         self.kuru       = bool(g('kuru_calisma'))
         self.timeout    = float(g('tarama_timeout_s'))
 
+        self.merkez_tercihi = bool(g('merkez_tercihi'))
+        self.yeterli_bosluk = float(g('yeterli_bosluk_m'))
+        # lidar_max'ın üstünde bir bitiş eşiği her taramada tetiklenir (uzak
+        # ışınlar zaten lidar_max'a kırpılıyor), o yüzden altında tutuluyor.
+        self.bitis_mesafe = min(float(g('bitis_mesafe_m')), self.lidar_max - 0.20)
+        self.bitis_sure   = float(g('bitis_sure_s'))
+        self.bitis_ilerleme = float(g('bitis_ilerleme_m'))
+        self.bitis_kilit  = bool(g('bitis_kilit'))
+
         self._estop     = False
         self._mod       = 0
         self._son_scan  = 0.0
+        self._huni_gordu    = False   # parkurda hiç engel görüldü mü
+        self._bos_baslangic = 0.0     # ön dilimin boşaldığı an
+        self._bitis_ts      = 0.0     # bitişin algılandığı an
+        self._hedef_suz     = 0.0     # süzülmüş hedef açı [rad]
+        self._kacis_bitis   = 0.0     # kaçış kilidinin biteceği an
+        self._kacis_yon     = 1.0     # kilitli kaçışın yönü
+        self._kacis_bilgi   = (0.0, 0.0)   # rapor için sol/sağ ortalama
+        self._bitti         = False
 
         self._pub  = self.create_publisher(Twist, CMD_VEL, 10)
         self._drm  = self.create_publisher(String, DURUM_TOPIC, 10)
@@ -147,6 +205,13 @@ class HuniReaktif(Node):
             f'balon {self.guvenlik_r:.2f} m | gövde {self.govde_r:.2f} m | '
             f'ön dilim {math.degrees(self.on_aci):.0f}° | '
             f'açı offset {math.degrees(self.aci_off):+.0f}° | '
+            f'kaçış {self.on_durma:.2f} m ±{math.degrees(self.kacis_koni):.0f}° '
+            f'× {self.kacis_sure:.1f} s @ {self.kacis_donus:.2f} / '
+            f'kaçış hızı {self.kacis_hiz:.2f} m/s | '
+            f'acil {self.acil_durma:.2f} m | '
+            f'yumuşatma {self.hedef_yum:.2f} | '
+            f'bitiş {self.bitis_mesafe:.2f} m / {self.bitis_sure:.1f} s '
+            f'+ {self.bitis_ilerleme:.1f} m çıkış | '
             f'{"KURU ÇALIŞMA (tekerlek dönmez)" if self.kuru else "SÜRÜŞ AKTİF"}')
 
     # ── Abonelikler ───────────────────────────────────────────────────────
@@ -191,17 +256,40 @@ class HuniReaktif(Node):
         acilar, mesafe = acilar[dilim], mesafe[dilim]
 
         on_mesafe = self._on_mesafe(acilar, mesafe)
+        if on_mesafe < self.acil_durma:
+            self._dur(f'ACİL {on_mesafe:.2f}m')
+            return
         if on_mesafe < self.on_durma:
-            self._dur(f'ENGEL {on_mesafe:.2f}m')
+            self._kacis_tetikle(acilar, mesafe)
+        if time.time() < self._kacis_bitis:
+            self._kacin(on_mesafe)
+            return
+
+        # Bitiş, engel kontrolünden SONRA: çıkış boyunca yoluna bir şey girerse
+        # duruş kararı yine öncelikli olsun.
+        if self._parkur_bitti(float(mesafe.min())):
+            kalan = self._bitis_kalan_s()
+            if kalan > 0.0:
+                self._sur(self.min_hiz, 0.0)
+                self._rapor(f'PARKUR BİTTİ — çıkış, {kalan:.1f} s düz')
+            else:
+                self._dur('PARKUR BİTTİ')
             return
 
         serbest = self._balon_uygula(acilar, mesafe)
-        bas, son = self._en_genis_bosluk(serbest)
+        bas, son = self._bosluk_sec(serbest, acilar, mesafe)
         if bas is None:
             self._dur('BOSLUK_YOK')
             return
 
-        hedef_aci = float(acilar[(bas + son) // 2])
+        # Her tarama sıfırdan karar verdiği için, iki aday boşluk birbirine
+        # yakın olduğunda seçim aralarında zıplıyor ve araç yalpalıyordu.
+        # Ham hedef üstel ortalamayla süzülüyor: ani sıçramalar sönümleniyor,
+        # gerçek yön değişimleri birkaç tarama içinde yine de geçiyor.
+        hedef_ham = float(acilar[(bas + son) // 2])
+        self._hedef_suz = (self.hedef_yum * hedef_ham +
+                           (1.0 - self.hedef_yum) * self._hedef_suz)
+        hedef_aci = self._hedef_suz
         denge     = self._koridor_dengesi(acilar, mesafe)
         bosluk_genislik = self._bosluk_metre(acilar, mesafe, bas, son)
 
@@ -220,9 +308,78 @@ class HuniReaktif(Node):
                     f'ön {on_mesafe:.2f} m | v {hiz:.2f} | w {donus:+.2f}')
 
     # ── Yardımcılar ───────────────────────────────────────────────────────
+    def _kacis_tetikle(self, acilar, mesafe):
+        """Kaçış yönünü seçer ve kaçışı kacis_sure boyunca kilitler.
+
+        Tek taramaya bakıp vazgeçmek işe yaramıyor: ön koni huninin kenarını bir
+        yakalayıp bir kaçırdığı için kaçış 2-3 tarama sürüyor, o kadar sürede
+        araç yönünü değiştiremiyor. Bu yüzden tetiklendikten sonra süre dolana
+        kadar kilitli kalıyor; engel görünmeye devam ederse süre tazeleniyor.
+        """
+        # Yön yalnız kaçış BAŞLARKEN seçiliyor. Her taramada yeniden seçilirse,
+        # araç dönmeye başladıkça sol/sağ ortalamalar değişip yön ters dönüyor
+        # ve araç kırdığını geri alıyor — sahada yalpalama olarak görülüyordu.
+        if time.time() >= self._kacis_bitis:
+            sol = float(np.mean(mesafe[acilar > 0.0])) if (acilar > 0.0).any() else 0.0
+            sag = float(np.mean(mesafe[acilar < 0.0])) if (acilar < 0.0).any() else 0.0
+            self._kacis_yon   = 1.0 if sol >= sag else -1.0
+            self._kacis_bilgi = (sol, sag)
+        self._kacis_bitis = time.time() + self.kacis_sure
+
+    def _kacin(self, on_mesafe):
+        """Kilitli kaçışı uygular: yavaşla, seçilen tarafa kır, sürmeye devam et.
+
+        Durmak bu araçta kalıcı tıkanma demek — geri vites otonomda kullanılmıyor
+        ve Ackermann yerinde dönemiyor. Gerçek duruş yalnız acil_durma_m için.
+        """
+        sol, sag = self._kacis_bilgi
+        kalan = self._kacis_bitis - time.time()
+        self._sur(self.kacis_hiz, self.yaw_yonu * self._kacis_yon * self.kacis_donus)
+        self._rapor(f'KAÇIŞ {"sol" if self._kacis_yon > 0 else "sağ"} | '
+                    f'ön {on_mesafe:.2f} m | sol {sol:.2f} m | sağ {sag:.2f} m | '
+                    f'kalan {kalan:.1f} s')
+
+    def _bitis_kalan_s(self):
+        """Bitiş algılandıktan sonra düz ilerlemeye kalan süre.
+
+        Odometri yok, yol süreyle ölçülüyor: verilen mesafe min_hiz'e bölünüyor.
+        Bitiş, huniler daha aracın yanındayken algılanıyor; bu ilerleme parkurun
+        dışına çıkıp öyle durmayı sağlıyor.
+        """
+        if self._bitis_ts == 0.0:
+            self._bitis_ts = time.time()
+        sure = self.bitis_ilerleme / max(self.min_hiz, 0.01)
+        return sure - (time.time() - self._bitis_ts)
+
+    def _parkur_bitti(self, en_yakin):
+        """Ön dilimde engel kalmadıysa parkurun sonu sayılır.
+
+        en_yakin, ön dilimdeki en yakın geçerli ölçüm. Huni görülmeden asla
+        tetiklenmez; boşluk bitis_sure boyunca sürmeden de karar verilmez.
+        """
+        if en_yakin < self.bitis_mesafe:
+            self._huni_gordu    = True
+            self._bos_baslangic = 0.0
+            if not self.bitis_kilit:
+                self._bitti    = False
+                self._bitis_ts = 0.0
+        elif self._huni_gordu:
+            simdi = time.time()
+            if self._bos_baslangic == 0.0:
+                self._bos_baslangic = simdi
+            elif simdi - self._bos_baslangic >= self.bitis_sure:
+                self._bitti = True
+        return self._bitti
+
     def _on_mesafe(self, acilar, mesafe):
-        """Tam öndeki dar koninin en yakın ölçümü — acil duruş için."""
-        on = np.abs(acilar) <= math.radians(20.0)
+        """Öndeki koninin en yakın ölçümü — kaçış ve acil duruş kararı için.
+
+        Koni dar tutulursa yalnız tam öndeki engel görülüyor; yanda duran huni
+        araç ona iyice yaklaşana kadar hiç tepki üretmiyor. Genişletmek erken
+        tepki verdirir, ama koridorda her iki yandaki huni de sürekli koniye
+        girdiği için kaçış çok sık tetiklenir.
+        """
+        on = np.abs(acilar) <= self.kacis_koni
         return float(mesafe[on].min()) if on.any() else self.lidar_max
 
     def _balon_uygula(self, acilar, mesafe):
@@ -250,23 +407,40 @@ class HuniReaktif(Node):
         kapali = (fark <= yari[None, :]) & yakin[None, :]
         return np.where(kapali.any(axis=1), 0.0, mesafe)
 
-    def _en_genis_bosluk(self, serbest):
-        """Sıfır olmayan en uzun ardışık diziyi bulur."""
+    def _bosluk_sec(self, serbest, acilar, mesafe):
+        """Geçilebilir boşluklar arasından ileri yöne en yakın olanı seçer.
+
+        En geniş boşluğu seçmek parkurda yanlış yöne sürüyor: bir kapı geçilince
+        en geniş açıklık genelde sıradaki dar kapı değil, yandaki açık alan
+        oluyor. Bu yüzden önce yeterli genişlikteki boşluklar süzülüyor, sonra
+        merkeze en yakın olan alınıyor; hiçbiri yeterli değilse en geniş olana
+        düşülüyor. Yakın genişlikteki iki aday arasında gidip gelmeyi de bu
+        önlüyor — merkeze yakınlık genişlikten çok daha kararlı bir ölçüt.
+        """
         acik = serbest > 0.0
         if not acik.any():
             return None, None
-        en_iyi = (0, -1, -1)     # (uzunluk, baş, son)
+
+        araliklar = []
         bas = None
         for i, a in enumerate(acik):
             if a and bas is None:
                 bas = i
             elif not a and bas is not None:
-                if i - bas > en_iyi[0]:
-                    en_iyi = (i - bas, bas, i - 1)
+                araliklar.append((bas, i - 1))
                 bas = None
-        if bas is not None and len(acik) - bas > en_iyi[0]:
-            en_iyi = (len(acik) - bas, bas, len(acik) - 1)
-        return en_iyi[1], en_iyi[2]
+        if bas is not None:
+            araliklar.append((bas, len(acik) - 1))
+
+        en_genis = max(araliklar, key=lambda r: r[1] - r[0])
+        if not self.merkez_tercihi:
+            return en_genis
+
+        uygun = [r for r in araliklar
+                 if self._bosluk_metre(acilar, mesafe, r[0], r[1]) >= self.yeterli_bosluk]
+        if not uygun:
+            return en_genis
+        return min(uygun, key=lambda r: abs(float(acilar[(r[0] + r[1]) // 2])))
 
     def _bosluk_metre(self, acilar, mesafe, bas, son):
         """Boşluğun metre cinsinden yaklaşık genişliği (yay uzunluğu)."""
@@ -303,6 +477,8 @@ class HuniReaktif(Node):
             self._pub.publish(Twist())
             # Yalnız gaz kesmek yetmiyor — araç ataletle kayıyor, fren şart.
             self._fren.publish(UInt16(data=self.fren_binde))
+        self._hedef_suz   = 0.0
+        self._kacis_bitis = 0.0
         self._rapor(f'DUR — {sebep}')
 
     def _rapor(self, metin):

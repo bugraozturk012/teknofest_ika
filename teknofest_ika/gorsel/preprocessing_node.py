@@ -51,6 +51,11 @@ class PreprocessingNode(Node):
         self.declare_parameter("lidar_ma_window", 5)
         self.declare_parameter("depth_ror_nb_points", 6)
         self.declare_parameter("depth_ror_radius", 0.05)
+        # Derinlik nokta bulutu filtresi. Çıktısı (/depth/points/filtered)
+        # yalnız Nav2 costmap katmanına besleniyordu; Nav2 kapalı olduğu
+        # sürece kare başına KD-tree kurup Python'da gezmek boşa CPU demek.
+        # Nav2 geri açıldığında bu parametre true yapılır.
+        self.declare_parameter("derinlik_isle", False)
 
         self._flip_ana = bool(self.get_parameter("flip_ana").value)
         self._flip_aux = bool(self.get_parameter("flip_yardimci").value)
@@ -66,6 +71,7 @@ class PreprocessingNode(Node):
         self.lidar_ma_window = self.get_parameter("lidar_ma_window").value
         self.ror_nb_points = self.get_parameter("depth_ror_nb_points").value
         self.ror_radius = self.get_parameter("depth_ror_radius").value
+        self._derinlik_isle = bool(self.get_parameter("derinlik_isle").value)
 
         self.bridge = CvBridge()
         self.ema_main = None
@@ -80,7 +86,9 @@ class PreprocessingNode(Node):
         # için ayrı bir nişan kamerası gerekli; targeting_node bu çıkışı okur.
         self.pub_taret = self.create_publisher(Image, CAMERA_TARET_PROCESSED_TOPIC, 10)
         self.pub_scan = self.create_publisher(LaserScan, SCAN_FILTERED_TOPIC, 10)
-        self.pub_depth = self.create_publisher(PointCloud2, "/depth/points/filtered", 10)
+        self.pub_depth = (self.create_publisher(
+            PointCloud2, "/depth/points/filtered", 10)
+            if self._derinlik_isle else None)
 
         # Subscribers — gerçek topic adları doğrudan topics.py'den alınır,
         # böylece launch dosyasında unutulabilecek bir remap'e bağımlı kalınmaz
@@ -102,11 +110,16 @@ class PreprocessingNode(Node):
         self.sub_scan = self.create_subscription(
             LaserScan, SCAN_LIDAR_TOPIC,
             self.cb_scan, qos_profile_sensor_data)
-        self.sub_depth = self.create_subscription(
+        # Aboneliğin kendisi koşullu: yayıncı susmasa da işlenmemiş bulut
+        # DDS'ten çekilmez, serileştirme ve KD-tree maliyeti hiç doğmaz.
+        self.sub_depth = (self.create_subscription(
             PointCloud2, "/depth/points",
             self.cb_depth, qos_profile_sensor_data)
+            if self._derinlik_isle else None)
 
-        self.get_logger().info("PreprocessingNode started.")
+        self.get_logger().info(
+            "PreprocessingNode started (derinlik_isle={}).".format(
+                self._derinlik_isle))
 
     # ------------------------------------------------------------------
     # Camera callbacks
