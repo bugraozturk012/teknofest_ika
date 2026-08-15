@@ -10,8 +10,12 @@
 # Planner  : SmacPlannerHybrid (DUBIN — sadece ileri hareket, Ackermann uyumlu)
 # Controller: RegulatedPurePursuitController (RPP — Ackermann uyumlu)
 #
-# KURULUM:
-#   sudo apt install ros-humble-nav2-bringup ros-humble-nav2-smac-planner
+# KURULUM (Jetson'da doğrulanmadı — NAV2_AKTIF=1 öncesi kontrol et):
+#   sudo apt install ros-humble-navigation2 ros-humble-nav2-bringup \
+#                    ros-humble-robot-localization
+#   ros-humble-navigation2 smac_planner, regulated_pure_pursuit_controller ve
+#   velocity_smoother'ı da getirir; robot_localization EKF için ayrı paket.
+#   Kontrol: ros2 pkg list | grep -E 'nav2_bringup|nav2_smac|robot_localization'
 #
 # ÇALIŞTIRMA:
 #   ros2 launch nav2_bringup navigation_launch.py \
@@ -103,7 +107,11 @@ controller_server:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
 
       # Hız parametreleri
-      desired_linear_vel: 3.0            # Nominal hız [m/s]
+      # 0.65 = sahada doğrulanmış tek otonom tavan (2026-07-28 tam tur).
+      # Çalışma anında terrain_adapter arazi profiline göre üzerine yazar
+      # (0.45–0.90); buradaki değer terrain_adapter düşerse geçerli olan
+      # yedektir, o yüzden en güvenli profille aynı olmalı.
+      desired_linear_vel: 0.65           # Nominal hız [m/s]
       lookahead_dist: 2.0               # [m] — lookahead başlangıç mesafesi
       min_lookahead_dist: 1.2           # [m] — minimum lookahead
       max_lookahead_dist: 4.0           # [m] — maksimum lookahead
@@ -114,15 +122,21 @@ controller_server:
       transform_tolerance: 0.2
 
       # Hız düzenleme
+      # KALKIŞ SÜRTÜNMESİ TABANI: araç 0.45 m/s altındaki komutlarda yerinden
+      # kalkmıyor (DAC voltajı doğru yazılıyor, tekerlek dönmüyor). RPP'nin
+      # hedefe yaklaşırken hızı 0.05'e indirmesi aracı hedefin hemen öncesinde
+      # durduruyor; progress_checker 20 s sonra "ilerleme yok" deyip recovery
+      # tetikliyor. Yaklaşma hızı tabanın üstünde tutulup tolerans içinde
+      # sıfıra düşülüyor.
       use_velocity_scaled_lookahead_dist: true
-      min_approach_linear_velocity: 0.05
+      min_approach_linear_velocity: 0.45
       approach_velocity_scaling_dist: 2.5
 
       # Eğrilik bazlı hız sınırlama
       # Ackermann aracın maksimum dönüş yarıçapı: ~0.95 m
       use_regulated_linear_velocity_scaling: true
       regulated_linear_scaling_min_radius: 1.0   # [m] — bu yarıçapın altında yavaşla
-      regulated_linear_scaling_min_speed: 0.25   # [m/s] — minimum hız
+      regulated_linear_scaling_min_speed: 0.45   # [m/s] — kalkış sürtünmesi tabanı
 
       # Engel durma — taşlı yolda sert dur yerine yavaşla
       use_collision_detection: false
@@ -132,9 +146,11 @@ controller_server:
       inflation_cost_scaling_factor: 3.0
 
       # Ackermann kısıtı
-      # max angular = v * tan(delta_max) / L = 3.0 * tan(30°) / 0.55 ≈ 3.14 rad/s
-      # Güvenlik için 1.0 rad/s ile başla, araçta artır
-      max_angular_vel: 1.8             # [rad/s]
+      # RPP'de `max_angular_vel` diye bir parametre YOK — burada tanımlanırsa
+      # sessizce yok sayılır. Açısal hız tavanı iki yerde uygulanır:
+      #   1) velocity_smoother.max_velocity[2]  (aşağıda, gerçek kırpma)
+      #   2) ackermann_converter δ_max clamp'i  (δ = atan(L·ω/v), 30°'de doyar)
+      max_angular_accel: 3.2           # [rad/s²]
       max_robot_pose_search_dist: 10.0
 
       use_interpolation: false
@@ -171,6 +187,37 @@ planner_server:
       use_quadratic_cost_penalty: false
       downsample_obstacle_heuristic: true
       allow_reverse_expansion: false   # Geri manevra yoksa false
+
+# ─── Velocity Smoother — /cmd_vel'i BASAN düğüm ──────────────────────────────
+# navigation_launch.py zincirinde controller_server doğrudan /cmd_vel'e yazmaz:
+#   controller_server → /cmd_vel_nav → velocity_smoother → /cmd_vel
+#                                                            └→ mod_yoneticisi
+# Bu blok yoksa velocity_smoother varsayılanlarıyla çalışır ve
+# max_velocity[0] = 0.50 m/s olduğu için arazi profillerinin 0.50 üstündeki
+# hızları (normal 0.65, fast 0.90) sessizce kırpılır — terrain_adapter
+# parametreyi başarıyla yazar, araç yine de hızlanmaz.
+#
+# scale_velocities: Ackermann'da şart. Kırpma yalnız v'ye uygulanırsa ω/v oranı
+# (dolayısıyla direksiyon açısı) bozulur ve araç fazla kırar; true iken iki
+# bileşen birlikte ölçeklenir, eğrilik korunur.
+#
+# max_accel DÜŞÜRÜLMEMELİ: araç 0.45 m/s altında yerinden kalkmıyor, yavaş
+# rampa aracı bu ölü bandın içinde tutar ve kalkış hiç olmaz.
+velocity_smoother:
+  ros__parameters:
+    use_sim_time: false
+    smoothing_frequency: 20.0
+    scale_velocities: true
+    feedback: "OPEN_LOOP"
+    #             [  vx,   vy,  wz ]
+    max_velocity: [0.90, 0.0, 1.80]   # vx: en hızlı arazi profili (fast)
+    min_velocity: [-0.30, 0.0, -1.80] # geri: yalnız backup recovery kullanır
+    max_accel:    [2.50, 0.0, 3.20]
+    max_decel:    [-2.50, 0.0, -3.20]
+    deadband_velocity: [0.05, 0.0, 0.05]
+    velocity_timeout: 0.5             # ackermann_converter cmd_vel_timeout ile aynı
+    odom_topic: /odometry/filtered
+    odom_duration: 0.1
 
 # ─── Smoother ────────────────────────────────────────────────────────────────
 smoother_server:
@@ -269,6 +316,14 @@ global_costmap:
           obstacle_max_range: 4.0
           obstacle_min_range: 0.0
           observation_persistence: 0.5
+        # /apc/points/data_raw `points_frame` ile yayınlanır. OS30A'nın kendi
+        # launch'ı yalnız dm_base_frame → points_frame dönüşümünü basar;
+        # dm_base_frame'i base_link'e bağlayan TF açılış betiğinde
+        # (OS30A_TF_AKTIF) üretilir. O yayıncı yoksa bu kaynak ayrı bir TF
+        # adasında kalır, costmap tek bir noktayı bile dönüştüremez ve
+        # "Transform failure" ile sürekli log basar.
+        # Menzil notu: OS30A fiilen 0.02–2.5 m görüyor, aşağıdaki 5–6 m
+        # tavanları sensör limitinin üstünde — kırpan sensörün kendisi.
         os30a_cloud:
           topic: /apc/points/data_raw
           min_obstacle_height: 0.05
@@ -421,7 +476,14 @@ map_saver:
     map_subscribe_transient_local: true
 
 # ─── Lifecycle Manager ────────────────────────────────────────────────────────
-lifecycle_manager:
+# Düğüm adı navigation_launch.py'de `lifecycle_manager_navigation`; anahtar
+# `lifecycle_manager` yazılırsa blok hiç eşleşmez ve tamamen yok sayılır.
+#
+# autostart ve node_names'i navigation_launch.py açık parametre override'ı
+# olarak geçirir — override params dosyasını yener, yani aşağıdaki liste
+# BELGE niteliğindedir, yönetilen düğümleri buradan değiştiremezsin.
+# Launch'ın yönettiği gerçek liste waypoint_follower'ı da içerir.
+lifecycle_manager_navigation:
   ros__parameters:
     use_sim_time: false
     autostart: true
@@ -431,6 +493,7 @@ lifecycle_manager:
       - planner_server
       - behavior_server
       - bt_navigator
+      - waypoint_follower
       - velocity_smoother
 
 # lifecycle_manager_localization kaldırıldı — SLAM_Toolbox kullanılıyor, AMCL aktif değil.

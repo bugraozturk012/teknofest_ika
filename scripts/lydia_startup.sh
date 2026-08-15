@@ -184,6 +184,25 @@ ros2 run tf2_ros static_transform_publisher 0 0 0 0 0 0 base_footprint base_link
 : "${LIDAR_Z_M:=0.55}"         # zeminden tarama düzlemine, ölçüldü
 ros2 run tf2_ros static_transform_publisher 0 0 "$LIDAR_Z_M" "$LIDAR_YAW_RAD" 0 0 \
     base_link laser_frame > "$LOG/tf_laser.log" 2>&1 &
+# OS30A derinlik kamerası ayrı bir TF adasında duruyor: kendi launch'ı
+# dm_base_frame → {points_frame, depth_frame, ...} dönüşümlerini basıyor ama
+# dm_base_frame'i hiçbir şey base_link'e bağlamıyor. Bu halka olmadan Nav2'nin
+# os30a_cloud kaynağı tek nokta bile dönüştüremez (costmap sürekli "Transform
+# failure" basar) ve derinlik kamerası costmap'e hiçbir katkı yapmaz.
+#
+# ⚠️ AŞAĞIDAKİ KONUM ÖLÇÜLMEDİ — urdf/arac.urdf kamera_joint'inden alındı
+#    (x=0.55 ileri, z=0.20 yukarı, base_link'e göre). OS30A menzili 0.02–2.5 m
+#    olduğu için 10 cm'lik hata bile engelleri gözle görülür kaydırır.
+#    Şerit metreyle ölç ve OS30A_X_M / OS30A_Z_M ile geç.
+: "${OS30A_TF_AKTIF:=1}"
+: "${OS30A_X_M:=0.55}"    # ⚠️ PLACEHOLDER — base_link'ten kamera gövdesine ileri
+: "${OS30A_Y_M:=0.0}"     # ⚠️ PLACEHOLDER — yanal kaçıklık
+: "${OS30A_Z_M:=0.20}"    # ⚠️ PLACEHOLDER — base_link'ten kamera gövdesine yukarı
+if [ "$OS30A_TF_AKTIF" = "1" ]; then
+    ros2 run tf2_ros static_transform_publisher \
+        "$OS30A_X_M" "$OS30A_Y_M" "$OS30A_Z_M" 0 0 0 \
+        base_link dm_base_frame > "$LOG/tf_os30a.log" 2>&1 &
+fi
 sleep 4
 ros2 launch slam_toolbox online_async_launch.py > "$LOG/slam.log" 2>&1 &
 sleep 14

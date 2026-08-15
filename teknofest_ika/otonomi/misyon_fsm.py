@@ -857,6 +857,26 @@ def load_waypoints(yaml_path: str):
 
         parametreler = data.get('parametreler', {})
         print(f'[WAYPOINTS] {len(waypoints)} waypoint yüklendi.')
+
+        # waypoints.yaml deposa placeholder (hepsi 0.0) olarak giriyor. Dolmadan
+        # çalıştırılırsa NavigateState her istasyon için aynı hedefi (map
+        # orijini) gönderir: araç ilk hedefe varır, sonraki aşamalar anında
+        # "ulaşıldı" sayılır ve FSM parkuru hiç sürmeden tamamlar. Log'da
+        # tek bir hata satırı bile görünmez — o yüzden burada yüksek sesle
+        # uyarılıyor.
+        sifir = [w for w in waypoints if w['x'] == 0.0 and w['y'] == 0.0]
+        if sifir and len(sifir) == len(waypoints):
+            print('[WAYPOINTS] ' + '!' * 60)
+            print('[WAYPOINTS] TÜM KOORDİNATLAR PLACEHOLDER (0,0) — parkur '
+                  'sürülmez.')
+            print('[WAYPOINTS] SLAM haritası alınıp rviz2 "2D Nav Goal" ile '
+                  f'{yaml_path} doldurulmalı.')
+            print('[WAYPOINTS] ' + '!' * 60)
+        elif sifir:
+            isimler = ', '.join(w['label'] for w in sifir)
+            print(f'[WAYPOINTS] UYARI: {len(sifir)} waypoint hâlâ (0,0) — '
+                  f'{isimler}')
+
         return waypoints, parametreler
 
     except FileNotFoundError:
