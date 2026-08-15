@@ -215,7 +215,10 @@
   <!-- ═══════════════════════════════════════════════
        LİDAR LİNKİ — aracın üstünde
   ════════════════════════════════════════════════ -->
-  <link name="lidar_link">
+  <!-- Link adı sürücünün yayınladığı frame_id ile birebir aynı olmalı:
+       lydia_ortam/tmini_pro.yaml → frame_id: laser_frame. Farklı isimde
+       tanımlanırsa /scan hiçbir TF'e oturmaz ve costmap boş kalır. -->
+  <link name="laser_frame">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry><cylinder length="0.05" radius="0.05"/></geometry>
@@ -226,10 +229,17 @@
       <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
     </inertial>
   </link>
+  <!-- Yaw 1.6284 rad = 93.3°: LiDAR gövdeye dönük monte edilmiş, açı sahada
+       huniyle çift yönlü kalibre edildi. huni_reaktif aynı düzeltmeyi ham
+       /scan üzerinde aci_offset_deg ile yapar; Nav2 costmap ise yalnız bu
+       dönüşümü görür. Yükseklik zeminden tarama düzlemine ölçüldü (0.55 m).
+       NOT: bu dönüşümü şu an boot betiğindeki statik yayıncı basıyor. Bir gün
+       robot_state_publisher yığına eklenirse ikisi aynı TF'i yayınlar —
+       o zaman statik laser yayıncısı kaldırılmalı. -->
   <joint name="lidar_joint" type="fixed">
     <parent link="base_link"/>
-    <child link="lidar_link"/>
-    <origin xyz="0.0 0 0.30" rpy="0 0 0"/>
+    <child link="laser_frame"/>
+    <origin xyz="0.0 0 0.55" rpy="0 0 1.6284"/>
   </joint>
 
   <!-- ═══════════════════════════════════════════════
