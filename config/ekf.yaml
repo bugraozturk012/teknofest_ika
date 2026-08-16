@@ -106,8 +106,13 @@ ekf_filter_node:
     # vx ile koşar, yön hiç güncellenmez ve araç estimatörde hep düz gider.
     imu0: /imu/data
     #                    x      y      z      roll   pitch  yaw    vx     vy     vz     vroll  vpitch vyaw
+    #
+    # roll/pitch açık ama two_d_mode: true onları her döngüde sıfırladığı için
+    # şu an durumu etkilemiyorlar. vyaw'dan farkları veri yokluğu değil mod
+    # seçimi olması: ölçüm geliyor, 3D moda dönüldüğü anda karşılığını buluyor.
+    # Yaw ise 2D modda da yaşıyor ve aracın yönünü tek başına o taşıyor.
     imu0_config:      [false, false, false,  true,  true,  true,  false, false, false, false, false, false,
-    #                    ax     ay     az      ^ roll ^ pitch kullan (eğim algılama)
+    #                    ax     ay     az      ^ roll ^ pitch  ^ yaw = tek yön kaynağı
                        false, false, false]
     imu0_queue_size:     10
     imu0_nodelay:        false
