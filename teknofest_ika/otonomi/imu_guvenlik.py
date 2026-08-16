@@ -44,13 +44,29 @@ class ImuGuvenlik(Node):
     def __init__(self):
         super().__init__('imu_guvenlik')
 
+        # Batarya kolu varsayılan olarak KAPALI. Araçtaki firmware 0x13
+        # paketinin gerilim alanını direksiyon açısı için yeniden kullanıyor
+        # (bkz. web_dashboard.ARAC_FIRMWARE_0X13), dolayısıyla seri_kopru'nun
+        # türettiği BatteryState.percentage bu araçta gerilim değil direksiyon
+        # açısından geliyor ve V_MIN=28.0'ın çok altında kaldığı için hep 0.0
+        # okunuyor. Açık bırakılırsa /speed_limit sürekli 0.0 yayınlar;
+        # terrain_adapter desired_linear_vel'i 0'a kırpar ve mod_yoneticisi
+        # MANUEL dahil bütün modlarda mux çıkışını sıfırlar — araç hiç
+        # hareket etmez, tablo da Nav2 arızası gibi görünür.
+        # Gerilim gerçekten ölçülmeye başlarsa True yapılır.
+        self.declare_parameter('batarya_kontrol', False)
+        self._batarya_kontrol = bool(
+            self.get_parameter('batarya_kontrol').value)
+
         self._roll         = 0.0
         self._pitch        = 0.0
         self._batarya_yuzde = 100   # %100 varsayılan (veri gelene kadar)
 
         qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
         self.create_subscription(Imu, IMU_TOPIC, self._imu_cb, qos)
-        self.create_subscription(BatteryState, BATTERY_TOPIC, self._bat_cb, 10)
+        if self._batarya_kontrol:
+            self.create_subscription(BatteryState, BATTERY_TOPIC,
+                                     self._bat_cb, 10)
 
         self._pub       = self.create_publisher(Float32, SPEED_LIMIT_TOPIC,  10)
         self._estop_pub = self.create_publisher(Bool, E_STOP_FORCE_IMU_TOPIC, 10)
@@ -60,7 +76,8 @@ class ImuGuvenlik(Node):
             f'ImuGuvenlik hazır | '
             f'roll_uyari={IMU_ROLL_WARN_THRESHOLD}° | '
             f'roll_dur={IMU_ROLL_STOP_THRESHOLD}° | '
-            f'roll_estop={IMU_ROLL_ESTOP_THRESHOLD}°'
+            f'roll_estop={IMU_ROLL_ESTOP_THRESHOLD}° | '
+            f'batarya_kontrol={self._batarya_kontrol}'
         )
 
     def _bat_cb(self, msg: BatteryState):

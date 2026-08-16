@@ -122,16 +122,28 @@ CLASS_TO_TERRAIN = {
 # ─────────────────────────────────────────────────────────────────────────────
 # YOL TİPİ → NAV2 PARAMETRE PROFİLLERİ
 #
-# desired_linear_vel   [m/s]    : Hedef ileri hız
-# lookahead_dist       [m]      : RPP lookahead mesafesi L_d
-# max_accel / max_decel[m/s²]   : İvme/yavaşlama limiti
-# max_robot_pose_search_dist [m]: Rota üzerinde araç pozisyonu arama mesafesi
-# inflation_radius     [m]      : Costmap engel tamponu
+# desired_linear_vel [m/s] : hedef ileri hız — controller_server
+# inflation_radius   [m]   : costmap engel tamponu — local_costmap/local_costmap
 #
-# Formüller:
-#   Fren mesafesi  : d = v² / (2·μ·g)
-#   Min lookahead  : L_d_min = v × t_lookahead (t≈0.5s)
-#   Turning radius : R = v / ω (RPP regulated_linear_scaling_min_radius ile kısıtlı)
+# Profil başına yalnız bu ikisi yazılıyor, çünkü mevcut nav2_params.yaml
+# yapılandırmasında RPP'nin öteki ayarları çalışma anında karşılık bulmuyor:
+#
+#   lookahead_dist — `use_velocity_scaled_lookahead_dist: true` olduğu için
+#     RPP bu alanı hiç okumaz; lookahead'i `hız × lookahead_time` hesaplayıp
+#     [min_lookahead_dist, max_lookahead_dist] arasına kırpar. Profil başına
+#     lookahead istenirse yazılacak yer bu üç parametredir. Mevcut ayarla
+#     (t=1.5 s, taban 1.2 m) `fast` dışındaki bütün profillerde lookahead
+#     tabana oturur: 0.65 m/s × 1.5 = 0.98 → 1.2 m.
+#
+#   max_angular_accel — yalnız RPP'nin rotateToHeading() dalında kullanılır,
+#     o dal da `use_rotate_to_heading: false` ile kapalı (Ackermann yerinde
+#     dönemez). Bu araçta hiçbir zaman devreye girmiyor.
+#
+#   max_robot_pose_search_dist — RPP'nin dinamik parametre callback'inde YOK.
+#     set_parameters çağrısı "başarılı" döner ama controller'ın önbelleğe
+#     aldığı değer değişmez; geçerli olan nav2_params.yaml'daki statik değer.
+#
+# Fren mesafesi: d = v² / (2·μ·g)
 # ─────────────────────────────────────────────────────────────────────────────
 TERRAIN_PROFILES = {
 
@@ -143,9 +155,6 @@ TERRAIN_PROFILES = {
         # planlayıcının frenleyemeyeceği bir hızda engele girmesi demek.
         'controller_server': {
             'FollowPath.desired_linear_vel':            0.65,
-            'FollowPath.lookahead_dist':                1.5,
-            'FollowPath.max_angular_accel':             3.2,
-            'FollowPath.max_robot_pose_search_dist':    5.0,
         },
         'local_costmap/local_costmap': {
             'inflation_layer.inflation_radius': 0.40,
@@ -157,9 +166,6 @@ TERRAIN_PROFILES = {
         # Düşük angular accel: ıslak zeminde ani yön değişimi kayma yaratır
         'controller_server': {
             'FollowPath.desired_linear_vel':            0.50,
-            'FollowPath.lookahead_dist':                1.0,
-            'FollowPath.max_angular_accel':             1.0,
-            'FollowPath.max_robot_pose_search_dist':    2.5,
         },
         'local_costmap/local_costmap': {
             'inflation_layer.inflation_radius': 0.55,
@@ -170,9 +176,6 @@ TERRAIN_PROFILES = {
         # Taşlı yol: lateral temas düzensiz, engebeli zemin kayma riski
         'controller_server': {
             'FollowPath.desired_linear_vel':            0.50,
-            'FollowPath.lookahead_dist':                0.9,
-            'FollowPath.max_angular_accel':             1.5,
-            'FollowPath.max_robot_pose_search_dist':    2.5,
         },
         'local_costmap/local_costmap': {
             'inflation_layer.inflation_radius': 0.45,
@@ -184,9 +187,6 @@ TERRAIN_PROFILES = {
         # Küçük lookahead → direksiyon açısı minimize edilir
         'controller_server': {
             'FollowPath.desired_linear_vel':            0.45,
-            'FollowPath.lookahead_dist':                0.7,
-            'FollowPath.max_angular_accel':             1.0,
-            'FollowPath.max_robot_pose_search_dist':    2.0,
         },
         'local_costmap/local_costmap': {
             'inflation_layer.inflation_radius': 0.65,
@@ -197,9 +197,6 @@ TERRAIN_PROFILES = {
         # Dik engel: Nav2 lokal costmap'i kaçınır, araç yavaşlar
         'controller_server': {
             'FollowPath.desired_linear_vel':            0.60,
-            'FollowPath.lookahead_dist':                1.2,
-            'FollowPath.max_angular_accel':             2.0,
-            'FollowPath.max_robot_pose_search_dist':    4.0,
         },
         'local_costmap/local_costmap': {
             'inflation_layer.inflation_radius': 0.50,
@@ -211,9 +208,6 @@ TERRAIN_PROFILES = {
         # IMU gürültüsü artar, EKF kovaryansı büyür
         'controller_server': {
             'FollowPath.desired_linear_vel':            0.45,
-            'FollowPath.lookahead_dist':                0.6,
-            'FollowPath.max_angular_accel':             1.0,
-            'FollowPath.max_robot_pose_search_dist':    1.5,
         },
         'local_costmap/local_costmap': {
             'inflation_layer.inflation_radius': 0.60,
@@ -224,9 +218,6 @@ TERRAIN_PROFILES = {
         # Atış öncesi: araç durmaya hazırlanır, taret hizalanır
         'controller_server': {
             'FollowPath.desired_linear_vel':            0.45,
-            'FollowPath.lookahead_dist':                0.5,
-            'FollowPath.max_angular_accel':             0.8,
-            'FollowPath.max_robot_pose_search_dist':    1.5,
         },
         'local_costmap/local_costmap': {
             'inflation_layer.inflation_radius': 0.40,
@@ -237,9 +228,6 @@ TERRAIN_PROFILES = {
         # Hızlanma bölgesi: düz zemin, maksimum performans
         'controller_server': {
             'FollowPath.desired_linear_vel':            0.90,
-            'FollowPath.lookahead_dist':                2.5,
-            'FollowPath.max_angular_accel':             3.2,
-            'FollowPath.max_robot_pose_search_dist':    8.0,
         },
         'local_costmap/local_costmap': {
             'inflation_layer.inflation_radius': 0.35,
