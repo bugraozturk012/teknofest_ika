@@ -671,6 +671,16 @@ class HizlanmaState(smach.State):
     Nav2 path planner devre dışı — düz pistte gereksiz overhead.
     RC override hâlâ çalışır (mod_yoneticisi /cmd_vel'i dinlemeye devam eder).
 
+    /cmd_vel'in ikinci yayıncısı Nav2'nin velocity_smoother'ıdır. Girdisi
+    kesildiğinde smoother susmaz: araç hareket hâlindeyse komutu sıfıra çekip
+    max_decel ile yavaşlayan bir rampa yayınlar, ancak sıfıra ulaşınca
+    (stopped_) yayını tamamen keser. Bu state'e araç HAREKET HÂLİNDEYKEN
+    girilirse iki yayıncı yaklaşık bir saniye boyunca aynı topic'e yazar ve
+    mod_yoneticisi son geleni geçirdiği için gaz titrer. Normal akışta sorun
+    çıkmaz: NavigateState hedefe varınca Nav2 aracı zaten durdurur ve smoother
+    susmuş olur. Buraya "araç yürürken" atlanacak bir yol eklenirse önce
+    smoother'ın susması beklenmelidir.
+
     Hız profili:
       0  .. FREN_BASI_MESAFE (25m) → MAX_HIZ
       25 .. TOPLAM_MESAFE    (30m) → doğrusal düşüş MAX_HIZ→0.3 m/s
