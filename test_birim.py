@@ -320,11 +320,30 @@ ds.update_field('stop_var', False)   # cooldown sonrası FSM sıfırlar
 check("stop_var cooldown sıfırlaması",               ds.get_field('stop_var'),      False)
 
 ds2 = DetectionsStore()
-ds2.update({'tabela': 8, 'e_stop': True, 'stop_var': True})
+ds2.update({'tabela': 8, 'stop_var': True})
 ds2.update({'tabela': 3})            # ikinci update _DEFAULT'tan merge eder
-check("ikinci update e_stop _DEFAULT'a döner",       ds2.get_field('e_stop'),       False)
 check("ikinci update stop_var _DEFAULT'a döner",     ds2.get_field('stop_var'),     False)
 check("ikinci update tabela yenilendi",              ds2.get_field('tabela'),       3)
+
+# /ika/detections'ın SAHİBİ OLMADIĞI alanlar update() ile silinmemeli:
+# ön kamera 29.9 Hz yayınlıyor, silinirse E-STOP saniyede 30 kez temizlenir.
+ds3 = DetectionsStore()
+ds3.update_field('e_stop',     True)
+ds3.update_field('manual_mod', True)
+ds3.update_field('kayar_yon',  'sol')
+# yolo_adapter_node.py:181 payload'ının birebir alan kümesi
+ds3.update({'tabela': 255, 'hedef_var': False, 'hedef_hata_x': 0.0,
+            'hedef_hata_y': 0.0, 'koni_var': False, 'hizlanma_bitti': False,
+            'stop_var': False, 'bariyer_sol_m': 1.5, 'bariyer_sag_m': 1.5,
+            'fps': 0.0})
+check("detections karesi e_stop'u silmez",           ds3.get_field('e_stop'),       True)
+check("detections karesi manual_mod'u silmez",       ds3.get_field('manual_mod'),   True)
+check("detections karesi kayar_yon'u silmez",        ds3.get_field('kayar_yon'),    'sol')
+check("dış kaynaklı koruma detections alanını tutmaz",
+                                                     ds3.get_field('tabela'),       255)
+# Eski payload'lar kayar_yon'u placeholder olarak taşıyordu; artık yok sayılır.
+ds3.update({'tabela': 7, 'kayar_yon': 'bilinmiyor'})
+check("payload'daki kayar_yon yok sayılır",          ds3.get_field('kayar_yon'),    'sol')
 
 # ─── 15. Otomatik Fren Oranı (ackermann_converter.py) ───────────────────────
 print("\n=== 15. Otomatik Fren Oranı ===")

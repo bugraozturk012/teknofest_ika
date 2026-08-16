@@ -292,10 +292,22 @@ def fren_yumusat(mevcut: float, hedef: float, ramp_oran_per_s: float, dt: float)
 
 class DetectionsStore:
     """
-    /ika/detections topic'inden gelen son JSON paketini saklar.
-    SMACH state'leri bu store'dan okur — doğrudan topic callback'e bağımlı değiller.
+    misyon_fsm'in paylaşılan son-durum deposu. İki ayrı kaynaktan beslenir:
+
+      update()       — /ika/detections JSON paketi (yolo_adapter_node).
+                       Paketin sahibi olduğu alanlar her karede yeniden gelir;
+                       gelmeyen alan _DEFAULT'a döner (bir karede görülen hedef
+                       sonraki karede yoksa "hâlâ var" sayılmamalıdır).
+      update_field() — ayrı topic'ler: /e_stop, /mod_aktif,
+                       /moving_obs/direction.
+
     threading.Lock ile thread-safe erişim sağlanır.
     """
+
+    # Sahibi /ika/detections DEĞİL. update() bu alanlara dokunmaz: aksi halde
+    # ön kamera karesi başına (29.9 Hz) E-STOP, manuel mod ve kayar engel yönü
+    # silinir ve FSM'in bu üç bayrağa bakan tüm kontrolleri hep False okur.
+    _DIS_KAYNAKLI = ('e_stop', 'manual_mod', 'kayar_yon')
 
     _DEFAULT = {
         'tabela':           255,
@@ -321,7 +333,8 @@ class DetectionsStore:
 
     def update(self, data: dict):
         with self._lock:
-            self._data = {**self._DEFAULT, **data}
+            dis = {k: self._data[k] for k in self._DIS_KAYNAKLI}
+            self._data = {**self._DEFAULT, **data, **dis}
 
     def update_field(self, key: str, value):
         with self._lock:

@@ -32,11 +32,22 @@ PROTOKOL ENTEGRASYONU (Ekip Protokol v1.0):
                       "/targeting/status" == "ALIGNED" gelince ateş edilir.
 
 DURUM DİYAGRAMI:
-  [IDLE] → [NAVIGATE] → [SHOOT_APPROACH] → [SHOOT] → [NAVIGATE]
-               ↓                                           ↓
-         [ERROR_RECOVERY] ←─────────────────────────────── ┘
-               ↓
-         [MISSION_COMPLETE]
+  [IDLE] → [NAVIGATE] ─┬─ type=shoot ──→ [SHOOT_APPROACH] → [SHOOT] ─┐
+                       │                                             │
+                       ├─ type=hizlanma → [HIZLANMA] ────────────────┤
+                       │                                             │
+                       ├─ liste bitti ──→ [MISSION_COMPLETE] → GOREV_TAMAMLANDI
+                       │                                             │
+                       └───────────── [NAVIGATE] ←───────────────────┘
+                       ↓ (hata)                    ↑ recovered
+                 [ERROR_RECOVERY] ─────────────────┘
+                       ↓ 3 deneme
+                 [MISSION_ABORT] → GOREV_IPTAL
+
+  MISSION_COMPLETE ve MISSION_ABORT AYRI durumlardır: ilki
+  /mission_status = 'COMPLETE', ikincisi 'ABORTED' yayınlar. Kurtarma
+  bütçesi (3) aşama başınadır — NavigateState her tamamlanan waypoint'te
+  sayacı sıfırlar.
 
 BAĞIMLILIKLAR:
   sudo apt install ros-humble-smach ros-humble-smach-ros
@@ -268,6 +279,12 @@ class NavigateState(smach.State):
       'failed'           → ErrorRecoveryState
     """
 
+    # Bir waypoint içinde kaç kez STOP tetiklenebilir. Tabela görüş alanında
+    # kalıp araç ilerlemezse (cooldown dolar, tabela hâlâ görünür) dur-kalk
+    # döngüsü sonsuza gider; sınıra ulaşınca STOP tespiti bu waypoint için
+    # devre dışı bırakılır.
+    MAX_STOP = 3
+
     def __init__(self, node: Node, nav: Nav2Client, det_store: DetectionsStore,
                  stage_timeout: float = 120.0):
         smach.State.__init__(
@@ -275,7 +292,7 @@ class NavigateState(smach.State):
             outcomes=['next_waypoint', 'shoot_waypoint', 'hizlanma_waypoint',
                       'mission_complete', 'failed'],
             input_keys=['waypoints', 'wp_index'],
-            output_keys=['wp_index', 'current_wp']
+            output_keys=['wp_index', 'current_wp', 'retry_count']
         )
         self.node                  = node
         self.nav                   = nav
@@ -324,24 +341,37 @@ class NavigateState(smach.State):
             f'({wp["x"]:.2f}, {wp["y"]:.2f})'
         )
 
-        # Nav2'ye git — STOP işareti görülürse ortada kesilir, 2s beklenir, tekrar gönderilir
+        # Nav2'ye git — STOP işareti görülürse ortada kesilir, 2s beklenir, tekrar gönderilir.
+        # Aşama timeout'u waypoint'in TAMAMINI kapsar: her STOP'tan sonra go_to'yu
+        # taze stage_timeout ile çağırmak toplam süreyi sınırsız bırakıyordu.
         stop_uygulandi = False
+        stop_sayaci    = 0
+        wp_deadline    = time.time() + self.stage_timeout
         while True:
-            result = self.nav.go_to(
-                wp['x'], wp['y'], wp.get('yaw', 0.0),
-                timeout_sec=self.stage_timeout,
-                stop_check_fn=self._stop_check,
-            )
+            kalan = wp_deadline - time.time()
+            if kalan <= 0.0:
+                result = 'timeout'
+            else:
+                result = self.nav.go_to(
+                    wp['x'], wp['y'], wp.get('yaw', 0.0),
+                    timeout_sec=kalan,
+                    stop_check_fn=(self._stop_check
+                                   if stop_sayaci < self.MAX_STOP else None),
+                )
 
             if result == 'stop_requested':
+                stop_sayaci += 1
                 self.node.get_logger().info(
-                    f'[NAVIGATE] §6.10 STOP işareti — araç durduruluyor, 2s bekleniyor.'
+                    f'[NAVIGATE] §6.10 STOP işareti ({stop_sayaci}/{self.MAX_STOP}) '
+                    '— araç durduruluyor, 2s bekleniyor.'
                 )
                 # Cooldown: aynı STOP işaretinin hemen tekrar tetiklenmesini engeller
                 # 3s: rampada üst-STOP ile alt-STOP arası için yeterli
                 self._stop_cooldown_bitis = time.time() + 3.0
                 self.det_store.update_field('stop_var', False)
                 stop_uygulandi = True
+                # Zorunlu bekleme navigasyon süresinden sayılmaz.
+                wp_deadline += RAMP_STOP_DURATION
                 deadline_stop = time.time() + RAMP_STOP_DURATION
                 while time.time() < deadline_stop:
                     if self.det_store.get_field('e_stop', False):
@@ -349,6 +379,11 @@ class NavigateState(smach.State):
                         return 'failed'
                     time.sleep(0.1)
                 self.node.get_logger().info('[NAVIGATE] §6.10 STOP bekleme tamam — devam ediliyor.')
+                if stop_sayaci >= self.MAX_STOP:
+                    self.node.get_logger().warn(
+                        f'[NAVIGATE] {label}: STOP sınırı ({self.MAX_STOP}) doldu — '
+                        'bu waypoint için STOP tespiti devre dışı, dur-kalk döngüsü kesildi.'
+                    )
                 continue
 
             if result == 'success':
@@ -417,6 +452,10 @@ class NavigateState(smach.State):
         # İndeksi artır ve GCS'e bildir
         userdata.wp_index  = idx + 1
         userdata.current_wp = wp
+        # Bir aşama tamamlandığı an kurtarma bütçesi tazelenir; sayaç görev
+        # boyunca birikirse parkurun farklı yerlerindeki üç bağımsız hata
+        # görevi iptal ettirir.
+        userdata.retry_count = 0
         self._wp_index_pub.publish(UInt8(data=min(idx + 1, 255)))
 
         if wp.get('type') == 'shoot':
@@ -521,16 +560,18 @@ class ShootState(smach.State):
       /shoot_command → True (seri_kopru PKT_LAZER=1 gönderir)
       /shoot_confirmed → True beklenir (seri_kopru PKT_LAZER=0 echo'sunda publish eder)
       Timeout → bir sonraki denemeye geç
+      Onay geldiğinde kalan denemeler kullanılmaz (şartname "en fazla 3" der,
+      "her zaman 3" değil; boşa harcanan her deneme 9 saniyeye mal olur).
 
     Geçişler: 'shot_fired' → NavigateState
-              'failed'     → ErrorRecoveryState
+              'failed'     → ErrorRecoveryState (E-STOP)
     """
 
     MAX_DENEME = 3       # Şartname: en fazla 3 deneme
     TIMEOUT_S  = 8.0     # Her deneme için max bekleme
 
     def __init__(self, node: Node, det_store: DetectionsStore):
-        smach.State.__init__(self, outcomes=['shot_fired'])
+        smach.State.__init__(self, outcomes=['shot_fired', 'failed'])
         self.node              = node
         self.det_store         = det_store
         self._confirmed_event  = threading.Event()
@@ -550,6 +591,16 @@ class ShootState(smach.State):
         basarili_deneme = 0
 
         for deneme in range(1, self.MAX_DENEME + 1):
+            # Her denemenin BAŞINDA kontrol edilir. Kontrol yalnız döngü
+            # sonunda olsaydı E-STOP aktifken bu state'e girilmesi lazeri
+            # ateşlerdi.
+            if self.det_store.get_field('e_stop', False):
+                self.node.get_logger().error(
+                    '[SHOOT] E-STOP aktif — ateş edilmiyor.'
+                )
+                self._shoot_pub.publish(Bool(data=False))
+                return 'failed'
+
             self.node.get_logger().info(
                 f'[SHOOT] Deneme {deneme}/{self.MAX_DENEME}'
             )
@@ -575,32 +626,30 @@ class ShootState(smach.State):
             if gecen < LASER_FIRE_DURATION:
                 time.sleep(LASER_FIRE_DURATION - gecen)
 
-            if onaylandi:
-                basarili_deneme = deneme
-                self.node.get_logger().info(
-                    f'[SHOOT] Deneme {deneme} onaylandı ✓'
-                )
-            else:
-                self.node.get_logger().warn(
-                    f'[SHOOT] Deneme {deneme} onayı gelmedi (timeout).'
-                )
-
             # Hareket kilidini aç — bir sonraki deneme/parkura geçiş için
             # seri_kopru._lazer_aktif'i False'a çeker. Bu çağrı yapılmazsa
             # kilit kalıcı olarak açık kalır ve araç bir daha hiç hareket
             # edemez (kritik güvenlik/görev hatası).
             self._shoot_pub.publish(Bool(data=False))
 
+            if onaylandi:
+                basarili_deneme = deneme
+                self.node.get_logger().info(
+                    f'[SHOOT] Deneme {deneme} onaylandı ✓'
+                )
+                break
+
+            self.node.get_logger().warn(
+                f'[SHOOT] Deneme {deneme} onayı gelmedi (timeout).'
+            )
+
             # Son deneme değilse kısa bekleme sonrası tekrar dene
             if deneme < self.MAX_DENEME:
-                if self.det_store.get_field('e_stop', False):
-                    self.node.get_logger().error('[SHOOT] E-STOP — atış iptal.')
-                    break
                 time.sleep(1.0)
 
         if basarili_deneme > 0:
             self.node.get_logger().info(
-                f'[SHOOT] {self.MAX_DENEME} denemeden {basarili_deneme}. onaylandı. Devam.'
+                f'[SHOOT] {basarili_deneme}. denemede onaylandı. Devam.'
             )
         else:
             self.node.get_logger().warn(
@@ -623,19 +672,33 @@ class HizlanmaState(smach.State):
     RC override hâlâ çalışır (mod_yoneticisi /cmd_vel'i dinlemeye devam eder).
 
     Hız profili:
-      0  .. FREN_BASI_MESAFE (25m) → MAX_HIZ (10 m/s)
-      25 .. TOPLAM_MESAFE    (30m) → doğrusal düşüş 10→0 m/s
+      0  .. FREN_BASI_MESAFE (25m) → MAX_HIZ
+      25 .. TOPLAM_MESAFE    (30m) → doğrusal düşüş MAX_HIZ→0.3 m/s
       Erken çıkış: Tabela_11_son tespiti VEYA timeout
 
     Geçişler: 'completed' → NavigateState
               'failed'    → ErrorRecoveryState
     """
 
-    MAX_HIZ          = 3.0    # m/s — seri_kopru.MAX_HIZ_MS ile eşleşmeli
+    # Ölçüm (2026-07-28): gaz voltajı = 0.90 + hız[m/s]; tam gaz 2.84 V ≈
+    # 1.94 m/s. Eski 3.0 değeri seri_kopru.MAX_HIZ_MS donanım kelepçesiydi,
+    # aracın ulaşabildiği bir hız değil — 3.90 V ister, DAC/sürücü doyar.
+    MAX_HIZ          = 1.90   # m/s — ölçülen tam gazın hemen altı
     TOPLAM_MESAFE    = 30.0   # m
     FREN_BASI_MESAFE = 25.0   # m — son 5m'de yavaşla
-    TIMEOUT_S        = 15.0   # s — donanım arızasına karşı üst limit
+    # Timeout mesafeden türetilir. Sabit 15 s, 30 m için 2.0 m/s ORTALAMA
+    # gerektiriyordu; ölçülen tepe hız 1.94 m/s olduğundan parkur ivmelenme
+    # süresi sıfır olsa bile her koşuda timeout'la bitiyordu. Bu bir kontrol
+    # parametresi değil, donanım arızasına karşı üst limit: en kötü hâlde
+    # ortalama hızın MAX_HIZ'in %40'ı olduğu varsayılır (kalkış sürtünmesi +
+    # son 5 m'nin fren rampası).
+    TIMEOUT_S        = TOPLAM_MESAFE / (MAX_HIZ * 0.40)   # ≈ 39 s
     CMD_HZ           = 10.0   # Hz
+    # Odom donmuşsa (enkoder yok/kopuk) /odom sabit (0,0) yayınlar; dist hep 0
+    # kalır, profil hep MAX_HIZ verir ve araç timeout'a kadar tam gaz gider.
+    ODOM_ILERLEME_S  = 4.0    # s — bu süre sonunda ilerleme yoksa iptal
+    ODOM_ILERLEME_M  = 0.20   # m
+    ODOM_BAYATLAMA_S = 1.0    # s — /odom mesajı bu süre gelmezse iptal
 
     def __init__(self, node: Node, det_store: DetectionsStore):
         smach.State.__init__(self, outcomes=['completed', 'failed'])
@@ -644,8 +707,9 @@ class HizlanmaState(smach.State):
 
         self._cmd_pub = node.create_publisher(Twist, CMD_VEL_TOPIC, 10)
 
-        self._lock   = threading.Lock()
-        self._pos    = None   # (x, y) — son odom konumu
+        self._lock     = threading.Lock()
+        self._pos      = None   # (x, y) — son odom konumu
+        self._son_odom = 0.0    # wall-clock — son /odom mesajının geliş anı
 
         node.create_subscription(Odometry, ODOM_TOPIC, self._on_odom, 10)
 
@@ -655,6 +719,11 @@ class HizlanmaState(smach.State):
                 msg.pose.pose.position.x,
                 msg.pose.pose.position.y,
             )
+            self._son_odom = time.time()
+
+    def _odom_yasi(self) -> float:
+        with self._lock:
+            return time.time() - self._son_odom
 
     def _mesafe(self, baslangic) -> float:
         with self._lock:
@@ -684,10 +753,11 @@ class HizlanmaState(smach.State):
             f'[HIZLANMA] Başladı. Hedef: {self.TOPLAM_MESAFE:.0f}m @ {self.MAX_HIZ:.1f} m/s'
         )
 
-        twist   = Twist()
-        dt      = 1.0 / self.CMD_HZ
-        deadline = time.time() + self.TIMEOUT_S
-        sonuc   = 'completed'
+        twist    = Twist()
+        dt       = 1.0 / self.CMD_HZ
+        baslama  = time.time()
+        deadline = baslama + self.TIMEOUT_S
+        sonuc    = 'completed'
 
         while rclpy.ok():
             if self.det_store.get_field('e_stop', False):
@@ -696,17 +766,44 @@ class HizlanmaState(smach.State):
                 break
 
             if self.det_store.get_field('manual_mod', False):
-                self.node.get_logger().warn('[HIZLANMA] Manuel mod — RC devraldı, bekleniyor.')
+                self.node.get_logger().warn(
+                    '[HIZLANMA] Manuel mod — RC devraldı, bekleniyor.',
+                    throttle_duration_sec=2.0,
+                )
                 twist.linear.x = 0.0
                 self._cmd_pub.publish(twist)
                 time.sleep(0.1)
+                # Manuel duraklama timeout bütçesinden sayılmaz; sayılsaydı
+                # deadline kontrolü bu daldan sonra geldiği için timeout hiç
+                # dolmaz ve RC manuelde kaldığı sürece döngü sonsuza giderdi.
+                deadline += 0.1
+                baslama  += 0.1
                 continue
 
             if time.time() > deadline:
                 self.node.get_logger().warn('[HIZLANMA] Timeout — durduruluyor.')
                 break
 
+            # Odom sağlığı: kopuk/donmuş enkoder mesafeyi hep 0 gösterir,
+            # profil hep MAX_HIZ verir ve araç timeout'a kadar tam gaz gider.
+            yas = self._odom_yasi()
+            if yas > self.ODOM_BAYATLAMA_S:
+                self.node.get_logger().error(
+                    f'[HIZLANMA] /odom {yas:.1f}s bayat — iptal.'
+                )
+                sonuc = 'failed'
+                break
+
             dist = self._mesafe(baslangic)
+
+            if (time.time() - baslama > self.ODOM_ILERLEME_S
+                    and dist < self.ODOM_ILERLEME_M):
+                self.node.get_logger().error(
+                    f'[HIZLANMA] {self.ODOM_ILERLEME_S:.0f}s tam gazda ilerleme '
+                    f'{dist:.2f}m — odometri donmuş veya araç hareket etmiyor, iptal.'
+                )
+                sonuc = 'failed'
+                break
 
             if self.det_store.get_field('hizlanma_bitti', False):
                 self.node.get_logger().info(
@@ -752,21 +849,35 @@ class HizlanmaState(smach.State):
 
 class MissionCompleteState(smach.State):
     """
-    Görev tamamlandı. /mission_status → 'COMPLETE' yayınlanır.
+    Görevin terminal durumu. İki örneği kurulur:
+
+      basarili=True  → 'MISSION_COMPLETE', /mission_status = 'COMPLETE'
+      basarili=False → 'MISSION_ABORT',    /mission_status = 'ABORTED'
+
+    Ayrım şart: iptal de 'COMPLETE' yayınlarsa, Nav2 ayakta değilken FSM
+    ~21 saniyede (wait_for_server 5s → kurtarma 2s, üç tur) hiç hareket
+    etmeden "görev tamamlandı" der ve bu logda başarıdan ayırt edilemez.
+
     Geçişler: 'done' → (terminal)
     """
 
-    def __init__(self, node: Node):
+    def __init__(self, node: Node, basarili: bool = True):
         smach.State.__init__(self, outcomes=['done'])
         self.node        = node
+        self._basarili   = basarili
         self._status_pub = node.create_publisher(String, MISSION_STATUS_TOPIC, 10)
         self._misyon_pub = node.create_publisher(Bool, MISYON_AKTIF_TOPIC, 10)
 
     def execute(self, userdata):
+        durum = 'MISSION_COMPLETE' if self._basarili else 'MISSION_ABORT'
         if hasattr(self.node, '_fsm_state_pub'):
-            self.node._fsm_state_pub.publish(String(data='MISSION_COMPLETE'))
-        self.node.get_logger().info('═══ GÖREV TAMAMLANDI ═══')
-        self._status_pub.publish(String(data='COMPLETE'))
+            self.node._fsm_state_pub.publish(String(data=durum))
+        if self._basarili:
+            self.node.get_logger().info('═══ GÖREV TAMAMLANDI ═══')
+            self._status_pub.publish(String(data='COMPLETE'))
+        else:
+            self.node.get_logger().error('═══ GÖREV İPTAL EDİLDİ ═══')
+            self._status_pub.publish(String(data='ABORTED'))
         # Veri kaydını durdur
         self._misyon_pub.publish(Bool(data=False))
         return 'done'
@@ -779,10 +890,13 @@ class MissionCompleteState(smach.State):
 class ErrorRecoveryState(smach.State):
     """
     Hata kurtarma. Nav2 başarısız olduğunda buraya düşülür.
-    3 deneme başarısız olursa görev sonlandırılır.
+    Aynı waypoint için 3 deneme başarısız olursa görev iptal edilir.
+
+    Sayaç userdata'da tutulur; NavigateState bir aşamayı tamamladığında
+    sıfırlar (bütçe aşama başınadır, görev başına değil).
 
     Geçişler: 'recovered' → NavigateState
-              'abort'     → MissionCompleteState
+              'abort'     → MissionAbortState
     """
 
     MAX_RETRIES = 3
@@ -791,31 +905,32 @@ class ErrorRecoveryState(smach.State):
         smach.State.__init__(
             self,
             outcomes=['recovered', 'abort'],
-            input_keys=['wp_index'],
-            output_keys=['wp_index']
+            input_keys=['wp_index', 'retry_count'],
+            output_keys=['wp_index', 'retry_count']
         )
-        self.node         = node
-        self._retry_count = 0
+        self.node = node
 
     def execute(self, userdata):
         if hasattr(self.node, '_fsm_state_pub'):
             self.node._fsm_state_pub.publish(String(data='ERROR_RECOVERY'))
-        self._retry_count += 1
+        sayac = userdata.retry_count + 1
+        userdata.retry_count = sayac
         self.node.get_logger().warn(
-            f'[ERROR_RECOVERY] Deneme {self._retry_count}/{self.MAX_RETRIES}'
+            f'[ERROR_RECOVERY] Deneme {sayac}/{self.MAX_RETRIES}'
         )
 
-        if self._retry_count >= self.MAX_RETRIES:
+        if sayac >= self.MAX_RETRIES:
             self.node.get_logger().error(
-                '[ERROR_RECOVERY] Max deneme aşıldı. Görev sonlandırılıyor.'
+                '[ERROR_RECOVERY] Max deneme aşıldı. Görev iptal ediliyor.'
             )
-            self._retry_count = 0
+            userdata.retry_count = 0
             return 'abort'
 
-        # Önceki waypointten tekrar dene
-        if userdata.wp_index > 0:
-            userdata.wp_index -= 1
-
+        # Başarısız olan waypoint TEKRAR denenir. wp_index navigasyon
+        # başarısızlığında henüz artmamıştır; indeksi geri almak bir ÖNCEKİ
+        # (tamamlanmış) aşamaya döner ve varışta o aşamanın tipi yeniden
+        # okunur — ATIS_BOLGESI'ne dönülürse lazer ikinci kez ateşlenir,
+        # HIZLANMA_PARKURU'na dönülürse 30 m'lik koşu baştan başlar.
         time.sleep(2.0)
         return 'recovered'
 
@@ -953,9 +1068,10 @@ def main():
     # ── SMACH FSM Kurulumu ────────────────────────────────────────────
     sm = smach.StateMachine(outcomes=['GOREV_TAMAMLANDI', 'GOREV_IPTAL'])
 
-    sm.userdata.waypoints  = waypoints
-    sm.userdata.wp_index   = 0
-    sm.userdata.current_wp = None
+    sm.userdata.waypoints   = waypoints
+    sm.userdata.wp_index    = 0
+    sm.userdata.current_wp  = None
+    sm.userdata.retry_count = 0
 
     with sm:
         smach.StateMachine.add(
@@ -999,13 +1115,20 @@ def main():
             ShootState(node, det_store),
             transitions={
                 'shot_fired': 'NAVIGATE',
+                'failed':     'ERROR_RECOVERY',
             }
         )
 
         smach.StateMachine.add(
             'MISSION_COMPLETE',
-            MissionCompleteState(node),
+            MissionCompleteState(node, basarili=True),
             transitions={'done': 'GOREV_TAMAMLANDI'}
+        )
+
+        smach.StateMachine.add(
+            'MISSION_ABORT',
+            MissionCompleteState(node, basarili=False),
+            transitions={'done': 'GOREV_IPTAL'}
         )
 
         smach.StateMachine.add(
@@ -1013,7 +1136,7 @@ def main():
             ErrorRecoveryState(node),
             transitions={
                 'recovered': 'NAVIGATE',
-                'abort':     'MISSION_COMPLETE',
+                'abort':     'MISSION_ABORT',
             }
         )
 

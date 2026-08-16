@@ -188,7 +188,6 @@ class YoloAdapterNode(Node):
             "koni_var":         koni_var,
             "hizlanma_bitti":   hizlanma_bitti,
             "stop_var":         stop_var,
-            "kayar_yon":        "bilinmiyor",
             "bariyer_sol_m":    1.5,
             "bariyer_sag_m":    1.5,
             "fps":              0.0,
