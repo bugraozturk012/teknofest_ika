@@ -65,7 +65,7 @@ from teknofest_ika.otonomi.topics import (
     CAMERA_IMAGE_TOPIC, CAMERA_TARET_TOPIC, YOLO_RAW_DEBUG_TOPIC,
     MAP_IMAGE_TOPIC, DEPTH_IMAGE_TOPIC, SCAN_TOPIC,
     RC_INPUT_TOPIC, MUX_CMD_VEL_TOPIC, ODOM_TOPIC, ENKODER_HAM_TOPIC,
-    DETECTIONS_TOPIC,
+    YOLO_RAW_TOPIC,
 )
 
 # vision_msgs kurulu değilse tespit sayacı sessizce kapanır; panonun tamamı
@@ -253,8 +253,10 @@ class WebDashboardNode(Node):
         self.create_subscription(Twist, MUX_CMD_VEL_TOPIC, self._komut, 10)
         self.create_subscription(Odometry, ODOM_TOPIC, self._enk_odom, be)
         self.create_subscription(UInt16MultiArray, ENKODER_HAM_TOPIC, self._enk_ham, be)
+        # Ham tespitler /detections/yolo'da (Detection2DArray). /ika/detections
+        # yolo_adapter'ın String JSON özeti — farklı tip, farklı topic.
         if Detection2DArray is not None:
-            self.create_subscription(Detection2DArray, DETECTIONS_TOPIC,
+            self.create_subscription(Detection2DArray, YOLO_RAW_TOPIC,
                                      self._tespit, be)
         else:
             self.get_logger().warn(
@@ -757,6 +759,544 @@ function sureCiz(){let ms=sT+(sInt?Date.now()-sBas:0);
     GREEN=GREEN, RED=RED)
 
 
+# ── Pano ──────────────────────────────────────────────────────────────────────
+# Tasarım dili: Apple sistem grileri. Renk YALNIZ durum bildirir (yeşil/turuncu/
+# kırmızı) ve her zaman metin etiketiyle birlikte gelir; seçim ve vurgu renkle
+# değil dolgu ve ağırlıkla yapılır. Sayılar monospace + tabular-nums — teknik
+# veride sütun hizası şart.
+#
+# Bu sayfa /sinyaller (katalog, bir kez) + /telemetri (HAM sayı, SSE 5 Hz)
+# tüketir, /veri'ye hiç bağlanmaz. Eşik ve renk kararı burada verilir; sunucu
+# yalnız sayı gönderir. Eski pano /eski adresinde duruyor.
+#
+# Python % biçimlendirmesi BİLEREK kullanılmadı: CSS yüzde değerleriyle dolu,
+# %% kaçışı bu boyutta hataya davetiye. Renkler CSS değişkenlerinde.
+SAYFA_YENI = """<!doctype html><html lang=tr><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>LYDİA İKA — Pano</title><style>
+:root{
+  color-scheme:dark light;
+  --metin:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI Variable Text",
+          "Segoe UI",system-ui,sans-serif;
+  --sayi:ui-monospace,"SF Mono","Cascadia Mono",Menlo,Consolas,
+         "DejaVu Sans Mono",monospace;
+  /* Sahada koyu kullanılıyor; taban koyu, açık tema OS tercihine bırakıldı. */
+  --zemin:#000000; --kat1:#1C1C1E; --kat2:#2C2C2E; --kat3:#3A3A3C;
+  --ayrac:rgba(84,84,88,.62); --ayrac2:rgba(84,84,88,.32);
+  --y1:rgba(255,255,255,.96); --y2:rgba(235,235,245,.62);
+  --y3:rgba(235,235,245,.30);
+  --dolgu:rgba(118,118,128,.24); --dolgu2:rgba(118,118,128,.38);
+  --vurgu:#F2F2F7; --vurgu-yazi:#000000;
+  --yesil:#30D158; --turuncu:#FF9F0A; --kirmizi:#FF453A; --gri:#8E8E93;
+  --yesil-z:rgba(48,209,88,.15); --turuncu-z:rgba(255,159,10,.15);
+  --kirmizi-z:rgba(255,69,58,.15);
+  --golge:0 0 0 .5px rgba(255,255,255,.06), 0 4px 16px -8px rgba(0,0,0,.9);
+  --bulanik:saturate(180%) blur(20px);
+  --ustY:52px;
+}
+@media (prefers-color-scheme:light){
+  :root{
+    --zemin:#F2F2F7; --kat1:#FFFFFF; --kat2:#E9E9EF; --kat3:#DCDCE2;
+    --ayrac:rgba(60,60,67,.28); --ayrac2:rgba(60,60,67,.12);
+    --y1:rgba(0,0,0,.92); --y2:rgba(60,60,67,.60); --y3:rgba(60,60,67,.30);
+    --dolgu:rgba(118,118,128,.12); --dolgu2:rgba(118,118,128,.20);
+    --vurgu:#1C1C1E; --vurgu-yazi:#F2F2F7;
+    --yesil:#248A3D; --turuncu:#B25000; --kirmizi:#D70015;
+    --yesil-z:rgba(36,138,61,.12); --turuncu-z:rgba(178,80,0,.12);
+    --kirmizi-z:rgba(215,0,21,.10);
+    --golge:0 0 0 .5px rgba(0,0,0,.04), 0 4px 14px -8px rgba(0,0,0,.28);
+  }
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--zemin);color:var(--y1);font:14px var(--metin);
+     overflow:hidden}
+:focus-visible{outline:2px solid var(--y1);outline-offset:2px;border-radius:5px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+.sayi{font-family:var(--sayi);font-variant-numeric:tabular-nums;
+      font-feature-settings:"tnum" 1}
+.mikro{font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+       font-weight:590;color:var(--y3)}
+
+/* ═════════ ÜST ŞERİT ═════════ */
+header{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+       padding:9px 14px;height:var(--ustY);
+       background:color-mix(in srgb,var(--zemin) 76%,transparent);
+       -webkit-backdrop-filter:var(--bulanik);backdrop-filter:var(--bulanik);
+       border-bottom:.5px solid var(--ayrac);position:relative;z-index:60}
+h1{margin:0 4px 0 0;font-size:15px;font-weight:600;letter-spacing:-.02em;
+   white-space:nowrap}
+h1 b{font-weight:400;color:var(--y2)}
+.rz{display:inline-flex;align-items:center;gap:5px;padding:3.5px 10px 3.5px 8px;
+    border-radius:980px;font-size:10px;font-weight:600;letter-spacing:.045em;
+    text-transform:uppercase;white-space:nowrap;color:var(--y3);
+    background:var(--dolgu);transition:color .2s,background .2s}
+.rz::before{content:"";width:6px;height:6px;border-radius:50%;flex:none;
+            background:currentColor}
+.rz.g{color:var(--yesil);background:var(--yesil-z)}
+.rz.t{color:var(--turuncu);background:var(--turuncu-z)}
+.rz.k{color:var(--kirmizi);background:var(--kirmizi-z)}
+.rz.k::before{animation:nabiz 1.5s ease-in-out infinite}
+@keyframes nabiz{0%,100%{opacity:1}50%{opacity:.3}}
+.anahtar{display:flex;background:var(--dolgu);border-radius:9px;padding:2px;
+         gap:2px;margin-left:6px}
+.anahtar button{font:inherit;font-size:12.5px;font-weight:540;padding:5px 13px;
+     border:none;border-radius:7px;background:transparent;color:var(--y2);
+     cursor:pointer;transition:background .18s,color .18s}
+.anahtar button:hover{color:var(--y1)}
+.anahtar button[aria-pressed="true"]{background:var(--kat1);color:var(--y1);
+     box-shadow:var(--golge);font-weight:590}
+.sagUst{margin-left:auto;display:flex;align-items:center;gap:8px}
+.hiz{font-family:var(--sayi);font-size:11px;color:var(--y3);
+     font-variant-numeric:tabular-nums;white-space:nowrap}
+.estopD{font:inherit;font-size:11px;font-weight:700;letter-spacing:.06em;
+     padding:7px 13px;border:none;border-radius:8px;cursor:pointer;
+     background:var(--kirmizi);color:#fff}
+.estopD:hover{filter:brightness(1.12)}
+.estopD.kaldir{background:var(--dolgu);color:var(--y2);font-weight:600;
+     letter-spacing:.04em}
+
+/* ═════════ GÖRÜNÜM KABI ═════════ */
+#sahne{position:absolute;inset:0;top:var(--ustY);overflow:hidden}
+.gorunum{position:absolute;inset:0;display:none;overflow:auto;padding:10px;
+         gap:10px}
+.gorunum.aktif{display:grid}
+
+/* ═════════ KART ═════════ */
+.wj{background:var(--kat1);border-radius:14px;box-shadow:var(--golge);
+    overflow:hidden;display:flex;flex-direction:column;min-width:0;min-height:0}
+.wjUst{display:flex;align-items:center;gap:7px;padding:9px 12px 7px;flex:none}
+.wjUst h3{margin:0;font-size:10.5px;font-weight:590;letter-spacing:.05em;
+     text-transform:uppercase;color:var(--y2);flex:1;white-space:nowrap;
+     overflow:hidden;text-overflow:ellipsis}
+.wjUst .ek{font-family:var(--sayi);font-size:10px;color:var(--y3);
+     font-variant-numeric:tabular-nums;white-space:nowrap}
+.wjGov{padding:0 12px 12px;flex:1;min-width:0;min-height:0;
+     display:flex;flex-direction:column}
+.dev{font-family:var(--sayi);font-variant-numeric:tabular-nums;
+     font-size:29px;font-weight:500;letter-spacing:-.04em;line-height:1.05;
+     color:var(--y1)}
+.dev em{font-style:normal;font-size:12px;font-family:var(--metin);
+     color:var(--y3);margin-left:3px;letter-spacing:0}
+.dev.g{color:var(--yesil)} .dev.t{color:var(--turuncu)} .dev.k{color:var(--kirmizi)}
+.dev.yok{color:var(--y3)}
+.altbil{font-size:11.5px;color:var(--y3);margin-top:3px}
+.wjSat{display:flex;justify-content:space-between;align-items:baseline;
+     gap:12px;padding:6px 0;font-size:12.5px}
+.wjSat+.wjSat{border-top:.5px solid var(--ayrac2)}
+.wjSat span:first-child{color:var(--y2)}
+.wjSat span:last-child{font-family:var(--sayi);font-variant-numeric:tabular-nums}
+.wjSat .t{color:var(--turuncu)} .wjSat .k{color:var(--kirmizi)}
+.wjSat .yok{color:var(--y3)}
+.metinD{font-size:19px;font-weight:600;letter-spacing:-.02em;line-height:1.15;
+     word-break:break-word}
+
+/* ═════════ KAMERA ═════════ */
+.kamAlan{position:relative;flex:1;min-height:0;min-width:0;overflow:hidden;
+    border-radius:9px;background:#080C12;display:grid;place-items:center}
+.kamAlan img{position:absolute;inset:0;width:100%;height:100%;
+    object-fit:contain;display:block}
+.kamAlan.pikselli img{image-rendering:pixelated}
+.kamYok{font-size:11.5px;color:var(--y3);z-index:2}
+.kamAlan.canli .kamYok{display:none}
+
+/* ═════════ SÜRÜŞ DÜZENİ ═════════ */
+#gSurus{grid-template-columns:220px minmax(0,1fr) 268px;
+        grid-template-rows:minmax(0,1fr)}
+#surLidar{flex:none}
+#surLidar .kamAlan{aspect-ratio:1/1}
+#surSol,#surSag{display:flex;flex-direction:column;gap:10px;min-height:0;
+        overflow:auto}
+#surOrta{display:flex;flex-direction:column;gap:10px;min-height:0}
+
+/* ═════════ OTONOM DÜZENİ ═════════ */
+#gOtonom{grid-template-columns:minmax(0,1fr) 240px;grid-template-rows:auto minmax(0,1fr)}
+#otoUst{grid-column:1/-1;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));
+        gap:10px}
+#otoKam{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
+        grid-template-rows:repeat(2,minmax(0,1fr));gap:10px;min-height:0}
+#otoSag{display:flex;flex-direction:column;gap:10px;min-height:0;overflow:auto}
+
+/* ═════════ KAYIT DÜZENİ ═════════ */
+#gKayit{grid-template-rows:auto minmax(0,1fr);align-content:start}
+#kayArac{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.cip{font:inherit;font-size:12px;font-weight:510;padding:5px 11px;
+     border-radius:7px;border:none;background:var(--dolgu);color:var(--y2);
+     cursor:pointer;white-space:nowrap;transition:background .15s,color .15s}
+.cip:hover{color:var(--y1)}
+.cip[aria-pressed="true"]{background:var(--kat1);color:var(--y1);
+     box-shadow:var(--golge);font-weight:580}
+#kayGovde{overflow:auto;min-height:0}
+.kayGrup{margin-bottom:6px}
+.kayGrupBas{padding:10px 4px 5px}
+table.kay{width:100%;border-collapse:collapse;background:var(--kat1);
+     border-radius:14px;overflow:hidden;box-shadow:var(--golge)}
+table.kay{table-layout:fixed}
+table.kay td{padding:5px 12px;border-top:.5px solid var(--ayrac2);
+     vertical-align:middle}
+table.kay tr:first-child td{border-top:none}
+td.kAd{font-size:12.5px;color:var(--y1);white-space:nowrap;width:190px;
+     overflow:hidden;text-overflow:ellipsis}
+td.kDeg{font-family:var(--sayi);font-variant-numeric:tabular-nums;
+     font-size:13px;text-align:right;white-space:nowrap;width:130px}
+td.kDeg em{font-style:normal;font-size:10.5px;color:var(--y3);margin-left:4px}
+/* Eğilim sütunu esnek: kalan genişliği o alır. Tuval arka belleği sabit
+   (1200×44) ve CSS ile küçültülüyor — büyütülmediği için bulanıklaşmaz. */
+td.kCiz{padding:3px 12px}
+td.kCiz canvas{display:block;width:100%;height:22px}
+td.kKay{font-family:var(--sayi);font-size:10.5px;color:var(--y3);
+     text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+     width:230px}
+tr.kaynaksiz td.kAd{color:var(--y3)}
+tr.kaynaksiz td.kDeg{color:var(--y3)}
+.kDeg.t{color:var(--turuncu)} .kDeg.k{color:var(--kirmizi)}
+
+@media (max-width:1100px){
+  #gSurus{grid-template-columns:minmax(0,1fr);grid-auto-rows:min-content}
+  #gOtonom{grid-template-columns:minmax(0,1fr)}
+  #otoUst{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+</style></head><body>
+
+<header>
+  <h1>LYDİA <b>İKA</b></h1>
+  <span class="rz" id=rzBag>bağlantı yok</span>
+  <span class="rz" id=rzEstop>e-stop</span>
+  <span class="rz" id=rzMod>mod</span>
+  <div class="anahtar" role=group aria-label="Görünüm">
+    <button type=button data-gor=gSurus aria-pressed=true>Sürüş</button>
+    <button type=button data-gor=gOtonom aria-pressed=false>Otonom</button>
+    <button type=button data-gor=gKayit aria-pressed=false>Kayıt</button>
+  </div>
+  <div class=sagUst>
+    <span class=hiz id=sure>00:00.0</span>
+    <button class=cip type=button id=sureD>Kronometre</button>
+    <span class=hiz id=saat>--:--:--</span>
+    <button class=estopD type=button id=estopBas>ACİL DURDUR</button>
+    <button class="estopD kaldir" type=button id=estopKaldir>Kaldır</button>
+  </div>
+</header>
+
+<div id=sahne>
+
+  <!-- ══════ SÜRÜŞ ══════ -->
+  <section class="gorunum aktif" id=gSurus>
+    <div id=surSol>
+      <div class=wj><div class=wjUst><h3>Hız</h3><span class=ek>/odometry/filtered</span></div>
+        <div class=wjGov><div class="dev sayi" data-dev=hiz>—<em>m/s</em></div>
+        <div class=altbil>komut <span class="sayi" data-inline=hiz_komut>—</span> m/s</div></div></div>
+      <div class=wj><div class=wjUst><h3>Gaz</h3><span class=ek>DAC</span></div>
+        <div class=wjGov><div class="dev sayi" data-dev=gaz_v>—<em>V</em></div>
+        <div class=altbil>rölanti 0,90 · tam gaz 2,84</div></div></div>
+      <div class=wj><div class=wjUst><h3>Direksiyon</h3><span class=ek>ölü hesap</span></div>
+        <div class=wjGov><div class="dev sayi" data-dev=steer_aci>—<em>°</em></div></div></div>
+      <div class=wj><div class=wjUst><h3>Enkoder</h3><span class=ek>/odom</span></div>
+        <div class=wjGov><div class="dev sayi" data-dev=enc_mesafe>—<em>m</em></div>
+        <div class=altbil>ham <span class="sayi" data-inline=encp>—</span> sayım</div></div></div>
+    </div>
+    <div id=surOrta>
+      <div class=wj style="flex:1"><div class=wjUst><h3>Ön Kamera</h3><span class=ek data-kamfps=on>—</span></div>
+        <div class=wjGov><div class="kamAlan" data-kam=on><span class=kamYok>sinyal yok</span><img alt=""></div></div></div>
+    </div>
+    <div id=surSag>
+      <!-- LiDAR taraması kare; geniş panelde genişliğin yarısı boşa gidiyordu,
+           dar sütunda kendi oranında oturuyor. -->
+      <div class=wj id=surLidar><div class=wjUst><h3>LiDAR</h3><span class=ek>5 m yarıçap</span></div>
+        <div class=wjGov><div class="kamAlan" data-kam=lidar><span class=kamYok>sinyal yok</span><img alt=""></div></div></div>
+      <div class=wj><div class=wjUst><h3>Kumanda</h3><span class=ek>/rc_input</span></div>
+        <div class=wjGov>
+          <div class=wjSat><span>Gaz</span><span data-sat=rc_gaz>—</span></div>
+          <div class=wjSat><span>Direksiyon</span><span data-sat=rc_direksiyon>—</span></div>
+          <div class=wjSat><span>Mod</span><span data-sat=rc_mod>—</span></div>
+          <div class=wjSat><span>AUX</span><span data-sat=rc_aux>—</span></div>
+        </div></div>
+      <div class=wj><div class=wjUst><h3>Gövde</h3><span class=ek>/imu/data</span></div>
+        <div class=wjGov>
+          <div class=wjSat><span>Yatış</span><span data-sat=yatis>—</span></div>
+          <div class=wjSat><span>Yunuslama</span><span data-sat=yunuslama>—</span></div>
+        </div></div>
+      <div class=wj><div class=wjUst><h3>Jetson</h3><span class=ek>sysfs</span></div>
+        <div class=wjGov>
+          <div class=wjSat><span>CPU</span><span data-sat=cpu>—</span></div>
+          <div class=wjSat><span>GPU</span><span data-sat=gpu>—</span></div>
+          <div class=wjSat><span>Sıcaklık</span><span data-sat=sicaklik>—</span></div>
+          <div class=wjSat><span>RAM</span><span data-sat=ram>—</span></div>
+          <div class=wjSat><span>Veri yaşı</span><span data-sat=yas>—</span></div>
+        </div></div>
+    </div>
+  </section>
+
+  <!-- ══════ OTONOM ══════ -->
+  <section class=gorunum id=gOtonom>
+    <div id=otoUst>
+      <div class=wj><div class=wjUst><h3>Parkur Aşaması</h3><span class=ek>/fsm_state</span></div>
+        <div class=wjGov><div class=metinD id=oFsm>—</div></div></div>
+      <div class=wj><div class=wjUst><h3>Waypoint</h3><span class=ek>/misyon/wp_index</span></div>
+        <div class=wjGov><div class="dev sayi" data-dev=wp>—</div></div></div>
+      <div class=wj><div class=wjUst><h3>Nişan</h3><span class=ek>/targeting/status</span></div>
+        <div class=wjGov><div class=metinD id=oTgt>—</div></div></div>
+      <div class=wj><div class=wjUst><h3>Lazer</h3><span class=ek>/shoot/result</span></div>
+        <div class=wjGov><div class=metinD id=oLazer>—</div></div></div>
+    </div>
+    <div id=otoKam>
+      <div class=wj><div class=wjUst><h3>YOLO</h3><span class=ek data-kamfps=yolo>—</span></div>
+        <div class=wjGov><div class="kamAlan" data-kam=yolo><span class=kamYok>sinyal yok</span><img alt=""></div></div></div>
+      <div class=wj><div class=wjUst><h3>SLAM Haritası</h3><span class=ek data-kamfps=harita>—</span></div>
+        <div class=wjGov><div class="kamAlan pikselli" data-kam=harita><span class=kamYok>sinyal yok</span><img alt=""></div></div></div>
+      <div class=wj><div class=wjUst><h3>Derinlik</h3><span class=ek>OS30A · 0,02–2,5 m</span></div>
+        <div class=wjGov><div class="kamAlan" data-kam=derinlik><span class=kamYok>sinyal yok</span><img alt=""></div></div></div>
+      <div class=wj><div class=wjUst><h3>Nişan Kamerası</h3><span class=ek data-kamfps=nisan>—</span></div>
+        <div class=wjGov><div class="kamAlan" data-kam=nisan><span class=kamYok>sinyal yok</span><img alt=""></div></div></div>
+    </div>
+    <div id=otoSag>
+      <div class=wj><div class=wjUst><h3>Algı</h3><span class=ek>LiDAR + YOLO</span></div>
+        <div class=wjGov>
+          <div class=wjSat><span>En yakın engel</span><span data-sat=engel>—</span></div>
+          <div class=wjSat><span>Tespit</span><span data-sat=tespit>—</span></div>
+          <div class=wjSat><span>Kamera</span><span data-sat=fps>—</span></div>
+        </div></div>
+      <div class=wj><div class=wjUst><h3>Sürüş</h3><span class=ek>otonom komut</span></div>
+        <div class=wjGov>
+          <div class=wjSat><span>Hız</span><span data-sat=hiz>—</span></div>
+          <div class=wjSat><span>Komut</span><span data-sat=hiz_komut>—</span></div>
+          <div class=wjSat><span>Direksiyon</span><span data-sat=steer_aci>—</span></div>
+          <div class=wjSat><span>Mesafe</span><span data-sat=enc_mesafe>—</span></div>
+        </div></div>
+      <div class=wj><div class=wjUst><h3>Not</h3></div>
+        <div class=wjGov><div class=altbil>Tarayıcıdan araca yazan tek komut
+          E-STOP'tur. Otonoma geçiş kumandadaki mod anahtarından yapılır.</div></div></div>
+    </div>
+  </section>
+
+  <!-- ══════ KAYIT ══════ -->
+  <section class=gorunum id=gKayit>
+    <div id=kayArac>
+      <button class=cip type=button id=kayHepsi aria-pressed=true>Tümü</button>
+      <span class=mikro id=kaySayim></span>
+    </div>
+    <div id=kayGovde></div>
+  </section>
+
+</div>
+
+<script>
+"use strict";
+// ── Biçimlendirme ──────────────────────────────────────────────────────────
+// Ondalık basamak birime göre: µs/sayım tam sayı, gerilim iki hane vb.
+const OND={'m/s':2,'V':2,'\\u00b0':1,'m':2,'\\u00b5s':0,'sayım':0,'adet':0,
+           'Hz':1,'%':0,'\\u00b0C':1,'MB':0,'nokta':0,'sn':1,'A':1};
+// Eşikler: [turuncu, kırmızı]. Yalnız ÖLÇÜLMÜŞ ya da şartnameden bilinen
+// sınırlar var; tahmini eşik konmadı — renk uydurmak sayıyı çöpe çevirir.
+const ESIK={yatis:[8,15],yunuslama:[8,15],hiz:[2.0,3.0],sicaklik:[70,80],
+            cpu:[85,95],gpu:[85,95],yas:[1.0,3.0]};
+function ond(bir){const o=OND[bir];return o===undefined?2:o}
+function biçim(v,bir){
+  if(v===null||v===undefined) return '—';
+  return v.toFixed(ond(bir)).replace('.',',');
+}
+function sinif(k,v){
+  if(v===null||v===undefined) return '';
+  const e=ESIK[k]; if(!e) return '';
+  const a=Math.abs(v);
+  return a>=e[1]?'k':a>=e[0]?'t':'';
+}
+
+// ── Katalog + geçmiş ───────────────────────────────────────────────────────
+let KATALOG=[];                 // [{k,ad,gr,bir,kaynak}]
+const BILGI={};                 // k -> katalog satırı
+const GECMIS={};                // k -> son N örnek (null dahil)
+const N_GEC=180;                // 36 s @ 5 Hz
+const cizgiler={};              // k -> canvas
+
+fetch('/sinyaller').then(r=>r.json()).then(d=>{KATALOG=d;kur()})
+  .catch(()=>{document.getElementById('kayGovde').innerHTML=
+    '<div class=altbil>Sinyal kataloğu alınamadı.</div>'});
+
+function kur(){
+  const gov=document.getElementById('kayGovde');
+  const gruplar=[];
+  for(const s of KATALOG){
+    BILGI[s.k]=s; GECMIS[s.k]=[];
+    if(!gruplar.includes(s.gr)) gruplar.push(s.gr);
+  }
+  let yok=0;
+  for(const g of gruplar){
+    const kap=document.createElement('div'); kap.className='kayGrup';
+    const bas=document.createElement('div');
+    bas.className='kayGrupBas mikro'; bas.textContent=g;
+    const tab=document.createElement('table'); tab.className='kay';
+    for(const s of KATALOG.filter(x=>x.gr===g)){
+      const tr=document.createElement('tr');
+      if(!s.kaynak){tr.className='kaynaksiz'; yok++}
+      const ad=document.createElement('td'); ad.className='kAd'; ad.textContent=s.ad;
+      const cz=document.createElement('td'); cz.className='kCiz';
+      const cv=document.createElement('canvas'); cv.width=1200; cv.height=44;
+      cz.appendChild(cv); cizgiler[s.k]=cv;
+      const dg=document.createElement('td'); dg.className='kDeg';
+      dg.innerHTML='—<em>'+s.bir+'</em>';
+      const ky=document.createElement('td'); ky.className='kKay';
+      ky.textContent=s.kaynak||'kaynak yok'; ky.title=s.kaynak||'kaynak yok';
+      // Ad → değer → eğilim → kaynak: önce ne olduğu, sonra kaç, sonra nereye
+      // gittiği. Kaynak en sağda çünkü en seyrek bakılan sütun.
+      tr.append(ad,dg,cz,ky); tab.appendChild(tr);
+    }
+    kap.append(bas,tab); gov.appendChild(kap);
+  }
+  document.getElementById('kaySayim').textContent =
+    KATALOG.length+' sinyal · '+yok+' tanesinin bu araçta kaynağı yok';
+}
+
+// Kıvılcım çizgisi: null'lar boşluk bırakır, çizgi oradan kopar — donmuş
+// sensör düz çizgi değil DELİK gösterir.
+function ciz(k){
+  const cv=cizgiler[k]; if(!cv) return;
+  const g=GECMIS[k]||[], c=cv.getContext('2d');
+  const W=cv.width,H=cv.height;
+  c.clearRect(0,0,W,H);
+  const s=g.filter(v=>v!==null);
+  if(s.length<2) return;
+  let mn=Math.min(...s), mx=Math.max(...s);
+  if(mx-mn<1e-9){mn-=.5;mx+=.5}
+  const st=document.documentElement;
+  const renk=getComputedStyle(st).getPropertyValue('--y2').trim()||'#888';
+  c.strokeStyle=renk; c.lineWidth=3; c.lineJoin='round'; c.lineCap='round';
+  c.beginPath();
+  let kalem=false;
+  for(let i=0;i<g.length;i++){
+    const v=g[i];
+    if(v===null){kalem=false;continue}
+    const x=(i/(N_GEC-1))*(W-4)+2;
+    const y=H-4-((v-mn)/(mx-mn))*(H-8);
+    if(kalem) c.lineTo(x,y); else {c.moveTo(x,y);kalem=true}
+  }
+  c.stroke();
+}
+
+// ── Telemetri akışı ────────────────────────────────────────────────────────
+const es=new EventSource('/telemetri');
+es.onmessage=e=>{
+  let d; try{d=JSON.parse(e.data)}catch(_){return}
+  const S=d.sinyal||{};
+
+  // durum kapsülleri
+  rz('rzBag', d.bagli?'bağlı':'bağlantı kesildi', d.bagli?'g':'k');
+  rz('rzEstop', d.estop?'E-STOP AKTİF':'e-stop normal', d.estop?'k':'g');
+  rz('rzMod', d.mod_ad||'—',
+     d.mod===2?'g':d.mod===1?'t':d.mod===0?'t':'');
+
+  // otonom görünümü metinleri
+  metin('oFsm', d.fsm||'—');
+  metin('oTgt', d.targeting||'—');
+  metin('oLazer', d.shoot?'ATEŞ':'beklemede');
+
+  // büyük sayılar
+  for(const el of document.querySelectorAll('[data-dev]')){
+    const k=el.dataset.dev, b=BILGI[k], v=S[k];
+    const bir=b?b.bir:'';
+    const em=el.querySelector('em');
+    el.firstChild.nodeValue=biçim(v,bir);
+    el.className='dev sayi '+(v===null||v===undefined?'yok':sinif(k,v));
+    if(em) el.appendChild(em);
+  }
+  // satır değerleri
+  for(const el of document.querySelectorAll('[data-sat]')){
+    const k=el.dataset.sat, b=BILGI[k], v=S[k];
+    const bir=b?b.bir:'';
+    el.textContent = v===null||v===undefined ? '—' : biçim(v,bir)+' '+bir;
+    el.className = v===null||v===undefined ? 'yok' : sinif(k,v);
+  }
+  // satır içi küçük değerler
+  for(const el of document.querySelectorAll('[data-inline]')){
+    const k=el.dataset.inline, b=BILGI[k];
+    el.textContent=biçim(S[k], b?b.bir:'');
+  }
+
+  // kayıt tablosu + geçmiş
+  const satirlar=document.querySelectorAll('#kayGovde tr');
+  let i=0;
+  for(const s of KATALOG){
+    const v=(S[s.k]===undefined)?null:S[s.k];
+    const g=GECMIS[s.k]; if(g){g.push(v); if(g.length>N_GEC) g.shift()}
+    const tr=satirlar[i++]; if(!tr) continue;
+    const dg=tr.querySelector('.kDeg');
+    dg.innerHTML=biçim(v,s.bir)+'<em>'+s.bir+'</em>';
+    dg.className='kDeg '+sinif(s.k,v);
+  }
+  if(document.getElementById('gKayit').classList.contains('aktif'))
+    for(const s of KATALOG) ciz(s.k);
+};
+
+function rz(id,yazi,sf){
+  const el=document.getElementById(id);
+  el.textContent=yazi; el.className='rz '+(sf||'');
+}
+function metin(id,yazi){document.getElementById(id).textContent=yazi}
+
+// ── Kameralar ──────────────────────────────────────────────────────────────
+// Her kare ayrı istek. MJPEG bağlantıyı süresiz açık tutar; 6 panel + SSE
+// tarayıcının 6 eşzamanlı bağlantı sınırını doldurur ve sayfa kilitlenir.
+for(const alan of document.querySelectorAll('[data-kam]')){
+  const ad=alan.dataset.kam, im=alan.querySelector('img');
+  const fpsEl=document.querySelector('[data-kamfps="'+ad+'"]');
+  let bekliyor=false, sayac=0;
+  const cek=()=>{
+    // Görünmeyen sekmedeki paneli çekmek Jetson'da boşuna JPEG kodlatır.
+    if(bekliyor || !alan.closest('.gorunum').classList.contains('aktif')) return;
+    bekliyor=true;
+    const y=new Image();
+    y.onload=()=>{im.src=y.src; alan.classList.add('canli'); bekliyor=false; sayac++};
+    y.onerror=()=>{alan.classList.remove('canli'); bekliyor=false};
+    y.src='/kare/'+ad+'?t='+Date.now();
+  };
+  cek(); setInterval(cek,100);
+  if(fpsEl) setInterval(()=>{fpsEl.textContent=sayac+' fps'; sayac=0},1000);
+}
+
+// ── Görünüm anahtarı ───────────────────────────────────────────────────────
+for(const d of document.querySelectorAll('.anahtar button')){
+  d.onclick=()=>{
+    for(const o of document.querySelectorAll('.anahtar button'))
+      o.setAttribute('aria-pressed', String(o===d));
+    for(const g of document.querySelectorAll('.gorunum'))
+      g.classList.toggle('aktif', g.id===d.dataset.gor);
+  };
+}
+addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT') return;
+  const i={'1':0,'2':1,'3':2}[e.key];
+  if(i!==undefined) document.querySelectorAll('.anahtar button')[i].click();
+});
+
+// ── E-STOP ─────────────────────────────────────────────────────────────────
+document.getElementById('estopBas').onclick=()=>{
+  fetch('/estop',{method:'POST',body:JSON.stringify({aktif:true})});
+};
+document.getElementById('estopKaldir').onclick=()=>{
+  if(confirm('E-STOP GCS kaynağı kaldırılsın mı?\\nDiğer kaynaklar hâlâ aktifse durdurma sürer.'))
+    fetch('/estop',{method:'POST',body:JSON.stringify({aktif:false})});
+};
+
+// ── Saat + kronometre ──────────────────────────────────────────────────────
+setInterval(()=>{document.getElementById('saat').textContent=
+  new Date().toLocaleTimeString('tr-TR')},1000);
+let sT=0,sBas=0,sInt=null;
+document.getElementById('sureD').onclick=()=>{
+  if(sInt){clearInterval(sInt);sInt=null;sT+=Date.now()-sBas}
+  else{sBas=Date.now();sInt=setInterval(sureCiz,100)}
+};
+document.getElementById('sureD').ondblclick=()=>{
+  clearInterval(sInt);sInt=null;sT=0;sureCiz()
+};
+function sureCiz(){
+  const ms=sT+(sInt?Date.now()-sBas:0);
+  const s=Math.floor(ms/1000), m=Math.floor(s/60);
+  document.getElementById('sure').textContent=
+    String(m).padStart(2,'0')+':'+String(s%60).padStart(2,'0')+
+    '.'+Math.floor(ms%1000/100);
+}
+</script></body></html>"""
+
+
 # ── HTTP işleyici ─────────────────────────────────────────────────────────────
 class Isleyici(BaseHTTPRequestHandler):
     def log_message(self, *a):
@@ -764,12 +1304,12 @@ class Isleyici(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == '/' or self.path == '/index.html':
-            govde = SAYFA.encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/html; charset=utf-8')
-            self.send_header('Content-Length', str(len(govde)))
-            self.end_headers()
-            self.wfile.write(govde)
+            self._sayfa(SAYFA_YENI)
+        elif self.path == '/eski':
+            # Sahada bir şey ters giderse geri dönülecek adres. Yeni pano
+            # /sinyaller + /telemetri, eskisi /veri kullanıyor — ikisi de
+            # sunucuda duruyor, biri diğerini bozmuyor.
+            self._sayfa(SAYFA)
         elif self.path.startswith('/kare/'):
             self._tek_kare(self.path[len('/kare/'):].split('?')[0])
         elif self.path.startswith('/stream/'):
@@ -795,6 +1335,17 @@ class Isleyici(BaseHTTPRequestHandler):
                 self.send_error(400)
         else:
             self.send_error(404)
+
+    def _sayfa(self, metin):
+        govde = metin.encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(govde)))
+        self.end_headers()
+        try:
+            self.wfile.write(govde)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def _tek_kare(self, ad):
         """Tek JPEG döner ve bağlantıyı kapatır.
