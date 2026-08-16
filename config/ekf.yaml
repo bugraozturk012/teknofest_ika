@@ -10,8 +10,19 @@
 # yalnız ileri hız (vx) alınır; yön ve konum IMU + EKF integrasyonundan gelir.
 #
 # Çıkış:
-#   /odometry/filtered     → EKF füzyon çıkışı
-#   TF: odom → base_link   → Nav2 ve SLAM için
+#   /odometry/filtered         → EKF füzyon çıkışı (Nav2'nin odom_topic'i)
+#   TF: odom → base_footprint  → Nav2 ve SLAM için
+#
+# Bu TF halkasını basan ÜÇ aday var ve aynı anda yalnız biri basmalı: statik
+# yayıncı, seri_kopru odometrisi, EKF. EKF çalışırken sahibi EKF'tir;
+# scripts/lydia_startup.sh seri_kopru'yu publish_tf:=false ile susturur ve
+# statik yayıncıyı hiç başlatmaz. İkisi birden basarsa TF iki konum arasında
+# titrer, SLAM haritayı bozuk kapatır.
+#
+# Düğüm adı ekf_filter_node OLMAK ZORUNDA — aşağıdaki blok o ada bağlı.
+# `ros2 run robot_localization ekf_node` çağrısı bu adı garanti etmez, boot
+# betiği `-r __node:=ekf_filter_node` ile açıkça veriyor. Ad tutmazsa parametre
+# bloğu hiç yüklenmez ve EKF sensörsüz varsayılanlarla sessizce koşar.
 #
 # Araç parametreleri:
 #   Dingil arası : 0.55 m   (PLACEHOLDER — wheelbase ölçülmedi)
@@ -48,9 +59,18 @@ ekf_filter_node:
     odom_frame:      odom
     base_link_frame: base_footprint
     world_frame:     odom       # Lokal EKF: odom referans alır (map değil)
+    publish_tf:      true       # odom→base_footprint sahibi (yukarıdaki nota bak)
 
-    # ── 2D mod (yer aracı — z/roll/pitch yok) ────────────────────────────
-    two_d_mode: false   # eğimde 3D harekete izin ver
+    # ── 2D mod (yer aracı) ────────────────────────────────────────────────
+    # Araçta z'yi ölçen hiçbir sensör yok: yükseklik yalnız vx'in eğimle
+    # izdüşümünden integre edilir ve hiçbir zaman düzeltilmez. 3D modda küçük
+    # bir eğim yanlılığı bile z'yi kaçırır — 2°'lik yanlılık 0.65 m/s'de
+    # dakikada ~1.4 m eder. LiDAR o kadar kayınca tarama noktaları costmap'in
+    # min/max_obstacle_height penceresinin dışına düşer ve Nav2 engelleri hiç
+    # görmez. Nav2 ve slam_toolbox zaten düzlemsel çalıştığı için 3D'nin
+    # karşılığı yok; eğim bilgisi ham /imu/data üzerinden panoya ve arazi
+    # profiline gitmeye devam eder.
+    two_d_mode: true
 
     print_diagnostics: true
     debug: false
@@ -73,11 +93,20 @@ ekf_filter_node:
     odom0_relative:      false
 
     # ── Kaynak 1: IMU (BMI160 + Madgwick) ────────────────────────────────
-    # Yalnız orientation geliyor (angular_velocity_cov[0]=-1); ham ivme ve
-    # gyro eklenirse ax, ay, gz de füzyona alınabilir.
+    # Yalnız orientation geliyor. seri_kopru ham gyro ve ivmeyi göndermediği
+    # için o alanların kovaryansını -1 yazar; robot_localization bunu
+    # `fabs(cov[0] + 1) < 1e-9` ile sınayıp alanı tamamen atlar. Bu yüzden
+    # vyaw'ı burada istemek işe yaramaz, yalnız yanıltır — ham gyro geldiği
+    # gün bilinçli olarak açılır.
+    #
+    # base_link_frame'e dönüşüm ZORUNLU: EKF /imu/data'yı imu_link'ten
+    # base_footprint'e çeviremezse ölçümü düşürür ve bunu SESSİZCE yapar
+    # (lookupTransformSafe'in uyarısı kaynakta yorum satırı). Boot betiği
+    # base_link→imu_link statik dönüşümünü basar; o satır silinirse EKF yalnız
+    # vx ile koşar, yön hiç güncellenmez ve araç estimatörde hep düz gider.
     imu0: /imu/data
     #                    x      y      z      roll   pitch  yaw    vx     vy     vz     vroll  vpitch vyaw
-    imu0_config:      [false, false, false,  true,  true,  true,  false, false, false, false, false, true,
+    imu0_config:      [false, false, false,  true,  true,  true,  false, false, false, false, false, false,
     #                    ax     ay     az      ^ roll ^ pitch kullan (eğim algılama)
                        false, false, false]
     imu0_queue_size:     10

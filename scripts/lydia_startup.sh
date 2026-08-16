@@ -34,8 +34,10 @@ trap temizle TERM INT
 #   0 → enkoder yok sayılır; dönüşümü statik yayıncı basar (araç hep başlangıç
 #       noktasındaymış gibi görünür, SLAM tarama eşlemeyle yürür).
 #   1 → dönüşümü seri_kopru'nun odometrisi basar; statik yayıncı başlatılmaz.
-# İkisi aynı anda yayınlarsa TF ağacı iki farklı konum arasında titrer ve SLAM
-# haritayı bozuk kapatır — bu yüzden anahtar tek, seçim karşılıklı dışlamalı.
+# NAV2_AKTIF=1 iken sahip üçüncü bir adaya, EKF'e geçer: seri_kopru /odom'u
+# yalnız ölçüm olarak yayınlar, TF'i EKF basar (bkz. _TF_SAHIBI aşağıda).
+# Aynı halkayı iki kaynak basarsa TF ağacı iki konum arasında titrer ve SLAM
+# haritayı bozuk kapatır — bu yüzden seçim üç yönlü ve karşılıklı dışlamalı.
 : "${ENKODER_AKTIF:=0}"
 # HAM_ENKODER: /enkoder/ham üzerinden çiğ AS5600 ADC'si yayınlanır. Kalibrasyon
 # ve teşhis içindir (scripts/sensor_dogrula.py -p test:=ham), sürüşte kapalı.
@@ -43,6 +45,19 @@ trap temizle TERM INT
 # ENKODER_KANALI: arka aks tek parça olduğu için tek enkoder yeterli; Mega yine
 # iki analog kanal gönderdiğinden bağlı olan burada seçilir (sol=A0, sag=A1).
 : "${ENKODER_KANALI:=sol}"
+# NAV2_AKTIF burada erken okunuyor: TF sahibinin kim olduğu seri_kopru
+# başlatılmadan önce bilinmeli, Nav2 bloğu ise betiğin çok sonrasında.
+# Anahtarın ön koşulları o bloğun başında yazılı.
+: "${NAV2_AKTIF:=0}"
+
+if [ "$ENKODER_AKTIF" != "1" ]; then
+    _TF_SAHIBI=statik
+elif [ "$NAV2_AKTIF" = "1" ]; then
+    _TF_SAHIBI=ekf
+else
+    _TF_SAHIBI=seri_kopru
+fi
+echo "odom→base_footprint sahibi: $_TF_SAHIBI"
 
 WS=${WS:-/home/lydia/lydia_ws/src/teknofest_ika_yazilim}
 LOG=${LOG:-/home/lydia/lydia_log}
@@ -132,7 +147,7 @@ fi
 sleep 6
 
 # ── Gövde bağlantısı ve kontrol zinciri ──────────────────────────────────────
-if [ "$ENKODER_AKTIF" = "1" ]; then
+if [ "$_TF_SAHIBI" = "seri_kopru" ]; then
     _SERI_TF=true
 else
     _SERI_TF=false
@@ -166,16 +181,33 @@ ros2 run teknofest_ika yolo_detection_node > "$LOG/yolo.log" 2>&1 &
 sleep 3
 
 # ── SLAM ─────────────────────────────────────────────────────────────────────
-# TF zincirinin odom→base_footprint halkasını yalnız TEK bir kaynak basar:
-# enkoder yokken statik yayıncı, varken seri_kopru'nun odometrisi.
-if [ "$ENKODER_AKTIF" = "1" ]; then
-    echo "odom→base_footprint: seri_kopru odometrisi (statik yayıncı atlandı)"
-else
+# TF zincirinin odom→base_footprint halkasını yalnız _TF_SAHIBI basar.
+if [ "$_TF_SAHIBI" = "statik" ]; then
     ros2 run tf2_ros static_transform_publisher 0 0 0 0 0 0 odom base_footprint \
         > "$LOG/tf_odom.log" 2>&1 &
 fi
 ros2 run tf2_ros static_transform_publisher 0 0 0 0 0 0 base_footprint base_link \
     > "$LOG/tf_base.log" 2>&1 &
+# EKF /imu/data'yı imu_link'ten base_footprint'e çevirebilmek için bu halkaya
+# muhtaç; bulamazsa ölçümü SESSİZCE düşürür (robot_localization'ın
+# lookupTransformSafe uyarısı kaynakta yorum satırı). O durumda EKF yalnız vx
+# ile koşar, yön hiç güncellenmez ve araç estimatörde hep düz gider.
+#
+# ⚠️ DÖNÜŞ AÇILARI DOĞRULANMADI — urdf/arac.urdf imu_joint'inden alındı
+#    (rpy 0 0 0). Yön füzyonunda önemli olan öteleme değil dönüştür: BMI160
+#    karta ters ya da 90° dönük lehimliyse roll/pitch/yaw da o kadar yanlış
+#    gelir. Araç düz dururken /imu/data'nın roll ve pitch'i ~0 okumuyorsa
+#    burayı düzelt.
+: "${IMU_X_M:=0}"
+: "${IMU_Y_M:=0}"
+: "${IMU_Z_M:=0}"
+: "${IMU_ROLL_RAD:=0}"
+: "${IMU_PITCH_RAD:=0}"
+: "${IMU_YAW_RAD:=0}"
+ros2 run tf2_ros static_transform_publisher \
+    "$IMU_X_M" "$IMU_Y_M" "$IMU_Z_M" \
+    "$IMU_YAW_RAD" "$IMU_PITCH_RAD" "$IMU_ROLL_RAD" \
+    base_link imu_link > "$LOG/tf_imu.log" 2>&1 &
 # LiDAR gövdeye 93.3° dönük monte (sahada huniyle çift yönlü kalibre edildi).
 # huni_reaktif bu düzeltmeyi kendi içinde (aci_offset_deg) ham /scan üzerinde
 # yapar ve TF'ten etkilenmez; Nav2 costmap ise YALNIZ TF'e bakar — dönüş burada
@@ -190,12 +222,13 @@ ros2 run tf2_ros static_transform_publisher 0 0 "$LIDAR_Z_M" "$LIDAR_YAW_RAD" 0 
 # os30a_cloud kaynağı tek nokta bile dönüştüremez (costmap sürekli "Transform
 # failure" basar) ve derinlik kamerası costmap'e hiçbir katkı yapmaz.
 #
-# ⚠️ AŞAĞIDAKİ KONUM ÖLÇÜLMEDİ — urdf/arac.urdf kamera_joint'inden alındı
-#    (x=0.55 ileri, z=0.20 yukarı, base_link'e göre). OS30A menzili 0.02–2.5 m
-#    olduğu için 10 cm'lik hata bile engelleri gözle görülür kaydırır.
-#    Şerit metreyle ölç ve OS30A_X_M / OS30A_Z_M ile geç.
+# ⚠️ AŞAĞIDAKİ KONUM ÖLÇÜLMEDİ — urdf/arac.urdf os30a_joint'inden alındı
+#    (x=0.30 ileri, z=0.20 yukarı, base_link'e göre); urdf'te o da placeholder.
+#    Ön kameranın kamera_joint'i (x=0.55) BAŞKA bir sensördür, karıştırma.
+#    OS30A menzili 0.02–2.5 m olduğu için 10 cm'lik hata bile engelleri gözle
+#    görülür kaydırır. Şerit metreyle ölç ve OS30A_X_M / OS30A_Z_M ile geç.
 : "${OS30A_TF_AKTIF:=1}"
-: "${OS30A_X_M:=0.55}"    # ⚠️ PLACEHOLDER — base_link'ten kamera gövdesine ileri
+: "${OS30A_X_M:=0.30}"    # ⚠️ PLACEHOLDER — base_link'ten kamera gövdesine ileri
 : "${OS30A_Y_M:=0.0}"     # ⚠️ PLACEHOLDER — yanal kaçıklık
 : "${OS30A_Z_M:=0.20}"    # ⚠️ PLACEHOLDER — base_link'ten kamera gövdesine yukarı
 if [ "$OS30A_TF_AKTIF" = "1" ]; then
@@ -222,14 +255,19 @@ sleep 3
 #   2) LIDAR_YAW_RAD gerçek montaj açısına ayarlanmış olmalı (bkz. yukarısı).
 #   3) config/waypoints.yaml'daki koordinatlar doldurulmuş olmalı; hepsi 0.0
 #      iken misyon_fsm her istasyonu aynı noktaya gönderir.
-: "${NAV2_AKTIF:=0}"
 if [ "$NAV2_AKTIF" = "1" ]; then
     if [ "$ENKODER_AKTIF" != "1" ]; then
         echo "UYARI: NAV2_AKTIF=1 ama ENKODER_AKTIF=0 — Nav2 sabit odometriyle" \
              "aracı hareketsiz sanar. Nav2 başlatılmadı."
     else
         # EKF: /odom + /imu/data → /odometry/filtered (Nav2'nin odom_topic'i)
+        # Düğüm adı açıkça veriliyor: ekf.yaml'daki parametre bloğu
+        # `ekf_filter_node:` anahtarının altında ve ROS parametreleri düğüm
+        # adına göre eşleşir. Ad tutmazsa blok hiç yüklenmez, EKF sensörsüz
+        # varsayılanlarla açılır ve /odometry/filtered boş kalır — hata
+        # vermeden. `ros2 run ... ekf_node` bu adı garanti etmiyor.
         ros2 run robot_localization ekf_node --ros-args \
+            -r __node:=ekf_filter_node \
             --params-file "$WS/config/ekf.yaml" > "$LOG/ekf.log" 2>&1 &
         sleep 4
         ros2 launch nav2_bringup navigation_launch.py \
