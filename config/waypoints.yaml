@@ -75,7 +75,7 @@ asamalar:
       y: 0.0
       yaw: 0.0
     pas_gecilir: false
-    aciklama: "Konili yol slalom — dar geçiş, koni_costmap aktif"
+    aciklama: "Konili yol slalom — dar geçiş, cone_fusion_node aktif"
 
   - isim: KAYAR_ENGEL
     yolo_sinifi: Tabela_6

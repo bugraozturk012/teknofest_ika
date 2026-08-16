@@ -34,9 +34,9 @@
 
   <link name="base_link">
     <visual>
-      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <origin xyz="0 0 0.05" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://teknofest_ika/meshes/govde.stl" scale="0.001 0.001 0.001"/>
+        <box size="1.0 0.5 0.3"/>
       </geometry>
       <material name="blue"/>
     </visual>
@@ -62,13 +62,13 @@
                   yapıldığında HER İKİSİ birlikte güncellenmeli).
        Y: -0.335 (sağa doğru, negatif)
        Z: -0.10  (gövdenin altına iner, base_joint Z=0.28 ile birlikte net 0.18 → yere değer)
-       Görsel: rpy="0 0 1.5708"  → STL sağ taraf için 90° döndürülmüş
+       Görsel: rpy="1.5708 0 0" → silindirin ekseni Y'ye yatırılır (dönme ekseni)
   ════════════════════════════════════════════════ -->
   <link name="sag_on_teker">
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 1.5708"/>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <mesh filename="package://teknofest_ika/meshes/tekerlek.stl" scale="0.001 0.001 0.001"/>
+        <cylinder length="0.15" radius="0.18"/>
       </geometry>
       <material name="siyah"/>
     </visual>
@@ -96,13 +96,13 @@
        SOL ÖN TEKERLEK
        X: +0.275 (sağ ön ile aynı — simetrik, wheelbase=0.55m)
        Y: +0.335 (sola doğru, pozitif)
-       Görsel: rpy="0 0 -1.5708" → sol taraf için ters döndürülmüş
+       Görsel: sağ ön ile aynı — silindir simetrik olduğu için taraf ayrımı yok
   ════════════════════════════════════════════════ -->
   <link name="sol_on_teker">
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 -1.5708"/>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <mesh filename="package://teknofest_ika/meshes/tekerlek.stl" scale="0.001 0.001 0.001"/>
+        <cylinder length="0.15" radius="0.18"/>
       </geometry>
       <material name="siyah"/>
     </visual>
@@ -133,9 +133,9 @@
   ════════════════════════════════════════════════ -->
   <link name="sol_arka_teker">
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 -1.5708"/>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <mesh filename="package://teknofest_ika/meshes/tekerlek.stl" scale="0.001 0.001 0.001"/>
+        <cylinder length="0.15" radius="0.18"/>
       </geometry>
       <material name="siyah"/>
     </visual>
@@ -166,9 +166,9 @@
   ════════════════════════════════════════════════ -->
   <link name="sag_arka_teker">
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 1.5708"/>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <mesh filename="package://teknofest_ika/meshes/tekerlek.stl" scale="0.001 0.001 0.001"/>
+        <cylinder length="0.15" radius="0.18"/>
       </geometry>
       <material name="siyah"/>
     </visual>

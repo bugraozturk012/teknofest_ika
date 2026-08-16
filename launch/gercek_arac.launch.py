@@ -237,13 +237,9 @@ def generate_launch_description():
         parameters=[{'use_sim_time': False,
                      'port': '/dev/ttyCH341USB0', 'baud': 115200}]
     )
-    # NOT: koni_costmap.py kasıtlı olarak başlatılmıyor — /cone_positions
-    # (PoseArray) üreticisi yok, koni tespiti cone_fusion_node tarafından
-    # LiDAR+YOLO füzyonuyla doğrudan /costmap/cone_cloud'a yazılıyor (aşağıda
-    # 'cone_fusion'). koni_costmap.py, ileride ayrı bir PoseArray tabanlı
-    # koni kaynağı eklenirse kullanılabilecek bağımsız/yedek bir araç olarak
-    # repo'da bırakıldı; Node nesnesi burada OLUŞTURULMUYOR (önceden
-    # oluşturulup hiç launch edilmeyen, kafa karıştırıcı bir kalıntıydı).
+    # NOT: Koni tespiti costmap'e yalnız cone_fusion_node üzerinden girer
+    # (aşağıda 'cone_fusion'), LiDAR+YOLO füzyonuyla /costmap/cone_cloud'a.
+    # Ayrı bir PoseArray tabanlı koni kaynağı yok.
 
     # Kayar Engel Costmap — Kalman aktifken /scan → Nav2 ObstacleLayer
     kayar_costmap = Node(

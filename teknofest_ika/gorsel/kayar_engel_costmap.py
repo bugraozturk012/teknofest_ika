@@ -6,10 +6,8 @@ Kayar engel Kalman filtresi tarafından tespit edildiğinde (direction != 'bilin
 /scan noktalarını Nav2 ObstacleLayer'a PointCloud2 olarak bildirir.
 Tespit durunca yayın durur — Nav2 clearing:true ile eski noktaları temizler.
 
-koni_costmap.py'den farklar:
-  - /scan kaynaklı, görüntü ekibine bağımsız
-  - clearing: true (engel geçince Nav2 siler)
-  - Yalnızca Kalman aktifken (/moving_obs/direction != 'bilinmiyor') yayın yapar
+Kaynağı /scan olduğu için görüntü zincirinden bağımsız çalışır; koni
+köprüsünün (cone_fusion_node) aksine kameraya ihtiyaç duymaz.
 
 GİRİŞ : /scan                 (sensor_msgs/LaserScan)
          /moving_obs/direction (std_msgs/String) — Kalman aktif mi?

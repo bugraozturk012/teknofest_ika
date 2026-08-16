@@ -162,7 +162,6 @@ lora_gcs GCS komutu       ──┘                                (GPIO kurulum
 │       ├── servo_controller_node.py# PCA9685 servo sürücü
 │       ├── kayar_engel_kalman.py   # Kalman filtreli engel takibi
 │       ├── kayar_engel_costmap.py  # Dinamik costmap yayıncı
-│       ├── koni_costmap.py         # Koni costmap yayıncı
 │       └── cone_fusion_node.py     # Lidar + kamera koni füzyonu
 ├── launch/
 │   ├── gercek_arac.launch.py       # Gerçek araç — tam stack
@@ -174,9 +173,6 @@ lora_gcs GCS komutu       ──┘                                (GPIO kurulum
 │   └── waypoints.yaml              # Parkur waypoint koordinatları
 ├── urdf/
 │   └── arac.urdf                   # Araç URDF (robot_state_publisher)
-├── meshes/
-│   ├── govde.stl
-│   └── tekerlek.stl
 ├── maps/                           # Kaydedilen SLAM haritaları
 ├── arduino/                       # Mega 2560 firmware (PlatformIO)
 │   ├── src/main.cpp

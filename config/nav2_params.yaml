@@ -279,11 +279,10 @@ global_costmap:
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
-        # koni_cloud (/cone_cloud, koni_costmap.py) kasıtlı olarak ÇIKARILDI:
-        # bu topic'in tek üreticisi /cone_positions PoseArray'i bekleyen
-        # koni_costmap.py'dir ve /cone_positions'a hiçbir node yayın yapmıyor
-        # — kaynak hep boş kalıyordu. Gerçek koni engeli yolo_cone_cloud
-        # (cone_fusion_node, LiDAR+YOLO füzyonu) üzerinden geliyor.
+        # Koni engeli yalnız yolo_cone_cloud üzerinden gelir
+        # (cone_fusion_node, LiDAR+YOLO füzyonu). Kamera koniyi görür ama
+        # mesafesini bilmez, LiDAR mesafeyi bilir ama neyin ne olduğunu
+        # bilmez; ikisi eşleşmeden koni costmap'e LETHAL basılamaz.
         observation_sources: scan yolo_cone_cloud moving_obs_cloud os30a_cloud
         scan:
           topic: /scan/filtered
