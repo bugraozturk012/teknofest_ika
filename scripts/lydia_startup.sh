@@ -11,7 +11,27 @@
 # ortadan kaldırıyor.
 
 source /opt/ros/humble/setup.bash
-source /home/lydia/lydia_ws/install/setup.bash
+
+# Derlenmemiş ya da yarım derlenmiş workspace sessizce geçilmemeli: overlay
+# yoksa aşağıdaki her `ros2 run teknofest_ika ...` çağrısı "Package not found"
+# ile kendi log dosyasına düşer, betik "başlatıldı" der ve dışarıdan görünen
+# tablo boş topic listesi olur. Bir kez `rm -rf build install` + tek paket
+# derlemesi bu duruma soktu ve DDS arızası sanıldı.
+_OVERLAY=${OVERLAY:-/home/lydia/lydia_ws/install/setup.bash}   # kuru test için geçersiz kılınabilir
+if [ ! -f "$_OVERLAY" ]; then
+    echo "HATA: $_OVERLAY yok — workspace derlenmemiş." >&2
+    echo "      cd ~/lydia_ws && colcon build --symlink-install" >&2
+    exit 1
+fi
+source "$_OVERLAY"
+
+# Dosyanın varlığı yetmez: --packages-select ile tek paket derlendiğinde
+# overlay durur ama teknofest_ika içinde olmayabilir.
+if ! ros2 pkg prefix teknofest_ika >/dev/null 2>&1; then
+    echo "HATA: teknofest_ika paketi overlay'de yok — derleme eksik." >&2
+    echo "      cd ~/lydia_ws && colcon build --symlink-install   (tam derleme)" >&2
+    exit 1
+fi
 
 export ROS_DOMAIN_ID=42
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
@@ -49,6 +69,24 @@ trap temizle TERM INT
 # başlatılmadan önce bilinmeli, Nav2 bloğu ise betiğin çok sonrasında.
 # Anahtarın ön koşulları o bloğun başında yazılı.
 : "${NAV2_AKTIF:=0}"
+# IMU_GUVENLIK_AKTIF: yatış açısına göre /speed_limit yayınlar ve 15°'de
+# E-STOP zorlar. Kapalı çünkü eşiği IMU'nun montaj yönüne güveniyor: BMI160
+# karta dönük lehimliyse araç düz dururken bile devrilmiş sanılır ve sürekli
+# E-STOP basar. Açmadan önce araç düz dururken /imu/data'nın roll ve pitch'i
+# ~0 okumalı (gerekirse IMU_ROLL/PITCH/YAW_RAD ile düzelt).
+: "${IMU_GUVENLIK_AKTIF:=0}"
+# TARET_AKTIF: nişan alma ve taret aktüasyonu. Kapalı çünkü /turret/cmd'yi
+# tüketen İKİ aday var ve hangisinin araçta gerçek olduğu doğrulanmadı:
+#   taret_rc_koprusu   → seri port → Turret UNO   (düğümün kendi belgesi
+#                        servoların UNO'da olduğunu söylüyor)
+#   servo_controller_node → Jetson I2C → PCA9685 → /taret/pan,/taret/tilt
+#                        → seri_kopru → Mega
+# İkisi birden koşarsa taret iki kaynaktan sürülür. TARET_YOLU ile seç.
+: "${TARET_AKTIF:=0}"
+: "${TARET_YOLU:=uno}"        # uno | pca9685
+# KAYIT_AKTIF: veri_paketi rosbag kaydı. Kapalı — Jetson'ın diski dolarsa
+# loglar ve harita da yazılamaz.
+: "${KAYIT_AKTIF:=0}"
 
 if [ "$ENKODER_AKTIF" != "1" ]; then
     _TF_SAHIBI=statik
@@ -76,8 +114,22 @@ rm -f /dev/shm/fastrtps* 2>/dev/null
 # Önceki oturumdan artan düğümleri kapat. systemd yeniden başlatırken eski
 # süreçler ölmezse port 8080 ve seri portlar meşgul kalıyor, yeni düğümler
 # sessizce açılamıyordu.
+#
+# Liste bu betiğin başlattığı HER süreci kapsamalı. Temiz `systemctl stop`'ta
+# SIGTERM trap'i çocukları zaten öldürüyor; buradaki tarama trap'in çalışmadığı
+# hâller içindir — betiğin elle yeniden çalıştırılması, kill -9, ya da Jetson'ın
+# kendiliğinden resetlenmesi. Eksik bırakılan bir ad yarı temizlenmiş bir yığın
+# üretir: en tehlikelisi static_transform_publisher, çünkü ikinci bir kopya
+# odom→base_footprint'i aynı anda basıp TF'i titretir.
 for _p in web_dashboard.py yolo_detection_node preprocessing_node \
           usb_cam_node_exe apc_camera_node \
+          static_transform_publisher \
+          e_stop_node watchdog anti_rollback imu_guvenlik \
+          targeting_node taret_rc_koprusu servo_controller_node veri_paketi \
+          ekf_node yolo_adapter_node terrain_adapter cone_fusion_node \
+          kayar_engel_kalman kayar_engel_costmap misyon_fsm \
+          controller_server planner_server bt_navigator behavior_server \
+          smoother_server velocity_smoother lifecycle_manager \
           seri_kopru mod_yoneticisi ackermann_converter \
           async_slam_toolbox_node map_image_node foxglove_bridge; do
     pkill -f "$_p" 2>/dev/null
@@ -162,6 +214,21 @@ ros2 run teknofest_ika mod_yoneticisi      > "$LOG/mod_yoneticisi.log" 2>&1 &
 sleep 3
 ros2 run teknofest_ika ackermann_converter > "$LOG/ackermann.log" 2>&1 &
 sleep 3
+# E-STOP toplayıcı. Dört kaynağı (Arduino butonu, IMU devrilme, RC sinyal
+# kaybı, panodan GCS komutu) tek /e_stop'ta birleştirir. Bu düğüm olmadan
+# /e_stop'a HİÇ yayın yapılmaz; ona abone olan seri_kopru, mod_yoneticisi,
+# ackermann_converter, misyon_fsm ve pano sürekli "E-STOP yok" okur ve
+# panodaki durme düğmesi hiçbir şey yapmaz. Aracın kendi donanım kesmesi
+# ayrı bir yolla çalışsa bile ROS tarafındaki bütün kilitler buna bağlı.
+# Jetson.GPIO kurulu değilse düğüm gpio_mod'u kendi kapatır, yazılımsal
+# kaynaklar çalışmaya devam eder.
+ros2 run teknofest_ika e_stop_node         > "$LOG/e_stop.log" 2>&1 &
+sleep 3
+# Eğimde geri kaymayı yakalayıp karşı komut basar. /odom'a bağlı olduğu için
+# ENKODER_AKTIF=0 iken ölçüm sabit kalır ve düğüm hiç tetiklenmez — zararsız,
+# ama gerçek koruma ancak enkoderle gelir.
+ros2 run teknofest_ika anti_rollback       > "$LOG/anti_rollback.log" 2>&1 &
+sleep 3
 
 # ── Algı zinciri ─────────────────────────────────────────────────────────────
 # preprocessing ön kameradan (/camera/image_raw) besleniyor ve
@@ -173,7 +240,17 @@ sleep 3
 # katmanıydı ve Nav2 kapalı. Açıkken kare başına KD-tree kurulup nokta bulutu
 # Python'da geziliyor, çıktıyı kimse okumuyordu. Derinlik GÖRÜNTÜSÜ etkilenmez
 # (/apc/depth/image_raw doğrudan OS30A'dan panele gider).
+#
+# /scan_lidar remap'i ZORUNLU: preprocessing_node tarama girişini bu adda
+# bekliyor, ydlidar sürücüsü ise /scan basıyor. Remap olmadan cb_scan hiç
+# tetiklenmez ve /scan/filtered ÜRETİLMEZ — Nav2'nin obstacle_layer scan
+# kaynağı (iki costmap'te de), cone_fusion_node, kayar_engel_kalman ve
+# kayar_engel_costmap hep birden susar, hiçbiri hata vermeden.
+# (Launch dosyasındaki çözüm sürücüyü /scan_raw'a remap edip scan_relay'i
+# araya koymaktı; relay sürücünün eski 0x202 zaman damgası hatası içindi,
+# doğrudan remap aynı işi tek satırda yapıyor.)
 ros2 run teknofest_ika preprocessing_node --ros-args \
+    -r /scan_lidar:=/scan \
     -p flip_taret:=true \
     -p derinlik_isle:=false > "$LOG/preprocessing.log" 2>&1 &
 sleep 5
@@ -292,13 +369,84 @@ if [ "$NAV2_AKTIF" = "1" ]; then
     fi
 fi
 
+# ── Taret ────────────────────────────────────────────────────────────────────
+if [ "$TARET_AKTIF" = "1" ]; then
+    # HSV+Hough+PID hedef takibi → /turret/cmd, ve /targeting/status.
+    # misyon_fsm'in ShootState'i nişan onayını YALNIZ bu topic'ten alır;
+    # düğüm koşmazsa üç atış denemesi de zaman aşımına düşer.
+    ros2 run teknofest_ika targeting_node  > "$LOG/targeting.log" 2>&1 &
+    sleep 3
+    case "$TARET_YOLU" in
+        uno)
+            ros2 run teknofest_ika taret_rc_koprusu \
+                > "$LOG/taret_koprusu.log" 2>&1 &
+            ;;
+        pca9685)
+            ros2 run teknofest_ika servo_controller_node \
+                > "$LOG/servo_controller.log" 2>&1 &
+            ;;
+        *)
+            echo "UYARI: TARET_YOLU='$TARET_YOLU' tanınmadı (uno|pca9685) —" \
+                 "aktüasyon başlatılmadı, taret yalnız nişan alır."
+            ;;
+    esac
+    sleep 2
+    echo "Taret yolu başlatıldı: $TARET_YOLU"
+fi
+
 # ── İzleme ───────────────────────────────────────────────────────────────────
+# Sensör canlılık bekçisi: /scan_lidar, /scan/filtered, /odom, /imu/data ve
+# tespit akışını zaman aşımıyla izleyip /sensor/fault basar. Yığındaki sessiz
+# kopuklukları ilk fark edecek düğüm budur — mesajları deserialize etmediği
+# için maliyeti düşük.
+ros2 run teknofest_ika watchdog          > "$LOG/watchdog.log" 2>&1 &
+sleep 2
+if [ "$IMU_GUVENLIK_AKTIF" = "1" ]; then
+    ros2 run teknofest_ika imu_guvenlik  > "$LOG/imu_guvenlik.log" 2>&1 &
+    sleep 2
+fi
+if [ "$KAYIT_AKTIF" = "1" ]; then
+    ros2 run teknofest_ika veri_paketi   > "$LOG/veri_paketi.log" 2>&1 &
+    sleep 2
+fi
 ros2 run foxglove_bridge foxglove_bridge > "$LOG/foxglove.log" 2>&1 &
 sleep 2
 # Nişan paneli işlenmiş görüntüyü alsın (çevirme preprocessing'de yapılıyor).
 python3 "$WS/scripts/web_dashboard.py" --ros-args \
     -r /camera/taret/image_raw:=/camera/taret/image_processed \
     > "$LOG/web_dashboard.log" 2>&1 &
+
+# ── Açılış doğrulaması ───────────────────────────────────────────────────────
+# Betik buraya kadar yirmiden fazla süreç başlatıp hiçbirinin ayağa kalkıp
+# kalkmadığına bakmıyordu; bir düğüm seri portu açamayınca ya da modeli
+# yükleyemeyince tek belirti kendi log dosyasındaki satır oluyor ve arıza ancak
+# araç komuta cevap vermeyince fark ediliyordu. Aşağısı ucuz bir varlık
+# kontrolü: `ros2 node list` bir kez okunur, beklenen adlar aranır.
+# Düğümlerin ÇALIŞTIĞINI değil AYAKTA olduğunu söyler — topic akışı için
+# ros2 topic hz'e bakmak gerekir.
+_BEKLENEN="seri_kopru mod_yoneticisi ackermann_converter e_stop_node
+           anti_rollback preprocessing_node yolo_detection_node map_image_node
+           watchdog web_dashboard"
+if [ "$NAV2_AKTIF" = "1" ]; then
+    _BEKLENEN="$_BEKLENEN ekf_filter_node controller_server yolo_adapter_node
+               terrain_adapter cone_fusion_node kayar_engel_kalman
+               kayar_engel_costmap misyon_fsm"
+fi
+[ "$TARET_AKTIF" = "1" ]        && _BEKLENEN="$_BEKLENEN targeting_node"
+[ "$IMU_GUVENLIK_AKTIF" = "1" ] && _BEKLENEN="$_BEKLENEN imu_guvenlik"
+
+sleep 10
+_CANLI=$(ros2 node list 2>/dev/null)
+_EKSIK=""
+for _n in $_BEKLENEN; do
+    echo "$_CANLI" | grep -qx "/$_n" || _EKSIK="$_EKSIK $_n"
+done
+if [ -n "$_EKSIK" ]; then
+    echo "UYARI: ayağa kalkmayan düğümler:$_EKSIK"
+    echo "       Sebebi kendi log dosyasında: ls -t $LOG | head"
+else
+    echo "Açılış doğrulaması: beklenen tüm düğümler ayakta."
+fi
 
 echo "LYDİA açılış yığını başlatıldı — loglar: $LOG"
 wait
