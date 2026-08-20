@@ -20,7 +20,7 @@ source /opt/ros/humble/setup.bash
 _OVERLAY=${OVERLAY:-/home/lydia/lydia_ws/install/setup.bash}   # kuru test için geçersiz kılınabilir
 if [ ! -f "$_OVERLAY" ]; then
     echo "HATA: $_OVERLAY yok — workspace derlenmemiş." >&2
-    echo "      cd ~/lydia_ws && colcon build --symlink-install" >&2
+    echo "      cd ~/lydia_ws && colcon build --packages-select teknofest_ika" >&2
     exit 1
 fi
 source "$_OVERLAY"
@@ -29,7 +29,7 @@ source "$_OVERLAY"
 # overlay durur ama teknofest_ika içinde olmayabilir.
 if ! ros2 pkg prefix teknofest_ika >/dev/null 2>&1; then
     echo "HATA: teknofest_ika paketi overlay'de yok — derleme eksik." >&2
-    echo "      cd ~/lydia_ws && colcon build --symlink-install   (tam derleme)" >&2
+    echo "      cd ~/lydia_ws && colcon build   (tam derleme)" >&2
     exit 1
 fi
 
