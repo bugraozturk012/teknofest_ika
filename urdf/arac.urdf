@@ -55,11 +55,11 @@
 
   <!-- ═══════════════════════════════════════════════
        SAĞ ÖN TEKERLEK
-       X: +0.275 (öne doğru) — wheelbase=0.55m, config/ekf.yaml,
-                  nav2_params.yaml ve ackermann_converter.py'deki
-                  wheelbase=0.55 parametresiyle TUTARLI tutulur
-                  (ikisi de "ölçülecek" placeholder; gerçek ölçüm
-                  yapıldığında HER İKİSİ birlikte güncellenmeli).
+       X: +0.70 (öne doğru) — wheelbase=1.40m (2026-07-27 araçtan
+                  ölçüldü), config/ekf.yaml, nav2_params.yaml
+                  (minimum_turning_radius) ve ackermann_converter.py'deki
+                  wheelbase parametresiyle TUTARLI tutulur; biri
+                  değişirse diğerleri de değişmeli.
        Y: -0.335 (sağa doğru, negatif)
        Z: -0.10  (gövdenin altına iner, base_joint Z=0.28 ile birlikte net 0.18 → yere değer)
        Görsel: rpy="1.5708 0 0" → silindirin ekseni Y'ye yatırılır (dönme ekseni)
@@ -87,14 +87,14 @@
   <joint name="sag_on_joint" type="continuous">
     <parent link="base_link"/>
     <child link="sag_on_teker"/>
-    <origin xyz="0.275 -0.335 -0.10" rpy="0 0 0"/>
+    <origin xyz="0.70 -0.335 -0.10" rpy="0 0 0"/>
     <axis xyz="0 -1 0"/>
     <dynamics damping="0.5" friction="0.5"/>
   </joint>
 
   <!-- ═══════════════════════════════════════════════
        SOL ÖN TEKERLEK
-       X: +0.275 (sağ ön ile aynı — simetrik, wheelbase=0.55m)
+       X: +0.70 (sağ ön ile aynı — simetrik, wheelbase=1.40m)
        Y: +0.335 (sola doğru, pozitif)
        Görsel: sağ ön ile aynı — silindir simetrik olduğu için taraf ayrımı yok
   ════════════════════════════════════════════════ -->
@@ -121,14 +121,14 @@
   <joint name="sol_on_joint" type="continuous">
     <parent link="base_link"/>
     <child link="sol_on_teker"/>
-    <origin xyz="0.275 0.335 -0.10" rpy="0 0 0"/>
+    <origin xyz="0.70 0.335 -0.10" rpy="0 0 0"/>
     <axis xyz="0 -1 0"/>
     <dynamics damping="0.5" friction="0.5"/>
   </joint>
 
   <!-- ═══════════════════════════════════════════════
        SOL ARKA TEKERLEK
-       X: -0.275 (arkaya doğru, wheelbase=0.55m — bkz. ön teker notu)
+       X: -0.70 (arkaya doğru, wheelbase=1.40m — bkz. ön teker notu)
        Y: +0.335 (sol taraf — ön ile aynı genişlik)
   ════════════════════════════════════════════════ -->
   <link name="sol_arka_teker">
@@ -154,14 +154,14 @@
   <joint name="sol_arka_joint" type="continuous">
     <parent link="base_link"/>
     <child link="sol_arka_teker"/>
-    <origin xyz="-0.275 0.335 -0.10" rpy="0 0 0"/>
+    <origin xyz="-0.70 0.335 -0.10" rpy="0 0 0"/>
     <axis xyz="0 -1 0"/>
     <dynamics damping="0.5" friction="0.5"/>
   </joint>
 
   <!-- ═══════════════════════════════════════════════
        SAĞ ARKA TEKERLEK
-       X: -0.275 (sol arka ile aynı — simetrik)
+       X: -0.70 (sol arka ile aynı — simetrik)
        Y: -0.335 (sağ taraf)
   ════════════════════════════════════════════════ -->
   <link name="sag_arka_teker">
@@ -187,7 +187,7 @@
   <joint name="sag_arka_joint" type="continuous">
     <parent link="base_link"/>
     <child link="sag_arka_teker"/>
-    <origin xyz="-0.275 -0.335 -0.10" rpy="0 0 0"/>
+    <origin xyz="-0.70 -0.335 -0.10" rpy="0 0 0"/>
     <axis xyz="0 -1 0"/>
     <dynamics damping="0.5" friction="0.5"/>
   </joint>

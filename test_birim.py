@@ -56,7 +56,7 @@ def check(desc, got, expected, tol=0.01):
 
 # ─── 1. Ackermann Kinematik (ackermann_converter.py) ────────────────────────
 print("=== 1. Ackermann Kinematik ===")
-L = 0.55
+L = 1.40
 DELTA_MAX = 0.5236  # 30°
 
 

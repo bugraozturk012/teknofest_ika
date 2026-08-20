@@ -196,7 +196,7 @@ def generate_launch_description():
     ackermann = Node(
         package='teknofest_ika', executable='ackermann_converter',
         name='ackermann_converter', output='screen',
-        parameters=[{'use_sim_time': False, 'wheelbase': 0.55,
+        parameters=[{'use_sim_time': False, 'wheelbase': 1.40,
                      'max_steering_angle': 0.5236, 'max_speed': 3.0}]
     )
     veri_paketi = Node(

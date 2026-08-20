@@ -73,7 +73,19 @@ class YoloDetectionNode(Node):
         self._use_ultralytics = False
         self.inferer = None
 
-        if HAS_TRT and model_path.endswith('.engine') and os.path.isfile(model_path):
+        # `yolo export format=engine` ULTRALYTICS formatında engine üretir —
+        # dosyanın başına metadata ekler. TensorRTInferer ham deserialize
+        # yaptığı için bunu açamaz ("magicTag ... incompatible serialization")
+        # ve node sessizce yavaş .pt yoluna düşer. Ultralytics kendi engine'ini
+        # tanır ve TensorRT arka planıyla koşturur — bu yüzden .engine için
+        # ÖNCE ultralytics denenir. Çıkarım arayüzü .pt ile aynı olduğundan
+        # aşağıdaki _use_ultralytics yolu değişmeden çalışır.
+        if HAS_ULTRALYTICS and model_path.endswith('.engine') and os.path.isfile(model_path):
+            self.get_logger().info(f"YOLO (TensorRT engine): {model_path}")
+            self._ul_model = UltralyticsYOLO(model_path, task='detect')
+            self._ul_conf  = conf_thres
+            self._use_ultralytics = True
+        elif HAS_TRT and model_path.endswith('.engine') and os.path.isfile(model_path):
             self.get_logger().info(f"Loading TensorRT engine: {model_path}")
             self.inferer = TensorRTInferer(
                 engine_path=model_path,

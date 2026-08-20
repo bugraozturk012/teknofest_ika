@@ -68,7 +68,7 @@ TF / TOPIC MİMARİSİ
 ─────────────────────────────────────────────────────────────────────────────
 PARAMETRELER (ros2 param set ile çalışma zamanında değiştirilebilir)
 ─────────────────────────────────────────────────────────────────────────────
-    wheelbase          : Dingil arası [m]     — PLACEHOLDER: araç ölçülünce güncelle
+    wheelbase          : Dingil arası [m]     — 1.40 (2026-07-27 ölçüldü)
     max_steering_angle : Max direksiyon açısı [rad] — yaklaşık 30° = 0.5236 rad
     max_speed          : VESC hız sınırı [m/s]
     cmd_vel_timeout    : Bu süre içinde /cmd_vel gelmezse araç durdurulur [s]
@@ -114,16 +114,26 @@ class AckermannConverter(Node):
         super().__init__('ackermann_converter')
 
         # ── Parametreler ──────────────────────────────────────────────────────
-        # PLACEHOLDER: araç fiziken hazır olunca gerçek değerler ölçülecek.
+        # wheelbase: ön aks ↔ arka aks, 2026-07-27 araçtan ölçüldü (1.40 m).
+        # urdf/arac.urdf teker joint'leri (x=±0.70) ve nav2_params.yaml
+        # minimum_turning_radius (L/tan δ_max) ile TUTARLI tutulur; biri
+        # değişirse diğerleri de değişmeli.
         # Çalışma zamanında değiştirmek için:
-        #   ros2 param set /ackermann_converter wheelbase 0.58
-        self.declare_parameter('wheelbase', 0.55)
+        #   ros2 param set /ackermann_converter wheelbase 1.40
+        self.declare_parameter('wheelbase', 1.40)
         self.declare_parameter('max_steering_angle', 0.5236)   # 30° = π/6
         self.declare_parameter('max_speed', 3.0)
         self.declare_parameter('cmd_vel_timeout', 0.5)         # [s]
 
+        # Otomatik fren, hedef hızdaki düşüşten fren oranı üretir. Bu araçta
+        # fren hattı kontrolcünün gaz kesme girişini de çektiği için, hız her
+        # düştüğünde (örn. dar geçişte yavaşlama) gaz kesiliyor ve araç
+        # ilerleyemiyor. Kapatıldığında /fren_komut sabit 0 yayınlanır.
+        self.declare_parameter('otomatik_fren', True)
+
         self._L        = self.get_parameter('wheelbase').value
         self._delta_max = self.get_parameter('max_steering_angle').value
+        self._otomatik_fren = bool(self.get_parameter('otomatik_fren').value)
         self._v_max    = self.get_parameter('max_speed').value
         self._timeout  = self.get_parameter('cmd_vel_timeout').value
 
@@ -261,7 +271,8 @@ class AckermannConverter(Node):
             )
         self._onceki_hiz   = speed
         self._onceki_zaman = simdi
-        self._fren_pub.publish(UInt16(data=int(self._fren_orani * 1000)))
+        self._fren_pub.publish(UInt16(
+            data=int(self._fren_orani * 1000) if self._otomatik_fren else 0))
 
         # ── Mesaj güncelle ve yayınla ─────────────────────────────────────────
         self._ackermann_msg.header.stamp     = self.get_clock().now().to_msg()

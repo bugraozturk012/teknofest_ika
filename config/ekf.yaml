@@ -25,7 +25,7 @@
 # bloğu hiç yüklenmez ve EKF sensörsüz varsayılanlarla sessizce koşar.
 #
 # Araç parametreleri:
-#   Dingil arası : 0.55 m   (PLACEHOLDER — wheelbase ölçülmedi)
+#   Dingil arası : 1.40 m   (2026-07-27 araçtan ölçüldü)
 #   İz genişliği : 0.90 m   (arka aks, EK-7 B)
 #   Kinematik    : Ackermann (yer aracı, 2D hareket)
 #
