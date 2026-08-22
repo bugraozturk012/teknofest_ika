@@ -138,6 +138,7 @@ done
 # LiDAR ayrı ele alınıyor: sürücü kapanırken seri portu geç bırakıyor, hemen
 # yeniden açılırsa "cannot bind to serial port" verip düşüyor.
 pkill -f ydlidar_ros2_driver_node 2>/dev/null
+pkill -f "ydlidar_ros2_driver ydlidar_launch.py" 2>/dev/null
 sleep 8
 
 # ── Sensörler ────────────────────────────────────────────────────────────────
@@ -150,9 +151,24 @@ for _deneme in 1 2 3; do
     sleep 14
     grep -q "Lidar has started" "$LOG/lidar.log" && break
     echo "LiDAR açılmadı (deneme $_deneme), port serbest bırakılıp tekrar denenecek"
+    # Sürücünün yanında launch sürecinin kendisi ve onun statik TF yayıncısı da
+    # düşürülür. Yalnız sürücü öldürülürse launch ayakta kalıyor ve her deneme
+    # geride bir base_link→laser_frame yayıncısı bırakıyor; üç denemeden sonra
+    # aynı dönüşümü basan üç ayrı süreç oluyor.
     pkill -f ydlidar_ros2_driver_node 2>/dev/null
+    pkill -f "ydlidar_ros2_driver ydlidar_launch.py" 2>/dev/null
+    pkill -f static_tf_pub_laser 2>/dev/null
     sleep 8
 done
+
+# ydlidar_launch.py kendi base_link→laser_frame dönüşümünü de basıyor:
+# "0 0 0.02", montaj dönüşü yok. Betiğin aşağıda bastığı ölçülmüş dönüşümle
+# (LIDAR_Z_M, LIDAR_YAW_RAD) aynı parent/child çiftini paylaşıyorlar. tf2'nin
+# statik tamponunda bir çifti en son gelen mesaj ezdiği için hangisinin
+# geçerli olacağı abonenin bağlanma anına bağlı kalıyor — costmap bir açılışta
+# doğru, ötekinde 93° dönük ve 53 cm alçak bir LiDAR görür. Sürücü ayağa
+# kalktıktan sonra launch'ın kopyası düşürülür, tek ve doğru yayıncı kalır.
+pkill -f static_tf_pub_laser 2>/dev/null
 
 # Derinlik kamerası (OS30A) — /apc/depth/image_raw renklendirilmiş derinlik,
 # /apc/left/image_color stereo sol göz renkli görüntü.
