@@ -40,11 +40,33 @@ unset ROS_DISCOVERY_SERVER
 
 # systemd servisi durdururken SIGTERM gönderir; alt süreçler yakalanmazsa
 # hayatta kalıp servisi "deactivating" durumunda kilitliyorlar.
+#
+# Kapsam süreç GRUBU, doğrudan çocuklar değil: `jobs -p` yalnız betiğin kendi
+# başlattığı ~18 süreci verir, oysa cgroup'ta 300'den fazla task var. Çoğu
+# düğüm `ros2 run` sarmalayıcısının altında koşuyor ve sarmalayıcıyı öldürmek
+# altındaki gerçek binary'yi öldürmüyor. Geride kalanları systemd
+# TimeoutStopSec (90 s) dolunca SIGKILL ediyordu: durdurma 92 saniye sürüyor,
+# servis her normal duruşta "Failed with result 'timeout'" damgası yiyor ve
+# gerçek bir açılış arızasından ayırt edilemez hâle geliyordu. SIGKILL ayrıca
+# düğümlerin kapanış işini de atlatıyor — seri_kopru Mega'ya PKT_DUR
+# gönderemiyor, kayıt açıkken bag indekslenmeden kalıyor.
+#
+# Betik systemd altında grup lideri olduğu için (pid = pgid = sid) "-$$"
+# tüm torunlara ulaşır. SIGTERM'i kendimiz yok sayarız ki grup sinyali betiği
+# düşürmesin; SIGKILL yakalanamadığı için o adımda kendimizi listeden çıkarırız,
+# yoksa systemd ana süreci SIGKILL'le ölmüş görüp yine "failed" yazardı.
+# Kalanların listesi öldürmeden ÖNCE değişkene alınır: ps/awk/xargs boru hattı
+# da bu grubun üyesi, doğrudan `| xargs kill` yazıldığında hat listeyi
+# bitirmeden kendini öldürüyor. Süpürme adımına kalan iş SIGTERM'den sağ çıkan
+# süreçler olduğu için bu çoğu zaman sonucu değiştirmez, ama listenin nerede
+# kesileceği rastlantıya kalır.
 temizle() {
     trap - TERM INT
-    kill $(jobs -p) 2>/dev/null
-    sleep 2
-    kill -9 $(jobs -p) 2>/dev/null
+    trap '' TERM
+    kill -TERM -- "-$$" 2>/dev/null
+    sleep 3
+    _kalan=$(ps -eo pid=,pgid= | awk -v g=$$ '$2 == g && $1 != g {print $1}')
+    [ -n "$_kalan" ] && kill -KILL $_kalan 2>/dev/null
     exit 0
 }
 trap temizle TERM INT
@@ -447,9 +469,15 @@ python3 "$WS/scripts/web_dashboard.py" --ros-args \
 # kalkmadığına bakmıyordu; bir düğüm seri portu açamayınca ya da modeli
 # yükleyemeyince tek belirti kendi log dosyasındaki satır oluyor ve arıza ancak
 # araç komuta cevap vermeyince fark ediliyordu. Aşağısı ucuz bir varlık
-# kontrolü: `ros2 node list` bir kez okunur, beklenen adlar aranır.
+# kontrolü: beklenen adlar `ros2 node list` çıktısında aranır.
 # Düğümlerin ÇALIŞTIĞINI değil AYAKTA olduğunu söyler — topic akışı için
 # ros2 topic hz'e bakmak gerekir.
+#
+# Liste tek atışta okunmaz. Bir önceki oturum SIGKILL'le kapandıysa ölen DDS
+# katılımcıları veda mesajı yayınlayamıyor ve yeni katılımcının keşif
+# veritabanı bir süre kirli kalıyor; tek okumayla sekiz sağlam düğüm birden
+# "ayağa kalkmadı" diye raporlanabiliyordu. Sahte uyarı, kontrolün kendisini
+# değersizleştirdiği için gerçek arızayı kaçırmakla aynı sonucu veriyor.
 _BEKLENEN="seri_kopru mod_yoneticisi ackermann_converter e_stop_node
            anti_rollback preprocessing_node yolo_detection_node map_image_node
            watchdog web_dashboard"
@@ -462,10 +490,14 @@ fi
 [ "$IMU_GUVENLIK_AKTIF" = "1" ] && _BEKLENEN="$_BEKLENEN imu_guvenlik"
 
 sleep 10
-_CANLI=$(ros2 node list 2>/dev/null)
-_EKSIK=""
-for _n in $_BEKLENEN; do
-    echo "$_CANLI" | grep -qx "/$_n" || _EKSIK="$_EKSIK $_n"
+for _dogrulama in 1 2 3; do
+    _CANLI=$(ros2 node list 2>/dev/null)
+    _EKSIK=""
+    for _n in $_BEKLENEN; do
+        echo "$_CANLI" | grep -qx "/$_n" || _EKSIK="$_EKSIK $_n"
+    done
+    [ -z "$_EKSIK" ] && break
+    [ "$_dogrulama" != "3" ] && sleep 5
 done
 if [ -n "$_EKSIK" ]; then
     echo "UYARI: ayağa kalkmayan düğümler:$_EKSIK"
