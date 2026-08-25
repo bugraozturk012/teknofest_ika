@@ -347,3 +347,46 @@ class DetectionsStore:
     def get_field(self, key, default=None):
         with self._lock:
             return self._data.get(key, default)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ŞARTNAME §6.12 KOŞU SAATİ / §9 PAS HAKKI
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def kosu_butcesi(istenen_s: float, kalan_s: float) -> float:
+    """
+    Bir aşamaya verilebilecek gerçek süre (§6.12).
+
+    Aşama timeout'u tek başına koşuyu sınırlamıyordu: 11 aşama × 120 s = 22
+    dakika, 15 dakikalık koşu limitinin bir buçuk katı. Kalan süreden uzun bir
+    timeout, dolduğunda araç zaten parkurdan çıkarılmış olacağı için yalnız
+    kâğıt üzerinde vardır.
+    """
+    return max(0.0, min(istenen_s, kalan_s))
+
+
+def pas_verilebilir(pas_gecilir: bool, label: str, pas_kullanildi: int,
+                    pas_hakki: int, pas_gecilemez) -> tuple:
+    """
+    Şartname §9 pas kuralları. Dönüş: (izin: bool, gerekce: str).
+
+    Üç kapı da geçilmeli:
+
+      1. Aşama için pas bilinçli olarak açılmış olmalı. Varsayılan kapalıdır:
+         pas, timeout'un otomatik sonucu değil sahadaki insan kararıdır —
+         §9 pas geçmeyi "takım üyeleri parkura girerek araçlarını pas geçilen
+         parkurun sonuna insan gücüyle taşıyarak konumlandıracaktır" diye
+         tanımlar.
+      2. Hızlanma parkuru ve otonom koşuda trafik konileri pas geçilemez;
+         konfigürasyon ne derse desin bu iki aşama atlanmaz.
+      3. Pas hakkı koşu başına 1 adettir. Sayaç olmadığı sürece art arda
+         timeout'a giren üç aşama üç kez atlanıyordu; ikinci pasın hakem
+         tablosunda karşılığı yok.
+    """
+    if not pas_gecilir:
+        return False, 'kapali'
+    if label in pas_gecilemez:
+        return False, 'sartname_yasak'
+    if pas_kullanildi >= pas_hakki:
+        return False, 'hak_bitti'
+    return True, 'izin'

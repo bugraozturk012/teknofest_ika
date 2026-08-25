@@ -74,7 +74,7 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 
-from std_msgs.msg import Bool, String, UInt8
+from std_msgs.msg import Bool, Float32, String, UInt8
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry
 from nav2_msgs.action import NavigateToPose
@@ -89,9 +89,11 @@ from teknofest_ika.otonomi.topics import (
     SHOOT_CMD_TOPIC, SHOOT_RESULT_TOPIC, LASER_FIRE_DURATION,
     MISSION_STATUS_TOPIC, MISYON_WP_INDEX_TOPIC,
     CMD_VEL_TOPIC, ODOM_TOPIC, RAMP_STOP_DURATION,
+    MISYON_KALAN_SURE_TOPIC, KOSU_SURESI_S, PAS_HAKKI, PAS_GECILEMEZ,
 )
 from teknofest_ika.otonomi.pure_logic import (
     DetectionsStore, stop_check as _stop_check_pure, hizlanma_hiz_profili,
+    kosu_butcesi, pas_verilebilir as _pas_verilebilir_pure,
 )
 
 # §6.10: dik eğim çıkış/iniş noktalarında STOP tabelası kaçırılsa bile
@@ -210,6 +212,87 @@ class Nav2Client:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# KOŞU SAATİ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class MisyonSaati:
+    """
+    Şartname §6.12 koşu saati: atış dahil tüm parkur 15 dakika içinde
+    tamamlanmalıdır.
+
+    Saat hakem kronometresini taklit eder, yani MANUEL MODDA DA İŞLER. FSM'in
+    kendi bekleme döngüleri (manuel duraklama, STOP bekleme) kendi bütçelerini
+    uzatabilir; koşu saatinin uzatılabilir bir karşılığı sahada yoktur.
+
+    Aşama timeout'u tek başına yetmiyordu: 11 aşama × 120 s = 22 dakikalık bir
+    bütçe, koşu limitinin bir buçuk katı. Aşama timeout'ları `kalan()` ile
+    kırpılmadığında araç, hakem parkurdan çıkarttığı için hiç puan getirmeyecek
+    bir aşamanın içinde dakikalarca bekleyebiliyordu.
+    """
+
+    def __init__(self, node: Node, sure_s: float = KOSU_SURESI_S):
+        self.node    = node
+        self.sure_s  = sure_s
+        self._t0     = None      # None = koşu henüz başlamadı
+        self._uyarildi = set()
+        self._pub    = node.create_publisher(Float32, MISYON_KALAN_SURE_TOPIC, 10)
+
+    def baslat(self) -> None:
+        self._t0 = time.time()
+        self._uyarildi.clear()
+        self.node.get_logger().info(
+            f'[SAAT] Koşu saati başladı — §6.12 limiti {self.sure_s / 60.0:.0f} dk.'
+        )
+        self.yayinla()
+
+    def basladi_mi(self) -> bool:
+        return self._t0 is not None
+
+    def kalan(self) -> float:
+        """Kalan saniye. Saat başlamadıysa tüm süre kalmış sayılır."""
+        if self._t0 is None:
+            return self.sure_s
+        return max(0.0, self.sure_s - (time.time() - self._t0))
+
+    def doldu(self) -> bool:
+        return self.basladi_mi() and self.kalan() <= 0.0
+
+    def yayinla(self) -> None:
+        self._pub.publish(Float32(data=float(self.kalan())))
+
+    def butce(self, istenen: float) -> float:
+        """
+        Bir aşamaya verilebilecek gerçek süre — hesap pure_logic'te,
+        test_birim.py oradaki fonksiyonu doğrudan sürer.
+        """
+        return kosu_butcesi(istenen, self.kalan())
+
+    # Kalan süre uyarı eşikleri (saniye), azalan sırada.
+    ESIKLER = (300.0, 120.0, 60.0)
+
+    def rapor(self) -> None:
+        """Eşik geçildikçe bir kez uyarır; her çağrıda kalan süreyi yayınlar."""
+        self.yayinla()
+        if not self.basladi_mi():
+            return
+        kalan   = self.kalan()
+        gecilen = [e for e in self.ESIKLER if kalan <= e]
+        if not gecilen:
+            return
+        # İki rapor arasında birden fazla eşik atlanmış olabilir (uzun süren
+        # tek bir aşama). Yalnız en acil eşik duyurulur; atlanan üst eşikler
+        # işaretlenir ki geriye dönük uyarı yağmuru olmasın.
+        esik = min(gecilen)
+        if esik in self._uyarildi:
+            return
+        self._uyarildi.update(gecilen)
+        self.node.get_logger().warn(
+            f'[SAAT] Koşu süresinin son {esik / 60.0:.0f} dakikası '
+            f'(kalan {kalan:.0f} s).'
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # STATE 1 — IDLE
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -221,9 +304,11 @@ class IdleState(smach.State):
     Geçişler: 'started' → NavigateState
     """
 
-    def __init__(self, node: Node, baslangic_bekleme: float = 3.0):
+    def __init__(self, node: Node, saat: 'MisyonSaati',
+                 baslangic_bekleme: float = 3.0):
         smach.State.__init__(self, outcomes=['started'])
         self.node = node
+        self.saat = saat
         self._start_received = False
         self._baslangic_bekleme = baslangic_bekleme
 
@@ -245,6 +330,9 @@ class IdleState(smach.State):
         rate = self.node.create_rate(10)
         while rclpy.ok() and not self._start_received:
             rate.sleep()
+        # Saat /mission_start ile başlar, başlangıç beklemesinden ÖNCE:
+        # o 3 saniye de hakem kronometresinde işliyor (§6.12).
+        self.saat.baslat()
         if self._baslangic_bekleme > 0:
             self.node.get_logger().info(
                 f'[IDLE] Başlangıç bekleme: {self._baslangic_bekleme:.0f}s '
@@ -286,18 +374,23 @@ class NavigateState(smach.State):
     MAX_STOP = 3
 
     def __init__(self, node: Node, nav: Nav2Client, det_store: DetectionsStore,
-                 stage_timeout: float = 120.0):
+                 saat: 'MisyonSaati', stage_timeout: float = 120.0):
         smach.State.__init__(
             self,
             outcomes=['next_waypoint', 'shoot_waypoint', 'hizlanma_waypoint',
-                      'mission_complete', 'failed'],
+                      'mission_complete', 'sure_doldu', 'failed'],
             input_keys=['waypoints', 'wp_index'],
             output_keys=['wp_index', 'current_wp', 'retry_count']
         )
         self.node                  = node
         self.nav                   = nav
         self.det_store             = det_store
+        self.saat                  = saat
         self.stage_timeout         = stage_timeout
+        # §9: pas hakkı koşu başına, aşama başına değil. Sayaç state örneği
+        # üzerinde tutulur; NavigateState her waypoint için yeniden execute
+        # edilir ama nesne aynı kalır.
+        self._pas_kullanildi       = 0
         self._wp_index_pub         = node.create_publisher(UInt8, MISYON_WP_INDEX_TOPIC, 10)
         self._stop_cooldown_bitis  = 0.0   # §6.10: son STOP sonrası tekrar tetiklenme engeli
 
@@ -309,6 +402,27 @@ class NavigateState(smach.State):
             time.time(),
         )
 
+    def _pas_verilebilir(self, wp: dict, label: str) -> bool:
+        """
+        §9 pas kapısı. Karar pure_logic.pas_verilebilir'de; burada yalnız
+        reddin gerekçesi log'a yazılır.
+        """
+        izin, gerekce = _pas_verilebilir_pure(
+            wp.get('pas_gecilir', False), label,
+            self._pas_kullanildi, PAS_HAKKI, PAS_GECILEMEZ,
+        )
+        if gerekce == 'sartname_yasak':
+            self.node.get_logger().error(
+                f'[NAVIGATE] {label} §9 gereği pas geçilemez — '
+                'pas_gecilir=True yok sayılıyor.'
+            )
+        elif gerekce == 'hak_bitti':
+            self.node.get_logger().error(
+                f'[NAVIGATE] Pas hakkı bitti ({PAS_HAKKI}/koşu) — '
+                f'{label} atlanmıyor, hata kurtarmaya düşülüyor.'
+            )
+        return izin
+
     def execute(self, userdata):
         if hasattr(self.node, '_fsm_state_pub'):
             self.node._fsm_state_pub.publish(String(data='NAVIGATE'))
@@ -316,6 +430,13 @@ class NavigateState(smach.State):
         if self.det_store.get_field('e_stop', False):
             self.node.get_logger().error('[NAVIGATE] E-STOP aktif — navigasyon iptal.')
             return 'failed'
+
+        self.saat.rapor()
+        if self.saat.doldu():
+            self.node.get_logger().error(
+                '[NAVIGATE] §6.12 koşu süresi doldu — yeni aşamaya başlanmıyor.'
+            )
+            return 'sure_doldu'
 
         waypoints = userdata.waypoints
         idx       = userdata.wp_index
@@ -346,7 +467,17 @@ class NavigateState(smach.State):
         # taze stage_timeout ile çağırmak toplam süreyi sınırsız bırakıyordu.
         stop_uygulandi = False
         stop_sayaci    = 0
-        wp_deadline    = time.time() + self.stage_timeout
+        # Aşama bütçesi koşuda kalan süreden uzun olamaz (§6.12): 11 aşama ×
+        # 120 s = 22 dk, koşu limitinin bir buçuk katı. Kırpılmazsa araç,
+        # hakem çoktan parkurdan çıkarttığı için puan getirmeyecek bir aşamanın
+        # içinde dakikalarca bekler.
+        asama_butcesi  = self.saat.butce(self.stage_timeout)
+        if asama_butcesi < self.stage_timeout:
+            self.node.get_logger().warn(
+                f'[NAVIGATE] {label}: aşama bütçesi koşu saatiyle '
+                f'{self.stage_timeout:.0f}s → {asama_butcesi:.0f}s kırpıldı.'
+            )
+        wp_deadline    = time.time() + asama_butcesi
         while True:
             kalan = wp_deadline - time.time()
             if kalan <= 0.0:
@@ -390,9 +521,15 @@ class NavigateState(smach.State):
                 break
 
             # 'failed' veya 'timeout'
-            if wp.get('pas_gecilir', False):
+            if self._pas_verilebilir(wp, label):
+                self._pas_kullanildi += 1
+                bedel = float(wp.get('pas_puan', 0.0))
                 self.node.get_logger().warn(
-                    f'[NAVIGATE] {label} başarısız — pas_gecilir=True, atlıyorum.'
+                    f'[NAVIGATE] {label} başarısız — pas geçiliyor '
+                    f'({self._pas_kullanildi}/{PAS_HAKKI} hak). '
+                    f'§9 bedeli: -{bedel:.0f} puan. Araç bir sonraki hedefe '
+                    'sürüyor; geçerli bir pas için aşama sonuna ELLE '
+                    'taşınması gerekir.'
                 )
                 userdata.wp_index  = idx + 1
                 userdata.current_wp = wp
@@ -570,8 +707,10 @@ class ShootState(smach.State):
     MAX_DENEME = 3       # Şartname: en fazla 3 deneme
     TIMEOUT_S  = 8.0     # Her deneme için max bekleme
 
-    def __init__(self, node: Node, det_store: DetectionsStore):
+    def __init__(self, node: Node, det_store: DetectionsStore,
+                 saat: 'MisyonSaati'):
         smach.State.__init__(self, outcomes=['shot_fired', 'failed'])
+        self.saat = saat
         self.node              = node
         self.det_store         = det_store
         self._confirmed_event  = threading.Event()
@@ -600,6 +739,16 @@ class ShootState(smach.State):
                 )
                 self._shoot_pub.publish(Bool(data=False))
                 return 'failed'
+
+            # Koşu saati yalnız denemeler ARASINDA bakılır: başlamış bir atış
+            # yarıda kesilemez, §6.10 lazerin en az 1 s aktif kalmasını ve o
+            # süre boyunca araca hareket verilmemesini şart koşuyor.
+            if deneme > 1 and self.saat.doldu():
+                self.node.get_logger().error(
+                    '[SHOOT] §6.12 koşu süresi doldu — kalan denemeler '
+                    'kullanılmıyor.'
+                )
+                break
 
             self.node.get_logger().info(
                 f'[SHOOT] Deneme {deneme}/{self.MAX_DENEME}'
@@ -710,8 +859,10 @@ class HizlanmaState(smach.State):
     ODOM_ILERLEME_M  = 0.20   # m
     ODOM_BAYATLAMA_S = 1.0    # s — /odom mesajı bu süre gelmezse iptal
 
-    def __init__(self, node: Node, det_store: DetectionsStore):
+    def __init__(self, node: Node, det_store: DetectionsStore,
+                 saat: 'MisyonSaati'):
         smach.State.__init__(self, outcomes=['completed', 'failed'])
+        self.saat = saat
         self.node      = node
         self.det_store = det_store
 
@@ -792,6 +943,14 @@ class HizlanmaState(smach.State):
 
             if time.time() > deadline:
                 self.node.get_logger().warn('[HIZLANMA] Timeout — durduruluyor.')
+                break
+
+            # §6.12: koşu saati manuel duraklamalarla uzayan aşama bütçesinden
+            # bağımsız işler; dolduysa 30 m tamamlanmamış olsa da fren.
+            if self.saat.doldu():
+                self.node.get_logger().error(
+                    '[HIZLANMA] §6.12 koşu süresi doldu — fren.'
+                )
                 break
 
             # Odom sağlığı: kopuk/donmuş enkoder mesafeyi hep 0 gösterir,
@@ -978,6 +1137,9 @@ def load_waypoints(yaml_path: str):
                 'type':        tip,
                 'label':       isim,
                 'pas_gecilir': a.get('pas_gecilir', False),
+                # §9: pas geçilen aşamanın alınabilecek en yüksek puanı eksi
+                # olarak yazılır. Log'da bedelin görünmesi için taşınıyor.
+                'pas_puan':    a.get('pas_puan', 0.0),
             })
 
         parametreler = data.get('parametreler', {})
@@ -1073,7 +1235,21 @@ def main():
 
     stage_timeout      = float(parametreler.get('asama_timeout_saniye', 120.0))
     baslangic_bekleme  = float(parametreler.get('baslangic_bekleme',    3.0))
+    kosu_suresi        = float(parametreler.get('kosu_suresi_saniye', KOSU_SURESI_S))
     node.get_logger().info(f'Aşama timeout: {stage_timeout:.0f}s | Başlangıç bekleme: {baslangic_bekleme:.0f}s (waypoints.yaml)')
+
+    saat = MisyonSaati(node, kosu_suresi)
+    node.get_logger().info(
+        f'Koşu limiti: {kosu_suresi / 60.0:.0f} dk (§6.12) | '
+        f'Pas hakkı: {PAS_HAKKI}/koşu (§9)'
+    )
+    # Aşama bütçesi koşu limitinden uzunsa tek bir takılan aşama koşuyu yer.
+    if stage_timeout * max(1, len(waypoints)) > kosu_suresi:
+        node.get_logger().warn(
+            f'Aşama bütçesi toplamı ({stage_timeout * len(waypoints):.0f}s) koşu '
+            f'limitini ({kosu_suresi:.0f}s) aşıyor — aşama süreleri koşu '
+            'saatiyle kırpılacak.'
+        )
 
     # ── SMACH FSM Kurulumu ────────────────────────────────────────────
     sm = smach.StateMachine(outcomes=['GOREV_TAMAMLANDI', 'GOREV_IPTAL'])
@@ -1086,25 +1262,29 @@ def main():
     with sm:
         smach.StateMachine.add(
             'IDLE',
-            IdleState(node, baslangic_bekleme),
+            IdleState(node, saat, baslangic_bekleme),
             transitions={'started': 'NAVIGATE'}
         )
 
         smach.StateMachine.add(
             'NAVIGATE',
-            NavigateState(node, nav, det_store, stage_timeout),
+            NavigateState(node, nav, det_store, saat, stage_timeout),
             transitions={
                 'next_waypoint':    'NAVIGATE',
                 'shoot_waypoint':   'SHOOT_APPROACH',
                 'hizlanma_waypoint':'HIZLANMA',
                 'mission_complete': 'MISSION_COMPLETE',
+                # §6.12 süre dolduğunda görev tamamlanmış değildir: araç
+                # parkurdan çıkarılır. 'COMPLETE' yayınlamak logda gerçek
+                # bitişten ayırt edilemez olurdu.
+                'sure_doldu':       'MISSION_ABORT',
                 'failed':           'ERROR_RECOVERY',
             }
         )
 
         smach.StateMachine.add(
             'HIZLANMA',
-            HizlanmaState(node, det_store),
+            HizlanmaState(node, det_store, saat),
             transitions={
                 'completed': 'NAVIGATE',
                 'failed':    'ERROR_RECOVERY',
@@ -1122,7 +1302,7 @@ def main():
 
         smach.StateMachine.add(
             'SHOOT',
-            ShootState(node, det_store),
+            ShootState(node, det_store, saat),
             transitions={
                 'shot_fired': 'NAVIGATE',
                 'failed':     'ERROR_RECOVERY',

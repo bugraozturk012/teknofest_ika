@@ -35,8 +35,13 @@ from teknofest_ika.otonomi.pure_logic import (  # noqa: E402
     DetectionsStore,
     fren_hedef_hesapla,
     fren_yumusat,
+    kosu_butcesi,
+    pas_verilebilir,
 )
-from teknofest_ika.otonomi.topics import BATTERY_WARN_SOC, BATTERY_CRITICAL_SOC  # noqa: E402
+from teknofest_ika.otonomi.topics import (  # noqa: E402
+    BATTERY_WARN_SOC, BATTERY_CRITICAL_SOC, PAS_HAKKI, PAS_GECILEMEZ,
+    KOSU_SURESI_S,
+)
 
 PASS = 0
 FAIL = 0
@@ -371,6 +376,32 @@ check("yumuşatma: küçük dt → küçük adım",       fren_yumusat(0.0, 1.0,
 check("yumuşatma: azalış da sınırlı",           fren_yumusat(0.8, 0.0, 0.5, 1.0), 0.3)
 check("yumuşatma: hedefe zaten ulaşılmış",      fren_yumusat(0.5, 0.5, 0.5, 1.0), 0.5)
 check("yumuşatma: dt=0 → değişmez",             fren_yumusat(0.4, 1.0, 0.5, 0.0), 0.4)
+
+# ─── 16. Koşu Saati ve Pas Hakkı (§6.12 / §9) ───────────────────────────────
+print("\n=== 16. Koşu Saati ve Pas Hakkı ===")
+
+check("bütçe kalan süreye kırpılır",      kosu_butcesi(120.0, 45.0), 45.0)
+check("bütçe istenenden büyümez",         kosu_butcesi(30.0, 900.0), 30.0)
+check("süre bitmişse bütçe 0",            kosu_butcesi(120.0, 0.0), 0.0)
+check("negatif kalan → 0, eksi süre yok", kosu_butcesi(120.0, -5.0), 0.0)
+# 11 aşama × 120 s = 1320 s; koşu limiti 900 s. Kırpma olmadan tek bir takılan
+# aşama koşunun tamamını yiyebiliyordu.
+check("aşama bütçesi toplamı limiti aşar", 11 * 120.0 > KOSU_SURESI_S, True)
+check("§6.12 koşu limiti 15 dakika",       KOSU_SURESI_S, 900.0)
+
+
+def pas(acik, label, kullanildi):
+    return pas_verilebilir(acik, label, kullanildi, PAS_HAKKI, PAS_GECILEMEZ)
+
+
+check("§9 pas hakkı koşu başına 1",        PAS_HAKKI, 1)
+check("varsayılan kapalı → pas yok",       pas(False, 'KAYAR_ENGEL', 0), (False, 'kapali'))
+check("açık + serbest aşama → pas",        pas(True, 'KAYAR_ENGEL', 0), (True, 'izin'))
+check("koniler pas geçilemez (§9)",        pas(True, 'KONİLİ_YOL', 0), (False, 'sartname_yasak'))
+check("hızlanma pas geçilemez (§9)",       pas(True, 'HIZLANMA_PARKURU', 0), (False, 'sartname_yasak'))
+check("hak bitince ikinci pas yok",        pas(True, 'DIK_ENGEL', 1), (False, 'hak_bitti'))
+check("yasak, hak dolu olsa da yasak",     pas(True, 'KONİLİ_YOL', 1), (False, 'sartname_yasak'))
+
 
 # ─── Sonuç ───────────────────────────────────────────────────────────────────
 print(f"\n{'='*45}")

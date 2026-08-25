@@ -410,6 +410,26 @@ MISSION_STATUS_TOPIC = "/mission_status"  # görev sonucu (String)
 MISYON_AKTIF_TOPIC   = "/misyon/aktif"   # kayıt + durum göstergesi (Bool)
 SHOOT_CMD_TOPIC      = "/shoot_command"   # lazer tetikleyici (Bool)
 MISYON_WP_INDEX_TOPIC = "/misyon/wp_index"  # mevcut waypoint indeksi (UInt8)
+MISYON_KALAN_SURE_TOPIC = "/misyon/kalan_sure"  # koşu saatinde kalan süre (Float32)
+
+# Koşu süresi — Şartname §6.12: her koşu, atış dahil, en fazla 15 dakikadır.
+# Süre dolduğunda takım geçtiği aşamaların puanını korur ama parkurdan çıkmak
+# zorundadır. Saat bir güvenlik sınırı değil doğrudan puan kaynağıdır: §9'da
+# "koşu tamamlama süresi" tek başına en yüksek 100 puanlık kalemdir, atıştan
+# (50) ve konilerden (50) büyüktür. Saat koşunun başladığı anda işler ve
+# manuel moda geçilse de DURMAZ — hakem kronometresi de durmaz.
+KOSU_SURESI_S = 900.0
+
+# Pas hakkı — Şartname §9: her koşuda YALNIZCA 1 aşama pas geçilebilir ve pas
+# geçilen aşamanın alınabilecek en yüksek puanı eksi olarak yazılır. Pas, aracın
+# bir sonraki hedefe sürmesi değildir: takım üyeleri parkura girip aracı elle
+# taşır. Yani bu bayrak otonom bir kaçış yolu değil, sahadaki insan kararının
+# yazılıma bildirilmesidir.
+PAS_HAKKI = 1
+
+# Şartname §9: hızlanma parkuru ve otonom koşuda trafik konileri pas geçilemez.
+# Konfigürasyon ne derse desin bu iki aşama atlanmaz.
+PAS_GECILEMEZ = ("KONİLİ_YOL", "HIZLANMA_PARKURU")
 
 # RC kumanda kanalları
 # Float32MultiArray [ch1_gaz, ch2_direksiyon/pan, ch5_mod, ch3_aux/lazer,

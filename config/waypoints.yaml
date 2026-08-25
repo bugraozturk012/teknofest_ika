@@ -10,8 +10,26 @@
 #               yolo_adapter_node bu değeri /ika/detections JSON'una ve
 #               /yolo/class_id UInt8'e çevirir.
 #
-# pas_gecilir : true → aşama timeout'ta otomatik atlanır
-#               false → aşama zorunlu, timeout'ta hata kurtarmaya düşer
+# pas_gecilir : Şartname §9 pas hakkı. VARSAYILAN false, öyle kalmalı.
+#               true → aşama timeout'a girerse FSM bir sonraki hedefe geçer.
+#               false → aşama zorunlu, timeout'ta hata kurtarmaya düşer.
+#
+#               Pas otonom bir kaçış yolu DEĞİLDİR. Şartname §9 pas geçmeyi
+#               "takım üyeleri parkura girerek araçlarını pas geçilen parkurun
+#               sonuna insan gücüyle taşıyarak konumlandıracaktır" diye
+#               tanımlar; süre de durmaz. Yani buradaki bayrak, sahada verilmiş
+#               bir insan kararını yazılıma bildirir — timeout'un otomatik
+#               sonucu olamaz.
+#
+#               Üç kısıt birden geçerli:
+#                 · koşu başına YALNIZCA 1 aşama (misyon_fsm PAS_HAKKI)
+#                 · pas geçilen aşamanın tam puanı EKSİ yazılır (pas_puan)
+#                 · hızlanma parkuru ve otonom koşuda trafik konileri
+#                   pas geçilemez (misyon_fsm PAS_GECILEMEZ)
+#
+# pas_puan    : §9 tablosunda o aşamadan alınabilecek en yüksek puan. Pas
+#               hâlinde aynı sayı eksi olarak yazılır, yani KAYAR_ENGEL pası
+#               kaçırılan +50 ile birlikte 100 puanlık salınım demektir.
 #
 # Tabela → class_id eşlemesi (ALFABETİK model sırası — topics.py ile aynı):
 #   Tabela_1     (class_id= 0) → SULU_YOL
@@ -39,6 +57,7 @@ asamalar:
       y: 0.0
       yaw: 0.0
     pas_gecilir: false
+    pas_puan: 10        # §9 su geçişi ve yağmur
     aciklama: "Sulu yol — μ≈0.3, yavaş geç, frenleme mesafesi artar"
 
   - isim: TASLI_YOL
@@ -48,6 +67,7 @@ asamalar:
       y: 0.0
       yaw: 0.0
     pas_gecilir: false
+    pas_puan: 5        # §9 çakıllı / taşlı yol
     aciklama: "Taşlı yol — lateral temas düzensiz, hız kısılır"
 
   - isim: YAN_EGIM
@@ -57,6 +77,7 @@ asamalar:
       y: 0.0
       yaw: 0.0
     pas_gecilir: false
+    pas_puan: 5        # §9 yan eğim
     aciklama: "Yan eğim — roll açısı izlenir, imu_guvenlik devrede"
 
   - isim: DIK_ENGEL
@@ -65,7 +86,8 @@ asamalar:
       x: 0.0
       y: 0.0
       yaw: 0.0
-    pas_gecilir: true
+    pas_gecilir: false
+    pas_puan: 5        # §9 dik engel
     aciklama: "Dik engel — Nav2 lokal costmap engeli kaçınır"
 
   - isim: KONİLİ_YOL
@@ -75,6 +97,7 @@ asamalar:
       y: 0.0
       yaw: 0.0
     pas_gecilir: false
+    pas_puan: 50        # §9 trafik konileri — otonom koşuda PAS GEÇİLEMEZ
     aciklama: "Konili yol slalom — dar geçiş, cone_fusion_node aktif"
 
   - isim: KAYAR_ENGEL
@@ -83,7 +106,8 @@ asamalar:
       x: 0.0
       y: 0.0
       yaw: 0.0
-    pas_gecilir: true
+    pas_gecilir: false
+    pas_puan: 50        # §9 kayar engel (temassız geçilirse)
     aciklama: "Kayar engel — pozisyon değişkendir, kayar_yon beklenir"
 
   - isim: ENGEBELİ_ARAZİ
@@ -92,7 +116,8 @@ asamalar:
       x: 0.0
       y: 0.0
       yaw: 0.0
-    pas_gecilir: true
+    pas_gecilir: false
+    pas_puan: 5        # §9 engebeli arazi
     aciklama: "Engebeli arazi — titreşim tolere, hız minimum"
 
   - isim: DIK_EGIM_GIRIS
@@ -102,6 +127,7 @@ asamalar:
       y: 0.0
       yaw: 0.0
     pas_gecilir: false
+    pas_puan: 15        # §9 dik eğimler parkuru — giriş+çıkış TEK aşama, puan bir kez
     aciklama: >
       §6.10 Dik eğim girişi. Rampa öncesi düz zemin. Rampa dibindeki STOP işareti
       NavigateState tarafından tespit edilir (Tabela_stop/class_id=13):
@@ -114,6 +140,7 @@ asamalar:
       y: 0.0
       yaw: 0.0
     pas_gecilir: false
+    pas_puan: 0        # §9 puanı DIK_EGIM_GIRIS üzerinde, iki kez sayılmaz
     aciklama: >
       §6.10 Dik eğim çıkışı. Rampa üzerinde çıkarken ve inerken STOP işaretleri
       NavigateState tarafından ayrı ayrı işlenir. Cooldown=3s rampa geçiş süresinden
@@ -126,6 +153,7 @@ asamalar:
       y: 0.0
       yaw: 0.0
     pas_gecilir: false
+    pas_puan: 50        # §9 atış (iç daire); §9 pas örneği doğrudan bu aşamayı -50 diye verir
     aciklama: "Atış bölgesi — araç durur, nişan alır, lazer ateşlenir (max 3 deneme)"
 
 
@@ -136,6 +164,7 @@ asamalar:
       y: 0.0
       yaw: 0.0  # aracın ilerleme yönüne hizala
     pas_gecilir: false
+    pas_puan: 25        # §9 hızlanma — PAS GEÇİLEMEZ
     aciklama: >
       §6.11 Hızlanma parkuru girişi. Nav2 bu noktaya götürür, sonra
       HizlanmaState devralır: Nav2 bypass, doğrudan /cmd_vel 3.0 m/s,
@@ -148,3 +177,10 @@ parametreler:
   hedef_tolerans_yaw: 0.20        # nav2_params.yaml yaw_goal_tolerance ile eşleştirildi [rad]
   asama_timeout_saniye: 120.0     # misyon_fsm.py → Nav2 bu sürede hedefe varamazsa goal iptal [s]
   baslangic_bekleme: 3.0          # Otonom moda geçişte bekleme süresi [s]
+  kosu_suresi_saniye: 900.0       # §6.12 — atış dahil tüm koşu 15 dakika [s]
+  # Aşama timeout'u × aşama sayısı (120 × 11 = 1320 s) koşu limitinden uzun.
+  # Bu bir hata değil: aşama süreleri misyon_fsm'de koşu saatiyle kırpılıyor,
+  # 120 s tek bir aşamanın üst sınırı, toplam bütçe değil. asama_timeout'u
+  # yükseltirken bunun toplam süreyi artırmadığı, yalnız tek bir takılan
+  # aşamanın koşunun daha büyük bir kısmını yiyebileceği anlamına geldiği
+  # unutulmamalı.
