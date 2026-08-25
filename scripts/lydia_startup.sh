@@ -305,6 +305,16 @@ ros2 run tf2_ros static_transform_publisher \
 # huni_reaktif bu düzeltmeyi kendi içinde (aci_offset_deg) ham /scan üzerinde
 # yapar ve TF'ten etkilenmez; Nav2 costmap ise YALNIZ TF'e bakar — dönüş burada
 # verilmezse tüm engelleri 93° kaydırarak yerleştirir.
+#
+# Konum ölçülmeyi bekliyor, iki eksen de şüpheli:
+#   z — 0.55 ZEMİNDEN ölçüldü ama dönüşümün ebeveyni base_link ve base_joint
+#       gövdeyi zeminden 0.28 m yukarı alıyor; base_link'e göre değer 0.27
+#       civarı olmalı. Jetson çalışma kopyasındaki urdf 0.265 diyor.
+#   x — burada 0 yazıyor, LiDAR ise burna yakın monte. Jetson kopyası 0.80.
+#       Doğruysa her engel base_link'e 0.80 m daha yakın işaretleniyor,
+#       raytrace temizliği de aynı kadar kayıyor.
+# Mezürle ölçülüp (ön aks merkezi x=+0.70 referans) iki yer birlikte
+# güncellenmeli: burası ve urdf'teki lidar_joint.
 : "${LIDAR_YAW_RAD:=1.6284}"   # 93.3° — huni_reaktif aci_offset_deg ile aynı
 : "${LIDAR_Z_M:=0.55}"         # zeminden tarama düzlemine, ölçüldü
 ros2 run tf2_ros static_transform_publisher 0 0 "$LIDAR_Z_M" "$LIDAR_YAW_RAD" 0 0 \

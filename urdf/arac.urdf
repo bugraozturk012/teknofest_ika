@@ -232,7 +232,13 @@
   <!-- Yaw 1.6284 rad = 93.3°: LiDAR gövdeye dönük monte edilmiş, açı sahada
        huniyle çift yönlü kalibre edildi. huni_reaktif aynı düzeltmeyi ham
        /scan üzerinde aci_offset_deg ile yapar; Nav2 costmap ise yalnız bu
-       dönüşümü görür. Yükseklik zeminden tarama düzlemine ölçüldü (0.55 m).
+       dönüşümü görür. Yükseklik zeminden tarama düzlemine ölçüldü (0.55 m) —
+       ama bu eklemin ebeveyni base_link ve base_joint gövdeyi zeminden
+       0.28 m yukarı alıyor, yani buradaki 0.55 zemin yüksekliğini 0.83 m
+       gösteriyor. X de 0 yazıyor, LiDAR ise burna yakın monte (ön aks
+       merkezi x=+0.70). Jetson çalışma kopyası "0.80 0 0.265" diyor;
+       mezürle doğrulanınca burası ve lydia_startup.sh'teki statik
+       yayıncı birlikte güncellenecek.
        NOT: bu dönüşümü şu an boot betiğindeki statik yayıncı basıyor. Bir gün
        robot_state_publisher yığına eklenirse ikisi aynı TF'i yayınlar —
        o zaman statik laser yayıncısı kaldırılmalı. -->
