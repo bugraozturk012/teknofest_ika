@@ -50,9 +50,13 @@ ekf_filter_node:
 
     # ── Frekans ve zamanlama ───────────────────────────────────────────────
     frequency: 50.0            # EKF güncelleme frekansı [Hz] — IMU'dan yüksek olmamalı
-    sensor_timeout: 0.1        # Sensör sessiz kalırsa [s] — zaman damgası güncellenir
+    # Sensörler Mega üzerinden seri hattan geliyor; hat bir an tıkandığında
+    # filtrenin körleşmemesi için eşikler tek bir telemetri döngüsünden uzun
+    # tutulur.
+    sensor_timeout: 0.2        # Sensör sessiz kalırsa [s] — zaman damgası güncellenir
     transform_time_offset: 0.0
-    transform_timeout: 0.05
+    transform_timeout: 0.2     # SLAM'in map→odom yayını Jetson yükünde gecikebilir
+    predict_to_current_time: true  # tahmini son sensör anına değil şimdiye taşı
 
     # ── Frame tanımları ───────────────────────────────────────────────────
     map_frame:       map

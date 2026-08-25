@@ -210,8 +210,14 @@ velocity_smoother:
     scale_velocities: true
     feedback: "OPEN_LOOP"
     #             [  vx,   vy,  wz ]
-    max_velocity: [0.90, 0.0, 1.80]   # vx: en hızlı arazi profili (fast)
-    min_velocity: [-0.30, 0.0, -1.80] # geri: yalnız backup recovery kullanır
+    # wz tavanı aracın kinematiğinden gelir: ω_max = v_max / R_min,
+    # 0.90 / 2.42 = 0.37 rad/s. Daha yüksek bir tavan komut zincirinde
+    # karşılığı olmayan eğrilik taşır — ackermann_converter direksiyonu
+    # δ_max'ta sessizce doyurur, hız düşmediği için araç viraja tam hızda
+    # girip dışarı taşar. R_min planlayıcıdaki minimum_turning_radius ile
+    # aynı değerdir, biri değişirse diğeri de değişir.
+    max_velocity: [0.90, 0.0, 0.37]   # vx: en hızlı arazi profili (fast)
+    min_velocity: [-0.30, 0.0, -0.37] # geri: yalnız backup recovery kullanır
     max_accel:    [2.50, 0.0, 3.20]
     max_decel:    [-2.50, 0.0, -3.20]
     deadband_velocity: [0.05, 0.0, 0.05]
@@ -419,11 +425,16 @@ local_costmap:
 amcl:
   ros__parameters:
     use_sim_time: false
-    alpha1: 0.2
-    alpha2: 0.2
-    alpha3: 0.2
-    alpha4: 0.2
-    alpha5: 0.2
+    # Odometri gürültü modeli — kinematik kısıt değil, parçacıkların odometri
+    # artışına göre ne kadar yayılacağını belirler. Araca özgü olan kısım budur:
+    # Ackermann viraj alırken kayar, bu yüzden dönüşten gelen öteleme belirsizliği
+    # (alpha4) yükseltilir; yerinde dönüş olmadığı için dönüşten gelen dönüş
+    # belirsizliği (alpha1) düşürülür.
+    alpha1: 0.1   # dönüşten gelen dönüş gürültüsü
+    alpha2: 0.2   # ötelemeden gelen dönüş gürültüsü
+    alpha3: 0.3   # ötelemeden gelen öteleme gürültüsü — Ackermann biraz kayar
+    alpha4: 0.3   # dönüşten gelen öteleme gürültüsü — virajda parçacıkları yay
+    alpha5: 0.1   # yalnız omni modelde kullanılır
     base_frame_id: base_footprint
     beam_skip_distance: 0.5
     beam_skip_error_threshold: 0.9
@@ -444,9 +455,13 @@ amcl:
     recovery_alpha_fast: 0.0
     recovery_alpha_slow: 0.0
     resample_interval: 1
-    # Ackermann kinematikli araç — DifferentialMotionModel yanlış sonuç verir
-    # (yerinde dönüş varsayar, araç dönemez).
-    robot_model_type: nav2_amcl::AckermannMotionModel
+    # nav2_amcl yalnız iki hareket modeli sınıfı yayınlar (plugins.xml):
+    # DifferentialMotionModel ve OmniMotionModel. Ackermann adında bir sınıf
+    # YOKTUR; yazılırsa amcl_node pluginlib'den istisna alır, on_configure
+    # başarısız olur ve lifecycle yöneticisi yerelleştirme grubunu hiç
+    # ayağa kaldıramaz. Araca uyarlama sınıf adıyla değil, yukarıdaki alpha
+    # katsayılarıyla yapılır.
+    robot_model_type: nav2_amcl::DifferentialMotionModel
     save_pose_rate: 0.5
     sigma_hit: 0.2
     tf_broadcast: true
