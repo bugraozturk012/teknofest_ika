@@ -10,7 +10,7 @@ Eski PyQt dashboard'ın (ika_dashboard.py) yerini alır. Fark mimaridedir:
   YENİ:  Bu sunucu JETSON'DA çalışır, ROS topic'lerine LOKAL abone olur
          (Jetson-içi DDS her zaman sağlam), görüntüleri JPEG'e çevirip
          HTTP ile servis eder. İzleyici herhangi bir tarayıcıdan bakar:
-             http://192.168.100.2:8080
+             http://192.168.55.1:8080
 
   Taşıma katmanları (hepsi düz HTTP/TCP, DDS'ten bağımsız):
     /stream/<ad>  → MJPEG (kamera akışları, JPEG kalite düşük + 480p)

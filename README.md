@@ -401,7 +401,9 @@ echo "source ~/eys3d_ws/install/setup.bash" >> ~/.bashrc
 
 # Workspace build
 cd ~/lydia_ws
-colcon build --packages-select teknofest_ika --symlink-install
+# --symlink-install kullanilmaz: aractaki install/ kopya tabanli, bayrakla
+# derlemek maps/teknofest_harita.pgm uzerinde [Errno 2] verip yarida keser.
+colcon build --packages-select teknofest_ika
 source install/setup.bash
 echo "source ~/lydia_ws/install/setup.bash" >> ~/.bashrc
 ```
