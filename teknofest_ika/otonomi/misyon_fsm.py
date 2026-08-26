@@ -93,6 +93,7 @@ from teknofest_ika.otonomi.topics import (
 )
 from teknofest_ika.otonomi.pure_logic import (
     DetectionsStore, stop_check as _stop_check_pure, hizlanma_hiz_profili,
+    durma_degerlendir,
     kosu_butcesi, pas_verilebilir as _pas_verilebilir_pure,
 )
 
@@ -831,8 +832,9 @@ class HizlanmaState(smach.State):
     smoother'ın susması beklenmelidir.
 
     Hız profili:
-      0  .. FREN_BASI_MESAFE (25m) → MAX_HIZ
-      25 .. TOPLAM_MESAFE    (30m) → doğrusal düşüş MAX_HIZ→0.3 m/s
+      0  .. OLCUM_MESAFE (30m) → MAX_HIZ — puanlanan bölüm sonuna kadar tam gaz
+      çizgide                  → 0 komutu, fren zinciri devralır
+      30 .. +DURMA_MESAFE(10m) → duruş izlenir, gerçekleşen mesafe loglanır
       Erken çıkış: Tabela_11_son tespiti VEYA timeout
 
     Geçişler: 'completed' → NavigateState
@@ -843,15 +845,24 @@ class HizlanmaState(smach.State):
     # 1.94 m/s. Eski 3.0 değeri seri_kopru.MAX_HIZ_MS donanım kelepçesiydi,
     # aracın ulaşabildiği bir hız değil — 3.90 V ister, DAC/sürücü doyar.
     MAX_HIZ          = 1.90   # m/s — ölçülen tam gazın hemen altı
-    TOPLAM_MESAFE    = 30.0   # m
-    FREN_BASI_MESAFE = 25.0   # m — son 5m'de yavaşla
+    # Şartname §6.11 iki ayrı mesafe tanımlıyor: 30 m puanlanan hızlanma
+    # bölümü, ardından 10 m emniyetli durma payı. Fren payın içinde yapılır;
+    # ölçülen bölümde yavaşlamak yalnız ilk altı takıma puan veren bir
+    # kalemde sıralama kaybettirir. 1.90 m/s'den 10 m'de durmak 0.18 m/s²
+    # ister, yani pay fazlasıyla geniş.
+    OLCUM_MESAFE     = 30.0   # m — puanlanan bölüm
+    DURMA_MESAFE     = 10.0   # m — çizgi sonrası emniyetli durma payı
+    DURMA_HIZ_ESIGI  = 0.05   # m/s — bunun altı "durdu" sayılır
+    # Payı tam hızda katetmek 5.3 s sürer, duruş bundan kısadır. Bu guard
+    # odometri hareket halindeyken donarsa döngünün asılı kalmasını önler.
+    DURMA_TIMEOUT_S  = 10.0   # s
     # Timeout mesafeden türetilir. Sabit 15 s, 30 m için 2.0 m/s ORTALAMA
     # gerektiriyordu; ölçülen tepe hız 1.94 m/s olduğundan parkur ivmelenme
     # süresi sıfır olsa bile her koşuda timeout'la bitiyordu. Bu bir kontrol
     # parametresi değil, donanım arızasına karşı üst limit: en kötü hâlde
     # ortalama hızın MAX_HIZ'in %40'ı olduğu varsayılır (kalkış sürtünmesi +
-    # son 5 m'nin fren rampası).
-    TIMEOUT_S        = TOPLAM_MESAFE / (MAX_HIZ * 0.40)   # ≈ 39 s
+    # durma payı).
+    TIMEOUT_S        = (OLCUM_MESAFE + DURMA_MESAFE) / (MAX_HIZ * 0.40)
     CMD_HZ           = 10.0   # Hz
     # Odom donmuşsa (enkoder yok/kopuk) /odom sabit (0,0) yayınlar; dist hep 0
     # kalır, profil hep MAX_HIZ verir ve araç timeout'a kadar tam gaz gider.
@@ -870,6 +881,7 @@ class HizlanmaState(smach.State):
 
         self._lock     = threading.Lock()
         self._pos      = None   # (x, y) — son odom konumu
+        self._hiz      = 0.0    # m/s — durma payının izlenmesi için
         self._son_odom = 0.0    # wall-clock — son /odom mesajının geliş anı
 
         node.create_subscription(Odometry, ODOM_TOPIC, self._on_odom, 10)
@@ -880,7 +892,12 @@ class HizlanmaState(smach.State):
                 msg.pose.pose.position.x,
                 msg.pose.pose.position.y,
             )
+            self._hiz = msg.twist.twist.linear.x
             self._son_odom = time.time()
+
+    def _hiz_oku(self) -> float:
+        with self._lock:
+            return self._hiz
 
     def _odom_yasi(self) -> float:
         with self._lock:
@@ -911,7 +928,7 @@ class HizlanmaState(smach.State):
             return 'failed'
 
         self.node.get_logger().info(
-            f'[HIZLANMA] Başladı. Hedef: {self.TOPLAM_MESAFE:.0f}m @ {self.MAX_HIZ:.1f} m/s'
+            f'[HIZLANMA] Başladı. Hedef: {self.OLCUM_MESAFE:.0f}m @ {self.MAX_HIZ:.1f} m/s'
         )
 
         twist    = Twist()
@@ -980,17 +997,15 @@ class HizlanmaState(smach.State):
                 )
                 break
 
-            if dist >= self.TOPLAM_MESAFE:
+            if dist >= self.OLCUM_MESAFE:
                 self.node.get_logger().info(
-                    f'[HIZLANMA] {self.TOPLAM_MESAFE:.0f}m tamamlandı — fren.'
+                    f'[HIZLANMA] {self.OLCUM_MESAFE:.0f}m tamamlandı — fren.'
                 )
                 break
 
             # Hız profili — pure_logic.hizlanma_hiz_profili (test_birim.py
             # bu fonksiyonu doğrudan test eder).
-            hiz = hizlanma_hiz_profili(
-                dist, self.MAX_HIZ, self.TOPLAM_MESAFE, self.FREN_BASI_MESAFE,
-            )
+            hiz = hizlanma_hiz_profili(dist, self.MAX_HIZ, self.OLCUM_MESAFE)
 
             twist.linear.x  = hiz
             twist.angular.z = 0.0
@@ -1002,11 +1017,42 @@ class HizlanmaState(smach.State):
             )
             time.sleep(dt)
 
-        # Dur
-        twist.linear.x = 0.0
-        for _ in range(5):
+        # Durma payı — §6.11 bitiş çizgisinin ötesinde 10 m veriyor ve o pay
+        # içinde duramayan araca ceza yazıyor. Sıfır komutunu birkaç kez
+        # yayınlayıp çıkmak duruşu kimsenin izlemediği anlamına gelirdi:
+        # kontrol bir sonraki state'e geçer, gerçekleşen durma mesafesi hiç
+        # bilinmez ve ceza ancak hakem masasında öğrenilir.
+        twist.linear.x  = 0.0
+        twist.angular.z = 0.0
+        cizgi      = self._mesafe(baslangic)
+        durma_basi = time.time()
+        durum      = 'devam'
+
+        while rclpy.ok():
             self._cmd_pub.publish(twist)
-            time.sleep(0.05)
+            asilan = max(0.0, self._mesafe(baslangic) - cizgi)
+            durum  = durma_degerlendir(
+                asilan, self._hiz_oku(), self.DURMA_MESAFE,
+                self.DURMA_HIZ_ESIGI,
+            )
+            if durum != 'devam':
+                break
+            if time.time() - durma_basi > self.DURMA_TIMEOUT_S:
+                durum = 'butce_asildi'
+                break
+            time.sleep(dt)
+
+        if durum == 'butce_asildi':
+            self.node.get_logger().error(
+                f'[HIZLANMA] §6.11 durma payı aşıldı — {asilan:.1f}m/'
+                f'{self.DURMA_MESAFE:.0f}m, hız {self._hiz_oku():.2f} m/s. '
+                f'Ceza puanı riski.'
+            )
+        else:
+            self.node.get_logger().info(
+                f'[HIZLANMA] {asilan:.1f}m içinde durdu '
+                f'(pay {self.DURMA_MESAFE:.0f}m).'
+            )
 
         self.node.get_logger().info(f'[HIZLANMA] Tamamlandı → {sonuc}.')
         return sonuc

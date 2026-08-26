@@ -178,10 +178,21 @@ def imu_guvenlik_hiz(roll_deg: float, pitch_deg: float, batarya_yuzde: float,
                       roll_warn: float, roll_stop: float, roll_estop: float,
                       pitch_down: float, normal_max_hiz: float,
                       frenleme_hiz: float, bat_dusuk_yuzde: float,
-                      bat_kritik_yuzde: float, bat_dusuk_hiz: float) -> float:
+                      bat_kritik_yuzde: float, bat_dusuk_hiz: float,
+                      taban_hiz: float = 0.0) -> float:
     """
     imu_guvenlik.py._yayinla() ile birebir aynı karar ağacı.
     Roll/pitch/batarya durumuna göre güvenli azami hızı [m/s] döndürür.
+
+    taban_hiz kalkış sürtünmesi eşiğidir ve yalnız yan eğim rampasına
+    uygulanır: rampanın çıktısı sıfır ile taban arasında kalamaz. O aralık
+    aracın icra edemediği bir bölge — motor döner, araç kalkmaz, yan eğimin
+    ortasında duraksayıp bir daha hareket edemez. Ya işe yarayan bir hızla
+    ilerlenir ya da bilerek durulur.
+
+    Yokuş aşağı fren moduna uygulanmaz: orada kısıt kalkış değil hızı geri
+    tutmak, ve düşük komut daha çok frenlemek demek. Onu tabana yükseltmek
+    %45 inişte frenlemeyi azaltırdı.
     """
     roll_abs = abs(roll_deg)
 
@@ -192,6 +203,8 @@ def imu_guvenlik_hiz(roll_deg: float, pitch_deg: float, batarya_yuzde: float,
     elif roll_abs >= roll_warn:
         oran = 1.0 - (roll_abs - roll_warn) / (roll_stop - roll_warn)
         hiz = normal_max_hiz * 0.5 * max(0.0, oran)
+        if 0.0 < hiz < taban_hiz:
+            hiz = taban_hiz
     elif pitch_deg <= -pitch_down:
         hiz = frenleme_hiz
     else:
@@ -266,18 +279,38 @@ def stop_check(stop_var: bool, cooldown_bitis: float, now: float) -> bool:
 # 10. HizlanmaState Hız Profili (§6.11)
 # ─────────────────────────────────────────────────────────────────────────
 
-def hizlanma_hiz_profili(dist: float, max_hiz: float, toplam_mesafe: float,
-                          fren_basi_mesafe: float, min_hiz: float = 0.3) -> float:
+def hizlanma_hiz_profili(dist: float, max_hiz: float,
+                          olcum_mesafe: float) -> float:
     """
-    0..fren_basi_mesafe  → max_hiz
-    fren_basi..toplam    → doğrusal düşüş, min_hiz'in altına inmez
-                           (seri_kopru heartbeat timeout'unu engellemek için).
+    Şartname §6.11: 30 metre boyunca bitiş çizgisinin SONUNA KADAR ivmeli
+    gidilir; durma payı çizginin ötesinde ayrıca verilir. Ölçülen bölümün
+    içinde yavaşlamak, yalnız ilk altı takıma puan veren bir kalemde
+    sıralama kaybetmek demek.
+
+    Çizgide hız doğrudan sıfıra çekilir, rampa kurulmaz: fren zinciri
+    (fren_hedef_hesapla) yavaşlama isteğinin BÜYÜKLÜĞÜNE bakıyor ve durma
+    payına yayılmış yumuşak bir iniş eşiğin (FREN_IVME_ESIK_MIN) çok
+    altında kalıp freni hiç tetiklemiyor — araç yalnızca boşta yavaşlardı.
+    Sıfır komutu hem ivme terimini doyuruyor hem de hedef_hiz == 0 dalından
+    tam dur oranını taban yapıyor.
     """
-    if dist < fren_basi_mesafe:
-        return max_hiz
-    kalan = toplam_mesafe - dist
-    fren_uzunlugu = toplam_mesafe - fren_basi_mesafe
-    return max(min_hiz, max_hiz * (kalan / fren_uzunlugu))
+    return max_hiz if dist < olcum_mesafe else 0.0
+
+
+def durma_degerlendir(asilan_mesafe: float, hiz: float, butce: float,
+                       hiz_esigi: float = 0.05) -> str:
+    """
+    'durdu' | 'butce_asildi' | 'devam' — bitiş çizgisi geçildikten sonra.
+
+    Şartname §6.11 çizginin ötesinde 10 m emniyetli durma payı veriyor ve
+    o pay içinde duramayan araca ceza yazıyor. Duruşun gerçekten olup
+    olmadığı ölçülmezse ceza ancak hakem masasında öğrenilir.
+    """
+    if abs(hiz) <= hiz_esigi:
+        return 'durdu'
+    if asilan_mesafe >= butce:
+        return 'butce_asildi'
+    return 'devam' 
 
 
 # ─────────────────────────────────────────────────────────────────────────

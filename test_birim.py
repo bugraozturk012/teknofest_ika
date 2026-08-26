@@ -33,6 +33,7 @@ from teknofest_ika.otonomi.pure_logic import (  # noqa: E402
     ConsecutiveFrameFilter,
     stop_check,
     hizlanma_hiz_profili,
+    durma_degerlendir,
     DetectionsStore,
     fren_hedef_hesapla,
     fren_yumusat,
@@ -251,24 +252,42 @@ check("sınır   (dt=1.0)",         dt_gecerli(1.0),   False)
 
 # ─── 9. imu_guvenlik Hız Kısıt Mantığı (imu_guvenlik.py) ────────────────────
 print("\n=== 9. IMU Güvenlik Hız Kısıt Mantığı ===")
-WARN, STOP, ESTOP = 8.0, 15.0, 20.0
+WARN, STOP, ESTOP = 13.0, 15.0, 20.0
 PITCH_DOWN = 15.0
 NMAX, FREN, BAT_HIZ = 2.0, 0.4, 1.0
+TABAN = 0.45
+YAN_EGIM_DEG = math.degrees(math.atan(0.20))   # §6.5 %20 = 11,31°
 BAT_DUSUK, BAT_KRITIK = BATTERY_WARN_SOC, BATTERY_CRITICAL_SOC
 
 
-def guvenlik_hiz(roll_deg, pitch_deg, bat_pct_):
+def guvenlik_hiz(roll_deg, pitch_deg, bat_pct_, taban=TABAN):
     return imu_guvenlik_hiz(
         roll_deg, pitch_deg, bat_pct_,
         WARN, STOP, ESTOP, PITCH_DOWN, NMAX, FREN,
-        BAT_DUSUK, BAT_KRITIK, BAT_HIZ,
+        BAT_DUSUK, BAT_KRITIK, BAT_HIZ, taban,
     )
 
 
 check("düz zemin tam batarya",         guvenlik_hiz( 0,  0, 100), 2.0)
-check("8° roll → hız azaldı",          guvenlik_hiz( 8,  0, 100) < 2.0, True)
+check("13° roll → hız azaldı",         guvenlik_hiz(13,  0, 100) < 2.0, True)
 check("15° roll → dur",                guvenlik_hiz(15,  0, 100), 0.0)
 check("21° roll → estop + dur",        guvenlik_hiz(21,  0, 100), 0.0)
+
+# §6.5 zorunlu bir aşama: %20 yan eğimde hız kısılmamalı
+check("§6.5 %20 yan eğim → kısıtsız",  guvenlik_hiz(YAN_EGIM_DEG, 0, 100), 2.0)
+check("§6.5 eşiği WARN'ın altında",    YAN_EGIM_DEG < WARN, True)
+
+# Taban kelepçesi: sonuç 0 ile taban arasında kalamaz
+ara = [guvenlik_hiz(r, 0, 100) for r in
+       [13.5, 14.0, 14.2, 14.5, 14.7, 14.9]]
+check("rampa 0-taban aralığına düşmez", all(v == 0.0 or v >= TABAN for v in ara), True)
+check("rampa hâlâ azalıyor",           ara[0] > ara[-1] or ara[-1] == TABAN, True)
+check("taban devrede: 14.9° → 0.45",   guvenlik_hiz(14.9, 0, 100), TABAN)
+check("taban=0 iken eski davranış",    guvenlik_hiz(14.9, 0, 100, taban=0.0) < TABAN, True)
+check("dur eşiği kelepçeden etkilenmez", guvenlik_hiz(15.0, 0, 100), 0.0)
+# Kelepçe yalnız yan eğim rampasına ait: inişte düşük komut = çok fren
+check("yokuş aşağı kelepçelenmez",     guvenlik_hiz( 0, -25, 100), FREN)
+check("FRENLEME_HIZ zaten tabanın altı", FREN < TABAN, True)
 check("yokuş aşağı fren",             guvenlik_hiz( 0,-16, 100), FREN)
 check("düşük batarya %20",            guvenlik_hiz( 0,  0,  20), BAT_HIZ)
 check("kritik batarya %5",            guvenlik_hiz( 0,  0,   5), 0.0)
@@ -340,22 +359,35 @@ check("cooldown=0 + stop_var=False → False",
 print("\n=== 13. HizlanmaState Hız Profili (§6.11) ===")
 
 MAX_HIZ = 10.0
-TOPLAM_MESAFE = 30.0
-FREN_BASI_MESAFE = 25.0
+OLCUM_MESAFE = 30.0
+DURMA_MESAFE = 10.0
 
 
 def hizlanma_profili(dist):
-    return hizlanma_hiz_profili(dist, MAX_HIZ, TOPLAM_MESAFE, FREN_BASI_MESAFE)
+    return hizlanma_hiz_profili(dist, MAX_HIZ, OLCUM_MESAFE)
 
 
-check("dist=0m → max hız 10 m/s",                   hizlanma_profili(0.0),  10.0)
-check("dist=24.9m → max hız (eşik öncesi)",          hizlanma_profili(24.9), 10.0)
-check("dist=25m → hâlâ max hız (eşikte)",            hizlanma_profili(25.0), 10.0)
-check("dist=27.5m → 5 m/s (yarı fren)",              hizlanma_profili(27.5),  5.0)
-check("dist=29m → 2 m/s",                            hizlanma_profili(29.0),  2.0)
-check("dist=29.85m → 0.3 clamp",                     hizlanma_profili(29.85), 0.3)
-check("dist=30m → 0.3 clamp (heartbeat korur)",      hizlanma_profili(30.0),  0.3)
-check("hız hiçbir noktada negatif olmamalı",         hizlanma_profili(35.0) >= 0.0, True)
+# §6.11: ölçülen 30 m'nin SONUNA KADAR tam gaz — içeride yavaşlama yok
+check("dist=0m → tam gaz",              hizlanma_profili(0.0),  10.0)
+check("dist=25m → hâlâ tam gaz",        hizlanma_profili(25.0), 10.0)
+check("dist=29.9m → hâlâ tam gaz",      hizlanma_profili(29.9), 10.0)
+check("dist=30m → çizgide 0 (fren)",    hizlanma_profili(30.0),  0.0)
+check("dist=35m → 0",                   hizlanma_profili(35.0),  0.0)
+check("hız hiçbir noktada negatif değil",
+      all(hizlanma_profili(d) >= 0.0 for d in (0, 15, 29.9, 30, 40)), True)
+
+# §6.11 durma payı: çizgi sonrası 10 m içinde durulmalı
+def durma(asilan, hiz):
+    return durma_degerlendir(asilan, hiz, DURMA_MESAFE)
+
+
+check("hâlâ hızlı, pay içinde → devam",  durma(2.0, 1.5),  'devam')
+check("hız eşiğin altı → durdu",         durma(2.0, 0.02), 'durdu')
+check("tam sıfır → durdu",               durma(0.0, 0.0),  'durdu')
+check("pay dolmuş, hâlâ hızlı → aşıldı", durma(10.0, 0.8), 'butce_asildi')
+check("pay aşılmış → aşıldı",            durma(12.0, 0.8), 'butce_asildi')
+check("pay sınırında ama durmuş → durdu", durma(10.0, 0.01), 'durdu')
+check("geri kayma da hız sayılır",       durma(3.0, -0.5), 'devam')
 
 # ─── 14. DetectionsStore Veri Bütünlüğü (misyon_fsm.py) ─────────────────────
 print("\n=== 14. DetectionsStore Veri Bütünlüğü ===")

@@ -348,7 +348,15 @@ TARET_TILT_MAX =  45.0
 # IMU eşikleri (derece)
 IMU_PITCH_ENGEL_THRESHOLD = 5.0   # Dik engel — tork artışı
 IMU_PITCH_RAMP_THRESHOLD  = 15.0  # Rampa — yüksek tork
-IMU_ROLL_WARN_THRESHOLD   = 8.0   # Yan eğim — hız düşür
+# Şartname §6.5 %20 yan eğimden geçmeyi ZORUNLU tutuyor, §7.3 de aracın o
+# eğimde stabil olmasını istiyor. %20 = arctan(0.20) = 11,31°, yani uyarı
+# eşiği bunun altında kaldığı sürece zorunlu bir aşamada hız kısılır.
+IMU_ROLL_WARN_THRESHOLD   = 13.0  # Yan eğim — §6.5'in 11,31°'si + pay
+# ⚠️ Aşağıdaki iki eşik ÖLÇÜME BAĞLI, şu anki değerler devralınmış tahmindir.
+# Statik devrilme açısı  θ = arctan(iz_genişliği / (2 × ağırlık_merkezi_yük.))
+# formülüyle türetilir; iz genişliği §7.1 kapsamında hâlâ ölçülmedi (depoda
+# 0,50 / 0,67 / 0,900 diye üç değer var) ve ağırlık merkezi yüksekliği hiç
+# bilinmiyor. İkisi ölçülünce buradan yeniden hesaplanacak.
 IMU_ROLL_STOP_THRESHOLD   = 15.0  # Yan eğim — dur
 IMU_ROLL_ESTOP_THRESHOLD  = 20.0  # Devrilme — E-STOP
 IMU_PITCH_DOWN_THRESHOLD  = 15.0  # Yokuş aşağı fren modu

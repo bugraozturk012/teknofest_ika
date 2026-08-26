@@ -6,12 +6,17 @@ IMU roll/pitch değerlerini izleyerek /speed_limit topic'ine
 hız sınırı yayınlar. terrain_adapter bu sınırı Nav2'ye uygular.
 
 Kurallar:
-  |roll| > 8°  → hızı doğrusal düşür (8°=yarı hız, 15°=dur)
-  |roll| > 15° → DUR (0 m/s)
-  pitch < -15° → yokuş aşağı fren modu (0.4 m/s)
-  diğer        → normal hız (NORMAL_MAX_HIZ)
+  |roll| > WARN  → hızı doğrusal düşür (WARN..STOP arası rampa)
+  |roll| > STOP  → DUR (0 m/s)
+  |roll| > ESTOP → /e_stop/force — devrilme
+  pitch < -PITCH_DOWN → yokuş aşağı fren modu (FRENLEME_HIZ)
+  diğer          → normal hız (NORMAL_MAX_HIZ)
 
-Eşikler topics.IMU_ROLL_WARN/STOP/ESTOP_THRESHOLD ile tanımlı.
+Rampa çıktısı sıfır ile TABAN_HIZ arasında bir değer alamaz; o aralık
+aracın kalkamadığı bölge, komut verilse de hareket üretmez.
+
+Eşikler topics.IMU_ROLL_WARN/STOP/ESTOP_THRESHOLD ile tanımlı; WARN
+şartname §6.5'in zorunlu kıldığı %20 yan eğimin (11,31°) üstündedir.
 """
 
 import rclpy
@@ -29,8 +34,18 @@ from teknofest_ika.otonomi.topics import (
 )
 from teknofest_ika.otonomi.pure_logic import quat_to_roll_pitch_deg, imu_guvenlik_hiz
 
+# Rampanın referans hızı. Aracın otonomdaki gerçek tavanı 0.90 (arazi
+# profili + velocity_smoother), yani bu değer nominalden yüksek ve kısıtlama
+# yazılı eşikten daha geç bindirmeye başlıyor. İkisi birbirine bağlı: bu
+# sayıyı gerçek tavana çekmek rampayı aşağı kaydırır ve yan eğimde komutu
+# taban hızın altına iter. Eşiklerle birlikte, ölçüm geldikten sonra
+# yeniden ele alınacak.
 NORMAL_MAX_HIZ    = 2.0   # [m/s]
 FRENLEME_HIZ      = 0.4   # [m/s]
+# Kalkış sürtünmesi tabanı — sahada ölçüldü, nav2_params.yaml'daki
+# min_approach_linear_velocity ve regulated_linear_scaling_min_speed ile
+# aynı değer. Rampa sıfır ile bu değer arasında komut üretemez.
+TABAN_HIZ         = 0.45  # [m/s]
 YAYINLAMA_HZ      = 10.0
 
 # Batarya eşikleri (8S LiPo — %100=33.6V, %0=28.0V) — topics.py'den merkezi
@@ -107,6 +122,7 @@ class ImuGuvenlik(Node):
             IMU_ROLL_ESTOP_THRESHOLD, IMU_PITCH_DOWN_THRESHOLD,
             NORMAL_MAX_HIZ, FRENLEME_HIZ,
             BATARYA_DUSUK_YUZDE, BATARYA_KRITIK_YUZDE, BATARYA_DUSUK_HIZ,
+            TABAN_HIZ,
         )
 
         if roll_abs >= IMU_ROLL_STOP_THRESHOLD and not devrilme:
