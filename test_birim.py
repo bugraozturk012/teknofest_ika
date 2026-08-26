@@ -34,6 +34,9 @@ from teknofest_ika.otonomi.pure_logic import (  # noqa: E402
     stop_check,
     hizlanma_hiz_profili,
     durma_degerlendir,
+    tarama_yan_mesafe,
+    koridor_sapmasi,
+    aci_sarmala,
     DetectionsStore,
     fren_hedef_hesapla,
     fren_yumusat,
@@ -388,6 +391,81 @@ check("pay dolmuş, hâlâ hızlı → aşıldı", durma(10.0, 0.8), 'butce_asil
 check("pay aşılmış → aşıldı",            durma(12.0, 0.8), 'butce_asildi')
 check("pay sınırında ama durmuş → durdu", durma(10.0, 0.01), 'durdu')
 check("geri kayma da hız sayılır",       durma(3.0, -0.5), 'devam')
+
+# ─── 13b. §6.9 Koridor Ortalaması (misyon_fsm.KoridorIzleyici) ──────────────
+print("\n=== 13b. §6.9 Koridor Ortalaması ===")
+
+KORIDOR = 3.0
+LIDAR_YAW = 1.6284          # 93,3° — LiDAR gövdeye dönük monte
+
+
+def _tarama(sol_m, sag_m, n=360):
+    """Sol/sağ duvarı verilen mesafede olan yapay bir tarama üretir.
+
+    Araç ekseninde ±90°, LiDAR çerçevesine kaydırılmış hâlde doldurulur;
+    böylece test montaj dönüklüğünü de kapsar.
+    """
+    artis = 2.0 * math.pi / n
+    aci_min = -math.pi
+    sol_c = aci_sarmala(math.pi / 2 - LIDAR_YAW)
+    sag_c = aci_sarmala(-math.pi / 2 - LIDAR_YAW)
+    r = []
+    for i in range(n):
+        aci = aci_min + i * artis
+        if abs(aci_sarmala(aci - sol_c)) <= 0.26:
+            r.append(sol_m)
+        elif abs(aci_sarmala(aci - sag_c)) <= 0.26:
+            r.append(sag_m)
+        else:
+            r.append(float('inf'))
+    return r, aci_min, artis
+
+
+def olc(sol_m, sag_m):
+    r, amin, art = _tarama(sol_m, sag_m)
+    sol = tarama_yan_mesafe(r, amin, art, aci_sarmala(math.pi/2 - LIDAR_YAW),
+                            0.26, 0.05, 12.0)
+    sag = tarama_yan_mesafe(r, amin, art, aci_sarmala(-math.pi/2 - LIDAR_YAW),
+                            0.26, 0.05, 12.0)
+    return koridor_sapmasi(sol, sag, KORIDOR)
+
+
+# Açı sarması: sağ pencere ±180° civarına düşüyor, düz çıkarma onu böler
+check("sarmalama ±pi",       round(aci_sarmala(math.pi + 0.1), 4),
+                             round(-math.pi + 0.1, 4))
+check("sağ pencere sarmalı", abs(aci_sarmala(-math.pi/2 - LIDAR_YAW)) > math.pi/2, True)
+
+sapma, durum = olc(1.5, 1.5)
+check("tam ortada → sapma 0",   round(sapma, 3), 0.0)
+check("tam ortada → geçerli",   durum, 'gecerli')
+
+sapma, durum = olc(2.0, 1.0)
+check("sağa kaymış → + sapma",  round(sapma, 3), 0.5)
+check("sağa kayma geçerli",     durum, 'gecerli')
+
+sapma, durum = olc(1.0, 2.0)
+check("sola kaymış → − sapma",  round(sapma, 3), -0.5)
+
+# Bir duvar yoksa ölçüm koridora ait değildir — sapma diye raporlanmamalı
+sapma, durum = olc(1.5, 9.0)
+check("duvar yok → koridor_yok", durum, 'koridor_yok')
+check("koridor_yok → sapma 0",   sapma, 0.0)
+
+check("hiç ışın yok → olcum_yok",
+      koridor_sapmasi(None, 1.5, KORIDOR)[1], 'olcum_yok')
+check("boş tarama → None",
+      tarama_yan_mesafe([], -math.pi, 0.01, 0.0, 0.26, 0.05, 12.0), None)
+check("artış 0 → None",
+      tarama_yan_mesafe([1.0], -math.pi, 0.0, 0.0, 0.26, 0.05, 12.0), None)
+
+# Menzil dışı ve NaN ışınlar pencereye girmemeli
+check("menzil dışı elenir",
+      tarama_yan_mesafe([99.0, 2.0, 99.0], -0.02, 0.02, 0.0, 0.26, 0.05, 12.0), 2.0)
+check("NaN elenir",
+      tarama_yan_mesafe([float('nan'), 2.0], -0.02, 0.02, 0.0, 0.26, 0.05, 12.0), 2.0)
+# Medyan: tek aykırı ışın sonucu kaydırmamalı
+check("medyan aykırıya direnir",
+      tarama_yan_mesafe([1.5, 1.5, 0.2], -0.02, 0.02, 0.0, 0.26, 0.05, 12.0), 1.5)
 
 # ─── 14. DetectionsStore Veri Bütünlüğü (misyon_fsm.py) ─────────────────────
 print("\n=== 14. DetectionsStore Veri Bütünlüğü ===")

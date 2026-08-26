@@ -297,6 +297,70 @@ def hizlanma_hiz_profili(dist: float, max_hiz: float,
     return max_hiz if dist < olcum_mesafe else 0.0
 
 
+def aci_sarmala(aci: float) -> float:
+    """Açıyı (-pi, pi] aralığına indirir."""
+    return math.atan2(math.sin(aci), math.cos(aci))
+
+
+def tarama_yan_mesafe(ranges, angle_min: float, angle_increment: float,
+                       merkez_aci: float, yarim_pencere: float,
+                       menzil_min: float, menzil_max: float):
+    """
+    Taramada `merkez_aci` çevresindeki pencerenin medyan mesafesi [m],
+    geçerli ışın yoksa None.
+
+    Medyan alınıyor çünkü tek bir ışın bariyerdeki boşluğa, direğe ya da
+    yağmura denk gelebiliyor; ortalama bu aykırı değerlerden kayar.
+    Menzil dışı ve NaN ışınlar pencereye hiç girmez.
+
+    Pencere karşılaştırması sarmalı yapılıyor: LiDAR gövdeye 93,3° dönük
+    monte, dolayısıyla aracın sağı tarama çerçevesinde ±180° civarına
+    düşüyor ve düz çıkarma o sınırda pencereyi ikiye böler.
+    """
+    if angle_increment == 0.0 or not ranges:
+        return None
+
+    gecerli = []
+    for i, r in enumerate(ranges):
+        aci = angle_min + i * angle_increment
+        if abs(aci_sarmala(aci - merkez_aci)) > yarim_pencere:
+            continue
+        if r != r:                      # NaN
+            continue
+        if r < menzil_min or r > menzil_max:
+            continue
+        gecerli.append(r)
+
+    if not gecerli:
+        return None
+    gecerli.sort()
+    orta = len(gecerli) // 2
+    if len(gecerli) % 2:
+        return gecerli[orta]
+    return (gecerli[orta - 1] + gecerli[orta]) / 2.0
+
+
+def koridor_sapmasi(sol, sag, koridor_genisligi: float,
+                     tolerans: float = 0.6):
+    """
+    (sapma, durum) — sapma > 0 ise araç koridorun SAĞINA kaymıştır.
+
+    Şartname §6.9 tümsekli bölümde parkurun ortalanmasını istiyor; §6.1'e
+    göre koridor 3 m ve iki yanı sürekli bariyerli, bariyerler 80 ± 10 cm
+    yüksekliğinde — yani LiDAR düzleminde (55 cm) iki duvar da görünüyor.
+
+    sol + sağ toplamı koridor genişliğini tutmuyorsa ölçüm koridora ait
+    değildir: bir duvar görülmemiş, aşama açıklığına ya da bir yan yola
+    denk gelinmiştir. O okuma sapma diye raporlanırsa aracı yanlış yöne
+    çeker, bu yüzden 'koridor_yok' ile ayrılır.
+    """
+    if sol is None or sag is None:
+        return 0.0, 'olcum_yok'
+    if abs((sol + sag) - koridor_genisligi) > tolerans:
+        return 0.0, 'koridor_yok'
+    return (sol - sag) / 2.0, 'gecerli'
+
+
 def durma_degerlendir(asilan_mesafe: float, hiz: float, butce: float,
                        hiz_esigi: float = 0.05) -> str:
     """

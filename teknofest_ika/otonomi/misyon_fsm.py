@@ -77,6 +77,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from std_msgs.msg import Bool, Float32, String, UInt8
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import LaserScan
 from nav2_msgs.action import NavigateToPose
 
 import smach
@@ -90,16 +91,114 @@ from teknofest_ika.otonomi.topics import (
     MISSION_STATUS_TOPIC, MISYON_WP_INDEX_TOPIC,
     CMD_VEL_TOPIC, ODOM_TOPIC, RAMP_STOP_DURATION,
     MISYON_KALAN_SURE_TOPIC, KOSU_SURESI_S, PAS_HAKKI, PAS_GECILEMEZ,
+    SCAN_FILTERED_TOPIC, ENGEBELI_SAPMA_TOPIC, KORIDOR_GENISLIGI_M,
+    KORIDOR_SAPMA_UYARI_M, KORIDOR_TOPLAM_TOLERANS, KORIDOR_PENCERE_RAD,
 )
 from teknofest_ika.otonomi.pure_logic import (
     DetectionsStore, stop_check as _stop_check_pure, hizlanma_hiz_profili,
-    durma_degerlendir,
+    durma_degerlendir, tarama_yan_mesafe, koridor_sapmasi, aci_sarmala,
     kosu_butcesi, pas_verilebilir as _pas_verilebilir_pure,
 )
 
 # §6.10: dik eğim çıkış/iniş noktalarında STOP tabelası kaçırılsa bile
 # zorunlu 2s bekleme uygulanması gereken waypoint etiketleri.
 DIK_EGIM_ETIKETLERI = ('DIK_EGIM_GIRIS', 'DIK_EGIM_CIKIS', 'DIK_EGIM')
+
+# §6.9 koridor ortalamasının izlendiği aşama.
+ENGEBELI_ETIKET = 'ENGEBELİ_ARAZİ'
+
+
+class KoridorIzleyici:
+    """
+    §6.9: tümsekli bölüm geçilirken parkurun ortalanması gerekiyor, aracın
+    tamamının aynı tümsek dizisi üzerinden geçirilmesi §9'da −5 puan.
+
+    Tümsekler 20 cm taban / 5 cm yükseklik (Şekil 4) — LiDAR düzlemi zeminden
+    55 cm'de olduğu için tümsekler taramada HİÇ görünmez, tekerlek yerleşimi
+    planlanamaz. Ölçülebilen ve kuralın ilk cümlesinin istediği şey koridorda
+    ortalanmak; §6.1 koridoru 3 m ve iki yanı 80 ± 10 cm bariyerli, iki duvar
+    da tarama düzleminde.
+
+    Bu sınıf yalnız ÖLÇER, direksiyona karışmaz. Gereksinim bugün sistemde
+    görünmüyor: ne loglanıyor ne panoda var, dolayısıyla ortalanıp
+    ortalanmadığımız ancak hakem kağıdından öğrenilirdi. Düzeltici katmanın
+    gerekip gerekmediğine buradan çıkan ölçümle karar verilecek.
+    """
+
+    def __init__(self, node, lidar_yaw_rad: float = 1.6284):
+        self.node = node
+        self._pub = node.create_publisher(Float32, ENGEBELI_SAPMA_TOPIC, 10)
+
+        # LiDAR gövdeye dönük monte; düzeltme TF'te uygulanıyor, ham taramada
+        # değil. Araç ekseni açıları bu yüzden tarama çerçevesine kaydırılır.
+        self._sol_merkez = aci_sarmala(math.pi / 2.0 - lidar_yaw_rad)
+        self._sag_merkez = aci_sarmala(-math.pi / 2.0 - lidar_yaw_rad)
+
+        self._lock   = threading.Lock()
+        self._aktif  = False
+        self._ornek  = []      # geçerli sapmalar [m]
+        self._atlanan = 0      # koridor okunamayan tarama sayısı
+
+        node.create_subscription(LaserScan, SCAN_FILTERED_TOPIC, self._on_scan, 10)
+
+    def basla(self):
+        with self._lock:
+            self._aktif   = True
+            self._ornek   = []
+            self._atlanan = 0
+
+    def _on_scan(self, msg: LaserScan):
+        with self._lock:
+            if not self._aktif:
+                return
+        sol = tarama_yan_mesafe(
+            list(msg.ranges), msg.angle_min, msg.angle_increment,
+            self._sol_merkez, KORIDOR_PENCERE_RAD,
+            msg.range_min, msg.range_max,
+        )
+        sag = tarama_yan_mesafe(
+            list(msg.ranges), msg.angle_min, msg.angle_increment,
+            self._sag_merkez, KORIDOR_PENCERE_RAD,
+            msg.range_min, msg.range_max,
+        )
+        sapma, durum = koridor_sapmasi(
+            sol, sag, KORIDOR_GENISLIGI_M, KORIDOR_TOPLAM_TOLERANS,
+        )
+        with self._lock:
+            if durum != 'gecerli':
+                self._atlanan += 1
+                return
+            self._ornek.append(sapma)
+        self._pub.publish(Float32(data=float(sapma)))
+        if abs(sapma) > KORIDOR_SAPMA_UYARI_M:
+            yon = 'sağa' if sapma > 0 else 'sola'
+            self.node.get_logger().warn(
+                f'[KORİDOR] §6.9 merkezden {abs(sapma):.2f}m {yon} kaymış '
+                f'(sol {sol:.2f}m / sağ {sag:.2f}m).',
+                throttle_duration_sec=2.0,
+            )
+
+    def bitir(self):
+        """Aşama sonunda özet loglar ve izlemeyi kapatır."""
+        with self._lock:
+            self._aktif = False
+            ornek   = list(self._ornek)
+            atlanan = self._atlanan
+
+        if not ornek:
+            self.node.get_logger().warn(
+                f'[KORİDOR] §6.9 hiç geçerli koridor ölçümü alınamadı '
+                f'({atlanan} tarama elendi) — ortalanma doğrulanamadı.'
+            )
+            return
+
+        ortalama = sum(ornek) / len(ornek)
+        enbuyuk  = max(ornek, key=abs)
+        self.node.get_logger().info(
+            f'[KORİDOR] §6.9 özet: {len(ornek)} ölçüm, ortalama sapma '
+            f'{ortalama:+.2f}m, en büyük {enbuyuk:+.2f}m, '
+            f'{atlanan} tarama elendi (+ sağa kayma).'
+        )
 
 
 # DetectionsStore → teknofest_ika.otonomi.pure_logic (rclpy bağımsız, DRY +
@@ -394,6 +493,8 @@ class NavigateState(smach.State):
         self._pas_kullanildi       = 0
         self._wp_index_pub         = node.create_publisher(UInt8, MISYON_WP_INDEX_TOPIC, 10)
         self._stop_cooldown_bitis  = 0.0   # §6.10: son STOP sonrası tekrar tetiklenme engeli
+        # §6.9 koridor ortalaması — yalnız ölçer, direksiyona karışmaz.
+        self._koridor              = KoridorIzleyici(node)
 
     def _stop_check(self) -> bool:
         """Nav2Client.go_to() callback'i: True dönünce goal iptal edilir (§6.10 STOP)."""
@@ -479,69 +580,84 @@ class NavigateState(smach.State):
                 f'{self.stage_timeout:.0f}s → {asama_butcesi:.0f}s kırpıldı.'
             )
         wp_deadline    = time.time() + asama_butcesi
-        while True:
-            kalan = wp_deadline - time.time()
-            if kalan <= 0.0:
-                result = 'timeout'
-            else:
-                result = self.nav.go_to(
-                    wp['x'], wp['y'], wp.get('yaw', 0.0),
-                    timeout_sec=kalan,
-                    stop_check_fn=(self._stop_check
-                                   if stop_sayaci < self.MAX_STOP else None),
-                )
 
-            if result == 'stop_requested':
-                stop_sayaci += 1
-                self.node.get_logger().info(
-                    f'[NAVIGATE] §6.10 STOP işareti ({stop_sayaci}/{self.MAX_STOP}) '
-                    '— araç durduruluyor, 2s bekleniyor.'
-                )
-                # Cooldown: aynı STOP işaretinin hemen tekrar tetiklenmesini engeller
-                # 3s: rampada üst-STOP ile alt-STOP arası için yeterli
-                self._stop_cooldown_bitis = time.time() + 3.0
-                self.det_store.update_field('stop_var', False)
-                stop_uygulandi = True
-                # Zorunlu bekleme navigasyon süresinden sayılmaz.
-                wp_deadline += RAMP_STOP_DURATION
-                deadline_stop = time.time() + RAMP_STOP_DURATION
-                while time.time() < deadline_stop:
-                    if self.det_store.get_field('e_stop', False):
-                        self.node.get_logger().error('[NAVIGATE] E-STOP — STOP bekleme iptal.')
-                        return 'failed'
-                    time.sleep(0.1)
-                self.node.get_logger().info('[NAVIGATE] §6.10 STOP bekleme tamam — devam ediliyor.')
-                if stop_sayaci >= self.MAX_STOP:
-                    self.node.get_logger().warn(
-                        f'[NAVIGATE] {label}: STOP sınırı ({self.MAX_STOP}) doldu — '
-                        'bu waypoint için STOP tespiti devre dışı, dur-kalk döngüsü kesildi.'
+        # §6.9: tümsekli bölümde ortalanma izlenir. go_to() bloklayıcı, ölçüm
+        # spin thread'indeki tarama callback'inde birikir.
+        izleniyor = (label == ENGEBELI_ETIKET)
+        if izleniyor:
+            self._koridor.basla()
+
+        try:
+            while True:
+                kalan = wp_deadline - time.time()
+                if kalan <= 0.0:
+                    result = 'timeout'
+                else:
+                    result = self.nav.go_to(
+                        wp['x'], wp['y'], wp.get('yaw', 0.0),
+                        timeout_sec=kalan,
+                        stop_check_fn=(self._stop_check
+                                       if stop_sayaci < self.MAX_STOP else None),
                     )
-                continue
 
-            if result == 'success':
-                break
+                if result == 'stop_requested':
+                    stop_sayaci += 1
+                    self.node.get_logger().info(
+                        f'[NAVIGATE] §6.10 STOP işareti ({stop_sayaci}/{self.MAX_STOP}) '
+                        '— araç durduruluyor, 2s bekleniyor.'
+                    )
+                    # Cooldown: aynı STOP işaretinin hemen tekrar tetiklenmesini engeller
+                    # 3s: rampada üst-STOP ile alt-STOP arası için yeterli
+                    self._stop_cooldown_bitis = time.time() + 3.0
+                    self.det_store.update_field('stop_var', False)
+                    stop_uygulandi = True
+                    # Zorunlu bekleme navigasyon süresinden sayılmaz.
+                    wp_deadline += RAMP_STOP_DURATION
+                    deadline_stop = time.time() + RAMP_STOP_DURATION
+                    while time.time() < deadline_stop:
+                        if self.det_store.get_field('e_stop', False):
+                            self.node.get_logger().error('[NAVIGATE] E-STOP — STOP bekleme iptal.')
+                            return 'failed'
+                        time.sleep(0.1)
+                    self.node.get_logger().info('[NAVIGATE] §6.10 STOP bekleme tamam — devam ediliyor.')
+                    if stop_sayaci >= self.MAX_STOP:
+                        self.node.get_logger().warn(
+                            f'[NAVIGATE] {label}: STOP sınırı ({self.MAX_STOP}) doldu — '
+                            'bu waypoint için STOP tespiti devre dışı, dur-kalk döngüsü kesildi.'
+                        )
+                    continue
 
-            # 'failed' veya 'timeout'
-            if self._pas_verilebilir(wp, label):
-                self._pas_kullanildi += 1
-                bedel = float(wp.get('pas_puan', 0.0))
-                self.node.get_logger().warn(
-                    f'[NAVIGATE] {label} başarısız — pas geçiliyor '
-                    f'({self._pas_kullanildi}/{PAS_HAKKI} hak). '
-                    f'§9 bedeli: -{bedel:.0f} puan. Araç bir sonraki hedefe '
-                    'sürüyor; geçerli bir pas için aşama sonuna ELLE '
-                    'taşınması gerekir.'
-                )
-                userdata.wp_index  = idx + 1
-                userdata.current_wp = wp
-                return 'next_waypoint'
-            else:
-                self.node.get_logger().warn(
-                    f'[NAVIGATE] {label} başarısız — hata kurtarma.'
-                )
-                return 'failed'
+                if result == 'success':
+                    break
 
-        # ── Varış sonrası özel mantık ─────────────────────────────────
+                # 'failed' veya 'timeout'
+                if self._pas_verilebilir(wp, label):
+                    self._pas_kullanildi += 1
+                    bedel = float(wp.get('pas_puan', 0.0))
+                    self.node.get_logger().warn(
+                        f'[NAVIGATE] {label} başarısız — pas geçiliyor '
+                        f'({self._pas_kullanildi}/{PAS_HAKKI} hak). '
+                        f'§9 bedeli: -{bedel:.0f} puan. Araç bir sonraki hedefe '
+                        'sürüyor; geçerli bir pas için aşama sonuna ELLE '
+                        'taşınması gerekir.'
+                    )
+                    userdata.wp_index  = idx + 1
+                    userdata.current_wp = wp
+                    return 'next_waypoint'
+                else:
+                    self.node.get_logger().warn(
+                        f'[NAVIGATE] {label} başarısız — hata kurtarma.'
+                    )
+                    return 'failed'
+
+            # ── Varış sonrası özel mantık ─────────────────────────────────
+
+        finally:
+            # Hangi yoldan çıkılırsa çıkılsın izleme kapanmalı: açık
+            # kalırsa sonraki aşamanın taramaları da §6.9 ölçümüne
+            # yazılır ve özet yanlış aşamayı anlatır.
+            if izleniyor:
+                self._koridor.bitir()
 
         # §6.10 yedek tetikleyici: dik eğim giriş/çıkış waypoint'ine
         # YOLO'nun STOP tabelasını kaçırması nedeniyle hiç STOP

@@ -412,6 +412,22 @@ E_STOP_GPIO_FAULT_TOPIC = "/e_stop/gpio_fault"
 # davranış bozulunca fark ediliyor.
 SENSOR_FAULT_TOPIC = "/sensor/fault"   # String (arıza açıklaması)
 
+# §6.9 tümsekli bölümde parkurun ortalanması isteniyor; aracın tamamının aynı
+# tümsek dizisi üzerinden geçirilmesi §9'da −5 puan. Tümsek 20 cm taban /
+# 5 cm yükseklik (Şekil 4) — LiDAR düzlemi zeminden 55 cm'de olduğu için
+# tümseklerin kendisi HİÇ görünmüyor, tekerlek yerleştirme planlanamıyor.
+# Ölçülebilen ve kuralın ilk cümlesinin istediği şey koridorda ortalanmak:
+# §6.1 koridoru 3 m ve iki yanı 80 ± 10 cm bariyerli, ikisi de taramada var.
+ENGEBELI_SAPMA_TOPIC = "/engebeli/sapma"   # Float32 [m], + ise sağa kaymış
+
+KORIDOR_GENISLIGI_M     = 3.0    # §6.1 yol genişliği
+KORIDOR_SAPMA_UYARI_M   = 0.50   # bu kadar kayma sürekliyse loga uyarı
+KORIDOR_TOPLAM_TOLERANS = 0.60   # sol+sağ bu kadar sapabilir, fazlası koridor değil
+# Yan pencerelerin merkezi ±90°, LiDAR'ın gövdeye göre montaj dönüklüğü
+# (LIDAR_YAW_RAD) taramada değil TF'te uygulandığı için buradaki açılar
+# tarama çerçevesinde okunur ve montaj açısıyla kaydırılır.
+KORIDOR_PENCERE_RAD     = 0.26   # ±15° — duvarın düz kısmını yakalar
+
 # Mod yönetimi
 MOD_KOMUT_TOPIC   = "/mod/komut"    # yazılımsal/GCS mod değiştirme (UInt8)
 MOD_AKTIF_TOPIC   = "/mod/aktif"    # geçerli mod (UInt8)

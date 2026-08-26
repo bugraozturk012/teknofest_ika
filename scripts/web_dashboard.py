@@ -67,7 +67,7 @@ from teknofest_ika.otonomi.topics import (
     MAP_IMAGE_TOPIC, DEPTH_IMAGE_TOPIC, SCAN_TOPIC,
     RC_INPUT_TOPIC, MUX_CMD_VEL_TOPIC, ODOM_TOPIC, ENKODER_HAM_TOPIC,
     YOLO_RAW_TOPIC, MISYON_KALAN_SURE_TOPIC, KAYIT_DURUMU_TOPIC,
-    SENSOR_FAULT_TOPIC, E_STOP_GPIO_FAULT_TOPIC,
+    SENSOR_FAULT_TOPIC, E_STOP_GPIO_FAULT_TOPIC, ENGEBELI_SAPMA_TOPIC,
 )
 
 # vision_msgs kurulu değilse tespit sayacı sessizce kapanır; panonun tamamı
@@ -142,6 +142,7 @@ SINYAL_KATALOG = [
     ('engel',         'engel',          'Algı',     'm',      '/scan en yakın ışın'),
     ('tespit',        'tespit',         'Algı',     'adet',   '/ika/detections'),
     ('fps',           'fps',            'Algı',     'Hz',     'ön kamera kare hızı'),
+    ('sapma',         'koridor_sapma',  'Algı',     'm',      '/engebeli/sapma'),
 
     ('wp',            'wp_aktif',       'Sistem',   'nokta',  '/misyon/wp_index'),
     ('kalan_sure',    'kalan_sure',     'Sistem',   'sn',     '/misyon/kalan_sure'),
@@ -242,6 +243,9 @@ class WebDashboardNode(Node):
         self.create_subscription(String, SENSOR_FAULT_TOPIC, self._ariza, 10)
         self.create_subscription(Bool, E_STOP_GPIO_FAULT_TOPIC, self._gpio_ariza, 10)
         self.create_subscription(Bool, KAYIT_DURUMU_TOPIC, self._kayit, 10)
+        # §6.9 koridor ortalaması — yalnız tümsek aşamasında yayınlanıyor,
+        # diğer zamanlarda bayatlayıp null'a düşer.
+        self.create_subscription(Float32, ENGEBELI_SAPMA_TOPIC, self._sapma, 10)
 
         self.create_subscription(Image, CAMERA_IMAGE_TOPIC,
                                  lambda m: self._ham_kare('on', m), be)
@@ -363,6 +367,10 @@ class WebDashboardNode(Node):
     def _ariza(self, m):     ortak.sensor['ariza'] = m.data; self._dokun()
     def _gpio_ariza(self, m): ortak.sensor['gpio_ariza'] = m.data; self._dokun()
     def _kayit(self, m):     ortak.sensor['kayit'] = m.data; self._dokun()
+
+    def _sapma(self, m):
+        ortak.ham_yaz('sapma', round(float(m.data), 2))
+        self._dokun()
 
     def _kalan(self, m):
         ortak.ham_yaz('kalan_sure', round(float(m.data), 1))
@@ -1087,6 +1095,7 @@ tr.kaynaksiz td.kDeg{color:var(--y3)}
           <div class=wjSat><span>En yakın engel</span><span data-sat=engel>—</span></div>
           <div class=wjSat><span>Tespit</span><span data-sat=tespit>—</span></div>
           <div class=wjSat><span>Kamera</span><span data-sat=fps>—</span></div>
+          <div class=wjSat><span>Koridor sapması</span><span data-sat=sapma>—</span></div>
         </div></div>
       <div class=wj><div class=wjUst><h3>Sürüş</h3><span class=ek>otonom komut</span></div>
         <div class=wjGov>
@@ -1127,7 +1136,7 @@ const OND={'m/s':2,'V':2,'\\u00b0':1,'m':2,'\\u00b5s':0,'sayım':0,'adet':0,
 // Eşikler: [turuncu, kırmızı]. Yalnız ÖLÇÜLMÜŞ ya da şartnameden bilinen
 // sınırlar var; tahmini eşik konmadı — renk uydurmak sayıyı çöpe çevirir.
 const ESIK={yatis:[8,15],yunuslama:[8,15],hiz:[2.0,3.0],sicaklik:[70,80],
-            cpu:[85,95],gpu:[85,95],yas:[1.0,3.0]};
+            cpu:[85,95],gpu:[85,95],yas:[1.0,3.0],sapma:[0.30,0.50]};
 function ond(bir){const o=OND[bir];return o===undefined?2:o}
 function biçim(v,bir){
   if(v===null||v===undefined) return '—';
