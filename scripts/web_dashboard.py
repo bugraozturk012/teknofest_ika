@@ -52,7 +52,8 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
-from std_msgs.msg import Bool, UInt8, String, Float32MultiArray, UInt16MultiArray
+from std_msgs.msg import (Bool, UInt8, String, Float32,
+                          Float32MultiArray, UInt16MultiArray)
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import BatteryState, Imu, Image, CompressedImage, LaserScan
@@ -65,7 +66,8 @@ from teknofest_ika.otonomi.topics import (
     CAMERA_IMAGE_TOPIC, CAMERA_TARET_TOPIC, YOLO_RAW_DEBUG_TOPIC,
     MAP_IMAGE_TOPIC, DEPTH_IMAGE_TOPIC, SCAN_TOPIC,
     RC_INPUT_TOPIC, MUX_CMD_VEL_TOPIC, ODOM_TOPIC, ENKODER_HAM_TOPIC,
-    YOLO_RAW_TOPIC,
+    YOLO_RAW_TOPIC, MISYON_KALAN_SURE_TOPIC, KAYIT_DURUMU_TOPIC,
+    SENSOR_FAULT_TOPIC, E_STOP_GPIO_FAULT_TOPIC,
 )
 
 # vision_msgs kurulu değilse tespit sayacı sessizce kapanır; panonun tamamı
@@ -142,6 +144,7 @@ SINYAL_KATALOG = [
     ('fps',           'fps',            'Algı',     'Hz',     'ön kamera kare hızı'),
 
     ('wp',            'wp_aktif',       'Sistem',   'nokta',  '/misyon/wp_index'),
+    ('kalan_sure',    'kalan_sure',     'Sistem',   'sn',     '/misyon/kalan_sure'),
     ('cpu',           'cpu',            'Sistem',   '%',      '/proc/stat'),
     ('gpu',           'gpu',            'Sistem',   '%',      'sysfs gpu load'),
     ('sicaklik',      'sicaklik',       'Sistem',   '°C',     'sysfs thermal_zone'),
@@ -183,6 +186,7 @@ class Ortak:
             'batarya': -1.0, 'voltaj': 0.0, 'akim': 0.0,
             'roll': 0.0, 'pitch': 0.0, 'hiz': 0.0, 'wp': 0,
             'targeting': '—', 'shoot': False,
+            'ariza': '', 'gpio_ariza': False, 'kayit': False,
         }
         self.son_ros = 0.0   # en son herhangi bir ROS mesajı zamanı
 
@@ -230,6 +234,14 @@ class WebDashboardNode(Node):
         self.create_subscription(UInt8, MISYON_WP_INDEX_TOPIC, self._wp, 10)
         self.create_subscription(String, TARGETING_STATUS_TOPIC, self._targeting, 10)
         self.create_subscription(Bool, SHOOT_RESULT_TOPIC, self._shoot, 10)
+
+        # Tanı sinyalleri: bunlar olmadan sahada "araç neden durdu", "koşu
+        # saatinde ne kaldı" ve "kayıt gerçekten alınıyor mu" sorularının
+        # ekranda karşılığı yok.
+        self.create_subscription(Float32, MISYON_KALAN_SURE_TOPIC, self._kalan, 10)
+        self.create_subscription(String, SENSOR_FAULT_TOPIC, self._ariza, 10)
+        self.create_subscription(Bool, E_STOP_GPIO_FAULT_TOPIC, self._gpio_ariza, 10)
+        self.create_subscription(Bool, KAYIT_DURUMU_TOPIC, self._kayit, 10)
 
         self.create_subscription(Image, CAMERA_IMAGE_TOPIC,
                                  lambda m: self._ham_kare('on', m), be)
@@ -346,6 +358,14 @@ class WebDashboardNode(Node):
     def _wp(self, m):
         ortak.sensor['wp'] = int(m.data)
         ortak.ham_yaz('wp', int(m.data))
+        self._dokun()
+
+    def _ariza(self, m):     ortak.sensor['ariza'] = m.data; self._dokun()
+    def _gpio_ariza(self, m): ortak.sensor['gpio_ariza'] = m.data; self._dokun()
+    def _kayit(self, m):     ortak.sensor['kayit'] = m.data; self._dokun()
+
+    def _kalan(self, m):
+        ortak.ham_yaz('kalan_sure', round(float(m.data), 1))
         self._dokun()
 
     def _targeting(self, m): ortak.sensor['targeting'] = m.data; self._dokun()
@@ -547,6 +567,9 @@ def telemetri_json():
         'fsm': s['fsm'],
         'targeting': s['targeting'],
         'shoot': bool(s['shoot']),
+        'ariza': s['ariza'],
+        'gpio_ariza': bool(s['gpio_ariza']),
+        'kayit': bool(s['kayit']),
         'sinyal': sinyaller,
     }
 
@@ -585,6 +608,9 @@ def sensor_json():
                    RED if a > 30 else AMBER if a > 20 else (TEXT if b >= 0 else DIM)),
         'target': hc(tgt, TARGETING_R.get(tgt, TEXT)),
         'lazer': hc('Ateş !' if s['shoot'] else 'Beklemede', RED if s['shoot'] else DIM),
+        'ariza': hc(s['ariza'] or 'yok', RED if s['ariza'] else DIM),
+        'kayit': hc('Kaydediyor' if s['kayit'] else 'Kapalı',
+                    GREEN if s['kayit'] else DIM),
     }
 
 
@@ -671,6 +697,8 @@ button{border:none;border-radius:4px;cursor:pointer;font-family:inherit}
    <button id=kaldir onclick=estopKaldir()>E-STOP Kaldır (GCS)</button></div>
   <div class=kart><div class=b>Mod</div><div class=v id=modv>—</div></div>
   <div class=kart><div class=b>Parkur Aşaması</div><div class=v id=fsmv>—</div></div>
+  <div class=kart><div class=b>Sensör Arızası</div><div class=v id=arizav>—</div></div>
+  <div class=kart><div class=b>Görüntü Kaydı</div><div class=v id=kayitv>—</div></div>
   <div class=kart id=surekart><div class=b>Süre</div><div class=v id=surev>00:00.0</div>
    <button class=sbtn onclick=sureTog()>Başlat/Durdur</button>
    <button class=sbtn onclick=sureSif()>Sıfırla</button></div>
@@ -732,6 +760,7 @@ es.onmessage=e=>{
   document.getElementById('estopv').textContent=d.estop?'AKTİF':'Normal';
   document.getElementById('estopv').style.color=d.estop?'%(RED)s':'%(GREEN)s';
   set('modv',d.mod);set('fsmv',d.fsm);
+  set('arizav',d.ariza);set('kayitv',d.kayit);
   set('s_bat',d.bat);set('s_voltaj',d.voltaj);set('s_akim',d.akim);
   set('s_roll',d.roll);set('s_pitch',d.pitch);set('s_hiz',d.hiz);
   set('s_wp',d.wp);set('s_target',d.target);set('s_lazer',d.lazer);
@@ -890,6 +919,8 @@ h1 b{font-weight:400;color:var(--y2)}
 .wjSat .yok{color:var(--y3)}
 .metinD{font-size:19px;font-weight:600;letter-spacing:-.02em;line-height:1.15;
      word-break:break-word}
+.metinD.t{color:var(--turuncu)} .metinD.k{color:var(--kirmizi)}
+.metinD.g{color:var(--yesil)} .metinD.yok{color:var(--y3)}
 
 /* ═════════ KAMERA ═════════ */
 .kamAlan{position:relative;flex:1;min-height:0;min-width:0;overflow:hidden;
@@ -911,7 +942,7 @@ h1 b{font-weight:400;color:var(--y2)}
 
 /* ═════════ OTONOM DÜZENİ ═════════ */
 #gOtonom{grid-template-columns:minmax(0,1fr) 240px;grid-template-rows:auto minmax(0,1fr)}
-#otoUst{grid-column:1/-1;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));
+#otoUst{grid-column:1/-1;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));
         gap:10px}
 #otoKam{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
         grid-template-rows:repeat(2,minmax(0,1fr));gap:10px;min-height:0}
@@ -1037,6 +1068,8 @@ tr.kaynaksiz td.kDeg{color:var(--y3)}
         <div class=wjGov><div class=metinD id=oTgt>—</div></div></div>
       <div class=wj><div class=wjUst><h3>Lazer</h3><span class=ek>/shoot/result</span></div>
         <div class=wjGov><div class=metinD id=oLazer>—</div></div></div>
+      <div class=wj><div class=wjUst><h3>Koşu Saati</h3><span class=ek>§6.12 · 15 dk</span></div>
+        <div class=wjGov><div class="metinD yok" id=oSure>—</div></div></div>
     </div>
     <div id=otoKam>
       <div class=wj><div class=wjUst><h3>YOLO</h3><span class=ek data-kamfps=yolo>—</span></div>
@@ -1061,6 +1094,12 @@ tr.kaynaksiz td.kDeg{color:var(--y3)}
           <div class=wjSat><span>Komut</span><span data-sat=hiz_komut>—</span></div>
           <div class=wjSat><span>Direksiyon</span><span data-sat=steer_aci>—</span></div>
           <div class=wjSat><span>Mesafe</span><span data-sat=enc_mesafe>—</span></div>
+        </div></div>
+      <div class=wj><div class=wjUst><h3>Uyarılar</h3><span class=ek>watchdog · e-stop · kayıt</span></div>
+        <div class=wjGov>
+          <div class=wjSat><span>Sensör</span><span id=oAriza>—</span></div>
+          <div class=wjSat><span>E-STOP donanımı</span><span id=oGpio>—</span></div>
+          <div class=wjSat><span>Görüntü kaydı</span><span id=oKayit>—</span></div>
         </div></div>
       <div class=wj><div class=wjUst><h3>Not</h3></div>
         <div class=wjGov><div class=altbil>Tarayıcıdan araca yazan tek komut
@@ -1189,6 +1228,14 @@ es.onmessage=e=>{
   metin('oTgt', d.targeting||'—');
   metin('oLazer', d.shoot?'ATEŞ':'beklemede');
 
+  // koşu saati — az kalan süre kötüdür, genel eşik mantığı tersine işler
+  const sure=S['kalan_sure'];
+  sinifla('oSure', sure===null||sure===undefined ? '—' : dkss(sure), 'metinD',
+          sure===null||sure===undefined ? 'yok' : sure<60 ? 'k' : sure<180 ? 't' : '');
+  sinifla('oAriza', d.ariza||'sorun yok', '', d.ariza?'k':'yok');
+  sinifla('oGpio', d.gpio_ariza?'ARIZA':'normal', '', d.gpio_ariza?'k':'yok');
+  sinifla('oKayit', d.kayit?'kaydediyor':'kapalı', '', d.kayit?'':'yok');
+
   // büyük sayılar
   for(const el of document.querySelectorAll('[data-dev]')){
     const k=el.dataset.dev, b=BILGI[k], v=S[k];
@@ -1231,6 +1278,14 @@ function rz(id,yazi,sf){
   el.textContent=yazi; el.className='rz '+(sf||'');
 }
 function metin(id,yazi){document.getElementById(id).textContent=yazi}
+function sinifla(id,yazi,taban,sf){
+  const el=document.getElementById(id);
+  el.textContent=yazi; el.className=(taban?taban+' ':'')+(sf||'');
+}
+function dkss(sn){
+  const t=Math.max(0,Math.round(sn));
+  return String(Math.floor(t/60)).padStart(2,'0')+':'+String(t%60).padStart(2,'0');
+}
 
 // ── Kameralar ──────────────────────────────────────────────────────────────
 // Her kare ayrı istek. MJPEG bağlantıyı süresiz açık tutar; 6 panel + SSE

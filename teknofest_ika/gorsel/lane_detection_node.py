@@ -2,6 +2,12 @@
 """
 lane_detection_node.py — Classical Lane Detection using Hough Lines + Bird's Eye View
 Publishes lane center offset (std_msgs/Float64)
+
+Bu düğümün sistemde tüketicisi yok: `/lane/center_offset`, `/lane/center_offset_m`
+ve `/lane/debug` topic'lerine hiçbir node abone değil, `scripts/lydia_startup.sh`
+onu başlatmıyor ve hiçbir launch dosyasında geçmiyor. `setup.py`'de kayıtlı
+olduğu için `ros2 run` ile elle çalıştırılabilir. Şerit takibi bir istasyon
+gereksinimi haline gelirse çıkışının bir tüketiciye bağlanması gerekir.
 """
 
 import math

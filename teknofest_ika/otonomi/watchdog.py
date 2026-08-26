@@ -40,7 +40,7 @@ from vision_msgs.msg import Detection2DArray
 from teknofest_ika.otonomi.topics import (
     SCAN_LIDAR_TOPIC, SCAN_FILTERED_TOPIC, ODOM_TOPIC, IMU_TOPIC,
     BATTERY_TOPIC, EKF_ODOM_TOPIC, CAMERA_PROCESSED_TOPIC,
-    YOLO_RAW_TOPIC, DETECTIONS_TOPIC, E_STOP_TOPIC,
+    YOLO_RAW_TOPIC, DETECTIONS_TOPIC, E_STOP_TOPIC, SENSOR_FAULT_TOPIC,
 )
 
 CRITICAL_TOPICS = {
@@ -95,7 +95,7 @@ class Watchdog(Node):
         self._all_ok = False
         self._start_time = self.get_clock().now().nanoseconds / 1e9
 
-        self._fault_pub = self.create_publisher(String, '/sensor/fault', 10)
+        self._fault_pub = self.create_publisher(String, SENSOR_FAULT_TOPIC, 10)
 
         for topic in CRITICAL_TOPICS:
             self._last_seen[topic] = 0.0

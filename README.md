@@ -104,7 +104,7 @@ Min. dönüş yarı  : L / tan(δ_max)
 ### Topic Akışı
 
 ```
-YDLidar → /scan_raw → scan_relay → /scan_lidar → SLAM, Nav2 costmap
+YDLidar → /scan → preprocessing_node → /scan/filtered → SLAM, Nav2 costmap
 RC → /rc_input → mod_yoneticisi → mod kararı
 Nav2 → /cmd_vel → mod_yoneticisi → /mux/cmd_vel → ackermann_converter → /ackermann_cmd → seri_kopru → Arduino
 /camera/image_raw → preprocessing_node → yolo_detection_node → /detections/yolo
@@ -191,6 +191,12 @@ lora_gcs GCS komutu       ──┘                                (GPIO kurulum
 ### 5.1 `scan_relay.py` — Lidar Düzeltici
 
 YDLidar Tmini Pro'nun [0x202] hatasında ürettiği bozuk scan'leri (timestamp=0, frame=laser_frame, değişken nokta sayısı) düzelterek SLAM ve Nav2 costmap'e iletir.
+
+Yalnızca `launch/gercek_arac.launch.py` yolunda kullanılır. Araçta otorite
+`scripts/lydia_startup.sh` ve o, sürücüyü `/scan_raw`'a remap edip relay'i araya
+koymak yerine `preprocessing_node`'u doğrudan `-r /scan_lidar:=/scan` ile
+başlatır — aynı işi tek satırda yapar. Yani sahada koşan zincirde `scan_relay`
+**yoktur**; `/scan_raw` topic'ine hiçbir şey yayın yapmaz.
 
 ```
 /scan_raw (BEST_EFFORT) → filtre (300–1500 nokta) → timestamp fix → frame_id='lidar_link' → /scan_lidar (RELIABLE)
@@ -297,15 +303,20 @@ map
 
 | Topic | Tip | Yayıncı | Abone |
 |---|---|---|---|
-| `/scan_raw` | LaserScan | ydlidar_node | scan_relay |
-| `/scan_lidar` | LaserScan | scan_relay | SLAM, costmap |
+| `/scan` | LaserScan | ydlidar_node | preprocessing_node (boot `-r /scan_lidar:=/scan`) |
+| `/scan/filtered` | LaserScan | preprocessing_node | SLAM, Nav2 costmap, cone_fusion, kayar_engel |
+| `/scan_raw` | LaserScan | ydlidar_node (yalnız launch yolunda) | scan_relay |
+| `/scan_lidar` | LaserScan | scan_relay (yalnız launch yolunda) | preprocessing_node |
 | `/cmd_vel` | Twist | Nav2 RPP | mod_yoneticisi |
 | `/mux/cmd_vel` | Twist | mod_yoneticisi | ackermann_converter |
 | `/ackermann_cmd` | AckermannDriveStamped | ackermann_converter | seri_kopru |
 | `/odometry/filtered` | Odometry | EKF | Nav2, SLAM |
 | `/rc_input` | Joy | seri_kopru | mod_yoneticisi |
 | `/e_stop` | Bool | e_stop_node | mod_yoneticisi, seri_kopru, watchdog |
-| `/e_stop/gpio_fault` | Bool | e_stop_node | (izleme/GCS — fiziksel buton donanım hatası) |
+| `/e_stop/gpio_fault` | Bool | e_stop_node | web_dashboard (fiziksel buton donanım hatası) |
+| `/sensor/fault` | String | watchdog | web_dashboard |
+| `/misyon/kalan_sure` | Float32 | misyon_fsm | web_dashboard (§6.12 koşu saati) |
+| `/veri_paketi/kayit_durumu` | Bool | veri_paketi | web_dashboard |
 | `/speed_limit` | Float32 | imu_guvenlik | terrain_adapter, mod_yoneticisi |
 | `/yolo/class_id` | UInt8 | yolo_adapter | terrain_adapter |
 | `/ika/detections` | String (JSON) | yolo_adapter | misyon_fsm |

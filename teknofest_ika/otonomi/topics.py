@@ -399,6 +399,11 @@ E_STOP_FORCE_RC_TOPIC    = "/e_stop/force/rc"         # mod_yoneticisi → RC si
 # durumu artık sadece log'da kalmıyor, ROS2 üzerinden gözlemlenebilir.
 E_STOP_GPIO_FAULT_TOPIC = "/e_stop/gpio_fault"
 
+# watchdog, kritik topic'lerden biri bayatladığında hangisinin sustuğunu
+# yayınlar. Panoya bağlıdır — sessizce ölen bir sensör aksi halde ancak
+# davranış bozulunca fark ediliyor.
+SENSOR_FAULT_TOPIC = "/sensor/fault"   # String (arıza açıklaması)
+
 # Mod yönetimi
 MOD_KOMUT_TOPIC   = "/mod/komut"    # yazılımsal/GCS mod değiştirme (UInt8)
 MOD_AKTIF_TOPIC   = "/mod/aktif"    # geçerli mod (UInt8)
