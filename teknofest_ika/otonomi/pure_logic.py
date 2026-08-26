@@ -46,6 +46,41 @@ def ackermann_steering(v: float, omega: float, wheelbase: float,
     return max(-delta_max, min(delta_max, math.atan(wheelbase * omega / v)))
 
 
+def ackermann_komut(v: float, omega: float, wheelbase: float,
+                     delta_max: float, taban_hiz: float) -> tuple:
+    """
+    (hız, δ, doydu) — istenen eğriliği aracın çizebileceğine kırpar ve
+    taşma oranında hızı düşürür.
+
+    δ'yı tek başına kırpmak yetmez: R_min = L / tan(δ_max)'ten dar bir yay
+    istendiğinde direksiyon doyar ama hız isteneni korur, yani araç
+    çizemeyeceği virajı tam hızda dener ve dışarı taşar. Doyma sessizdir —
+    ne komutta ne geri beslemede izi kalır.
+
+    Kırpma eğrilik (κ = ω/v) üzerinden yapılır; κ'yı ±1/R_min'de sınırlamak
+    δ'yı ±δ_max'ta sınırlamakla özdeştir, dolayısıyla direksiyon çıktısı
+    değişmez. Değişen tek şey hız: κ ne kadar taşıyorsa o oranda düşürülür,
+    böylece kontrolcü metre başına daha çok döngü koşar ve sapmayı erken
+    yakalar. Yavaşlamak imkânsız virajı mümkün kılmaz — yay yine R_min'dir.
+
+    taban_hiz kalkış sürtünmesi tabanıdır: oransal kırpma tek başına aracı
+    viraj ortasında hareket edemeyeceği bir hıza düşürebilir. İstenen hız
+    zaten tabanın altındaysa yükseltilmez.
+    """
+    delta = ackermann_steering(v, omega, wheelbase, delta_max)
+    if abs(v) < 1e-4:
+        return v, delta, False
+
+    kappa_max = math.tan(delta_max) / wheelbase      # 1 / R_min
+    kappa     = omega / v
+    if abs(kappa) <= kappa_max:
+        return v, delta, False
+
+    oran   = kappa_max / abs(kappa)
+    yeni_v = math.copysign(max(abs(v) * oran, min(abs(v), taban_hiz)), v)
+    return yeni_v, delta, True
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # 2. Enkoder Overflow Koruması (AS5600 10-bit ADC)
 # ─────────────────────────────────────────────────────────────────────────

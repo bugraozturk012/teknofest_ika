@@ -149,7 +149,8 @@ controller_server:
       # RPP'de `max_angular_vel` diye bir parametre YOK — burada tanımlanırsa
       # sessizce yok sayılır. Açısal hız tavanı iki yerde uygulanır:
       #   1) velocity_smoother.max_velocity[2]  (aşağıda, gerçek kırpma)
-      #   2) ackermann_converter δ_max clamp'i  (δ = atan(L·ω/v), 30°'de doyar)
+      #   2) ackermann_converter eğrilik kırpması (κ = ω/v, ±1/R_min'de doyar;
+      #      doyunca hız da taşma oranında düşürülür ve loga uyarı basılır)
       max_angular_accel: 3.2           # [rad/s²]
       max_robot_pose_search_dist: 10.0
 
@@ -212,10 +213,12 @@ velocity_smoother:
     #             [  vx,   vy,  wz ]
     # wz tavanı aracın kinematiğinden gelir: ω_max = v_max / R_min,
     # 0.90 / 2.42 = 0.37 rad/s. Daha yüksek bir tavan komut zincirinde
-    # karşılığı olmayan eğrilik taşır — ackermann_converter direksiyonu
-    # δ_max'ta sessizce doyurur, hız düşmediği için araç viraja tam hızda
-    # girip dışarı taşar. R_min planlayıcıdaki minimum_turning_radius ile
-    # aynı değerdir, biri değişirse diğeri de değişir.
+    # karşılığı olmayan eğrilik taşır. Bu tavan tek başına yetmez: burada
+    # scale_velocities oranı koruduğu için istenen yarıçap değişmeden yalnız
+    # hız düşer, yani aynı taşma daha yavaşta tekrarlanır. Zincirin sonunda
+    # ackermann_converter eğriliği R_min'e kırpar ve hızı taşma oranında
+    # düşürür — asıl emniyet orada. R_min planlayıcıdaki
+    # minimum_turning_radius ile aynı değerdir, biri değişirse diğeri de değişir.
     max_velocity: [0.90, 0.0, 0.37]   # vx: en hızlı arazi profili (fast)
     min_velocity: [-0.30, 0.0, -0.37] # geri: yalnız backup recovery kullanır
     max_accel:    [2.50, 0.0, 3.20]

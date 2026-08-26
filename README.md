@@ -220,11 +220,16 @@ CRC = CMD ^ v0_H ^ v0_L ^ v1_H ^ v1_L
 ### 5.3 `ackermann_converter.py` — Kinematik Dönüştürücü
 
 ```
-δ = arctan(L × ω / v)
+κ = ω / v            eğrilik, |κ| ≤ 1/R_min'e kırpılır
+δ = arctan(L × κ)    R_min = L / tan(δ_max) = 2.42 m
 
 Giriş : /cmd_vel  (geometry_msgs/Twist)
 Çıkış : /ackermann_cmd  (ackermann_msgs/AckermannDriveStamped)
 ```
+
+İstenen yay R_min'den darsa direksiyon doyar ve hız taşma oranında düşürülür
+(`viraj_taban_hizi` = 0.45 m/s kalkış sürtünmesi tabanının altına inilmez).
+Doyma her seferinde loga uyarı olarak basılır.
 
 ### 5.4 `terrain_adapter.py` — Arazi Parametre Adaptörü
 

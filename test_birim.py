@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from teknofest_ika.otonomi.pure_logic import (  # noqa: E402
     ackermann_steering,
+    ackermann_komut,
     encoder_delta,
     paket_olustur,
     paket_dogrula,
@@ -79,6 +80,58 @@ check("max limit",      ackermann(0.1, 10.0), DELTA_MAX)
 check("geri düz",       math.degrees(ackermann(-1.0, 0.0)), 0.0)
 check("geri sola dön",  ackermann(-1.0, 0.5) < 0, True)   # geri giderken sol dönüş → negatif direksiyon
 check("geri sağa dön",  ackermann(-1.0, -0.5) > 0, True)
+
+# Eğrilik kırpması — R_min = L/tan(δ_max) = 1.40/tan(30°) = 2.425 m
+TABAN = 0.45
+R_MIN = L / math.tan(DELTA_MAX)
+
+
+def komut(v, w, taban=TABAN):
+    return ackermann_komut(v, w, L, DELTA_MAX, taban)
+
+
+# Ulaşılabilir eğrilik: hız da direksiyon da dokunulmadan geçer
+hiz, delta, doydu = komut(0.90, 0.30)
+check("κ sınır içi: hız korunur",  round(hiz, 6), 0.90)
+check("κ sınır içi: doyma yok",    doydu, False)
+check("κ sınır içi: δ = atan(Lω/v)", round(delta, 6),
+      round(math.atan(L * 0.30 / 0.90), 6))
+
+# Nav2'nin sahada ürettiği doyma: R = 0.90/0.80 = 1.125 m < R_min
+hiz, delta, doydu = komut(0.90, 0.80)
+check("doyma bildirilir",       doydu, True)
+check("doymada δ = δ_max",      round(delta, 6), round(DELTA_MAX, 6))
+check("doymada hız düşürülür",  hiz < 0.90, True)
+check("hız kalkış tabanında",   round(hiz, 6), TABAN)   # oransal 0.418 → taban
+
+# Taban devrede değilken kırpma oranı κ_max/|κ| olmalı
+hiz, _, _ = komut(0.90, 0.80, taban=0.0)
+check("oransal kırpma", round(hiz, 4),
+      round(0.90 * (1.0 / R_MIN) / (0.80 / 0.90), 4))
+
+# İstenen hız zaten tabanın altındaysa yükseltilmez
+hiz, _, doydu = komut(0.30, 0.90, taban=TABAN)
+check("taban isteneni yükseltmez", hiz <= 0.30, True)
+check("düşük hızda da doyar",      doydu, True)
+
+# Geri viteste işaretler korunur
+hiz, delta, doydu = komut(-0.90, 0.80)
+check("geri: doyma bildirilir", doydu, True)
+check("geri: hız negatif",      hiz < 0.0, True)
+check("geri: δ negatif",        delta < 0.0, True)
+check("geri: |δ| = δ_max",      round(abs(delta), 6), round(DELTA_MAX, 6))
+
+# v≈0 (Nav2 spin recovery): mevcut davranış korunur, hız kırpılmaz
+hiz, delta, doydu = komut(0.0, 1.0)
+check("v=0: hız dokunulmaz", hiz, 0.0)
+check("v=0: δ = δ_max",      delta, DELTA_MAX)
+check("v=0: doyma yok",      doydu, False)
+
+# Düz gidişte hız asla kırpılmaz — taban mantığı burada devreye girmemeli
+hiz, delta, doydu = komut(0.90, 0.0)
+check("düz: hız korunur", round(hiz, 6), 0.90)
+check("düz: δ = 0",       round(delta, 6), 0.0)
+check("düz: doyma yok",   doydu, False)
 
 # ─── 2. Enkoder Overflow Koruması (AS5600 10-bit) ───────────────────────────
 print("\n=== 2. Enkoder Overflow (AS5600 10-bit) ===")
