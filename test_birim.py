@@ -1104,6 +1104,20 @@ check("preprocessing pencereyi çevirir",
 check("misyon_fsm sabiti elle yazmaz",    '1.6284' in _fsm_kaynak(), False)
 
 
+# ─── Otonom komut bayatlığı: mux son Twist'i tekrarlamamalı ─────────────────
+# mod_yoneticisi FULL_AUTO'da /cmd_vel'i 20 Hz ile mux'a geçiriyor. Zaman
+# damgası tutulmazsa yayıncı sıfırdan farklı bir komutla susunca araç o hızda
+# gitmeye devam eder — ve aşağı akıştaki watchdog'lar bunu YAKALAYAMAZ:
+# ackermann_converter /mux/cmd_vel'i dinliyor, mux taze mesaj ürettiği için
+# timeout'u hiç dolmuyor.
+from teknofest_ika.otonomi.topics import NAV2_CMD_BAYATLAMA_S  # noqa: E402
+
+_MOD_KAYNAK = _kaynak('teknofest_ika/otonomi/mod_yoneticisi.py')
+check("mux komut zamanı tutuluyor",       'self._nav2_son   = time.time()' in _MOD_KAYNAK, True)
+check("mux bayat komutu sıfırlar",        'nav2_gecmis > NAV2_CMD_BAYATLAMA_S' in _MOD_KAYNAK, True)
+check("bayatlık sınırı ackermann ile aynı", NAV2_CMD_BAYATLAMA_S, 0.5)
+
+
 # ─── Sonuç ───────────────────────────────────────────────────────────────────
 print(f"\n{'='*45}")
 print(f"  TOPLAM: {PASS+FAIL} test | {PASS} GEÇTI | {FAIL} BAŞARISIZ")

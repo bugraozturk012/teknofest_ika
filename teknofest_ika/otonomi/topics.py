@@ -458,6 +458,11 @@ KORIDOR_PENCERE_RAD     = 0.26   # ±15° — duvarın düz kısmını yakalar
 # Dönüşüm pure_logic.tarama_acisi_arac / arac_acisi_tarama'da.
 LIDAR_MONTAJ_YAW_RAD = 1.6284   # [rad] 93,3° — urdf lidar_joint ile AYNI sayı
 
+# Otonom sürüş komutunun bayatlama sınırı. mod_yoneticisi FULL_AUTO'da
+# /cmd_vel'i mux'a geçirir; yayıncı susarsa komut BAYATLAR. Süre
+# ackermann_converter'ın cmd_vel_timeout'uyla aynı tutuluyor.
+NAV2_CMD_BAYATLAMA_S = 0.5
+
 # ─────────────────────────────────────────────
 # KAYAN HEDEF — haritasız sürüş (pure_logic.koridor_merkez_cizgisi / ic_duvar_hedefi)
 # ─────────────────────────────────────────────

@@ -54,6 +54,7 @@ from teknofest_ika.otonomi.topics import (
     RC_INPUT_TOPIC, MOD_KOMUT_TOPIC, CMD_VEL_TOPIC, E_STOP_TOPIC,
     MOD_AKTIF_TOPIC, MUX_CMD_VEL_TOPIC, MISSION_START_TOPIC, SHOOT_CMD_TOPIC,
     SPEED_LIMIT_TOPIC, E_STOP_FORCE_RC_TOPIC, RC_MOD_ESIK_US,
+    NAV2_CMD_BAYATLAMA_S,
 )
 
 # ─── Mod Sabitleri ─────────────────────────────────────────────────────────
@@ -100,6 +101,13 @@ class ModYoneticisi(Node):
         self._lazer_acik = False
 
         self._nav2_twist = Twist()
+        # Komutun GELDİĞİ an. Bu olmadan mux son Twist'i 20 Hz ile sonsuza
+        # kadar tekrarlıyordu: Nav2 (ya da /cmd_vel'e doğrudan basan
+        # RampaState/HizlanmaState) sıfırdan farklı bir komutla susarsa araç
+        # o hızda gitmeye devam ederdi. Aşağı akıştaki hiçbir watchdog da
+        # bunu yakalayamıyordu — ackermann_converter /mux/cmd_vel'i dinliyor
+        # ve mux taze mesaj üretmeye devam ettiği için timeout'u hiç dolmuyor.
+        self._nav2_son   = 0.0
         self._fsm_tetiklendi = False
 
         self._mod_bekleyen      = None   # debounce: beklenen yeni mod
@@ -186,6 +194,7 @@ class ModYoneticisi(Node):
     def _nav2_cb(self, msg: Twist):
         with self._lock:
             self._nav2_twist = msg
+            self._nav2_son   = time.time()
 
     # ── Hız Sınırı Callback (imu_guvenlik) ───────────────────────────────────
     def _speed_limit_cb(self, msg: Float32):
@@ -238,6 +247,8 @@ class ModYoneticisi(Node):
             ch3         = self._ch3
             rc_gecmis   = time.time() - self._rc_son
             nav2        = self._nav2_twist
+            nav2_gecmis = time.time() - self._nav2_son
+            nav2_hic    = (self._nav2_son == 0.0)
             speed_limit = self._speed_limit
 
         # RC sinyal kaybı → E-STOP kaynağı olarak yayınla (şartname 3. kaynak)
@@ -272,7 +283,21 @@ class ModYoneticisi(Node):
             # lazer otonomda aracı dondurur. AUX kanalı (CH4) direksiyonla ortak
             # olduğu için stick sağa itildikçe tetiklenebiliyor.
             self._lazer_kapat()
-            out = nav2
+            if nav2_hic or nav2_gecmis > NAV2_CMD_BAYATLAMA_S:
+                # Bayat komut tekrarlanmaz, SIFIR basılır. Nav2'nin
+                # velocity_smoother'ı araç durunca zaten susuyor (bilinen
+                # davranış), o hâlde sıfır basmak doğru olanı yapıyor;
+                # tehlikeli olan, hareket hâlindeyken susan bir yayıncının
+                # son komutunun sonsuza kadar sürmesiydi.
+                out = Twist()
+                if not nav2_hic:
+                    self.get_logger().warn(
+                        f'[MUX] /cmd_vel {nav2_gecmis:.2f}s bayat — sıfır '
+                        'komut basılıyor.',
+                        throttle_duration_sec=2.0,
+                    )
+            else:
+                out = nav2
 
         # imu_guvenlik hız sınırı (devrilme/düşük batarya vb.) — FULL_AUTO'da
         # zaten terrain_adapter→Nav2 yolundan da uygulanır, ama MANUAL'de bu
