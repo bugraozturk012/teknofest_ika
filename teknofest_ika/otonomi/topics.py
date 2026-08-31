@@ -460,7 +460,7 @@ KAYAN_HEDEF_PERIYOT_S  = 1.5    # [s] yeniden hedefleme periyodu (~0,67 Hz)
 # periyot (1,5 s) olduğu için sürüklenme ölçülemeyecek kadar küçük kalır.
 KAYAN_HEDEF_FRAME      = "odom"
 KAYAN_HEDEF_YOK_SINIR  = 8      # ardışık bu kadar döngüde hedef üretilemezse aşama başarısız
-KAYAN_ODOM_BAYATLAMA_S = 1.0    # [s] /odom bu süre gelmezse kat edilen yol ölçülemiyor demektir
+KAYAN_ODOM_BAYATLAMA_S = 1.0    # [s] /odometry/filtered bu süre gelmezse yol ölçülemiyor demektir
 
 # Mod yönetimi
 MOD_KOMUT_TOPIC   = "/mod/komut"    # yazılımsal/GCS mod değiştirme (UInt8)

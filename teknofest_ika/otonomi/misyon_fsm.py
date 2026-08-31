@@ -104,7 +104,7 @@ from teknofest_ika.otonomi.topics import (
     TARGETING_ENABLE_TOPIC, TARGETING_STATUS_TOPIC,
     SHOOT_CMD_TOPIC, SHOOT_RESULT_TOPIC, LASER_FIRE_DURATION,
     MISSION_STATUS_TOPIC, MISYON_WP_INDEX_TOPIC,
-    CMD_VEL_TOPIC, ODOM_TOPIC, RAMP_STOP_DURATION,
+    CMD_VEL_TOPIC, ODOM_TOPIC, EKF_ODOM_TOPIC, RAMP_STOP_DURATION,
     MISYON_KALAN_SURE_TOPIC, KOSU_SURESI_S, PAS_HAKKI, PAS_GECILEMEZ,
     SCAN_FILTERED_TOPIC, ENGEBELI_SAPMA_TOPIC, KORIDOR_GENISLIGI_M,
     IMU_TOPIC, IMU_PITCH_RAMP_THRESHOLD,
@@ -571,13 +571,24 @@ class KayanHedefSurucusu:
 
         self._lock       = threading.Lock()
         self._scan       = None    # (ranges, angle_min, angle_increment)
-        self._konum      = None    # son /odom konumu
+        self._konum      = None    # son EKF konumu
         self._poz        = None    # (x, y, yaw) — hedefi odom'a taşımak için
-        self._odom_zaman = 0.0     # wall-clock — son /odom mesajının geliş anı
+        self._odom_zaman = 0.0     # wall-clock — son EKF mesajının geliş anı
         self._yol        = 0.0     # aşama başından biriken YOL UZUNLUĞU [m]
 
         node.create_subscription(LaserScan, SCAN_FILTERED_TOPIC, self._on_scan, 10)
-        node.create_subscription(Odometry, ODOM_TOPIC, self._on_odom, 10)
+        # EKF çıkışı, ham /odom DEĞİL. /odom seri_kopru'nun tekerlek
+        # odometrisidir ve arka aks tek parça olduğu için tek enkoderle
+        # koşuyor: `_odometri()` orada d_theta = 0 bırakır, yani /odom'un
+        # yaw'ı HEP SIFIRDIR. Hedefi o yaw ile odom'a taşımak, araç ilk
+        # dönüşten sonra hedefleri sabit bir yöne koymak demekti.
+        # Yön IMU'nun işi ve IMU yalnız EKF'te füzyona giriyor;
+        # /odometry/filtered ayrıca Nav2'nin ve odom→base_footprint TF'inin
+        # kullandığı pozla aynı, yani hedef Nav2'nin gördüğü çerçeveye oturur.
+        # (HizlanmaState ve RampaState bilerek ham /odom'da kalıyor: onlar
+        # yalnız mesafe/hız okuyor ve kopuk enkoderi ham veride görmek
+        # istiyorlar.)
+        node.create_subscription(Odometry, EKF_ODOM_TOPIC, self._on_odom, 10)
 
     def _on_scan(self, msg: LaserScan):
         with self._lock:
@@ -667,7 +678,8 @@ class KayanHedefSurucusu:
                     # Kat edilen yol ölçülemiyorsa aşamanın biteceği nokta da
                     # bilinmiyor demektir; kör sürmek yerine kurtarmaya düşülür.
                     self.node.get_logger().error(
-                        f'[KAYAN] {label}: /odom yok ya da bayat — kat edilen '
+                        f'[KAYAN] {label}: /odometry/filtered yok ya da bayat — '
+                        'kat edilen '
                         'yol ölçülemiyor, sürüş kesiliyor.'
                     )
                     return 'failed'

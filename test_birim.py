@@ -968,6 +968,27 @@ check("kayan e_stop doğrudan iletiliyor", "if result == 'e_stop':" in _fsm_kayn
 # Aşama sonunda etkin hedef iptal edilmezse Nav2 son kayan hedefe (2-8 m
 # ileri) sürmeye devam eder ve araç istasyonu geçer.
 check("sürüş sonunda hedef iptal edilir", 'self.nav.iptal()' in _fsm_kaynak(), True)
+# Kayan sürüş pozu EKF'ten okumalı, ham /odom'dan DEĞİL. Arka aks tek parça
+# olduğu için seri_kopru tek enkoderle koşuyor ve d_theta = 0 bırakıyor: ham
+# /odom'un yaw'ı hep sıfırdır. Hedefi o yaw ile odom'a taşımak, araç ilk
+# dönüşten sonra hedefleri sabit bir yöne koyardı — ve bu hiçbir hata
+# basmadan, yalnız sahada görülürdü.
+def _kayan_odom_kaynagi():
+    """KayanHedefSurucusu'nun Odometry aboneliğindeki topic sabitinin adı."""
+    import ast
+    agac = ast.parse(_fsm_kaynak())
+    for d in ast.walk(agac):
+        if isinstance(d, ast.ClassDef) and d.name == 'KayanHedefSurucusu':
+            for c in ast.walk(d):
+                if (isinstance(c, ast.Call)
+                        and getattr(c.func, 'attr', '') == 'create_subscription'
+                        and getattr(c.args[0], 'id', '') == 'Odometry'):
+                    return getattr(c.args[1], 'id', None)
+    return None
+
+
+check("kayan sürüş pozu EKF'ten",         _kayan_odom_kaynagi(), 'EKF_ODOM_TOPIC')
+
 # Hedef gönderilmeden önce odom'a taşınmalı; taşıma atlanırsa araç
 # çerçevesindeki sayı odom sayısı sanılır ve hedef parkurun dışına düşer.
 check("hedef odoma taşınarak gönderilir", 'arac_hedefini_odoma_tasi(hedef, poz)' in _fsm_kaynak(), True)
