@@ -1278,6 +1278,45 @@ check("backup hızı deadband üstünde",     _BACKUP_HIZ > _VS['deadband_veloci
 check("backup mesafesi makul",            0.2 <= _BACKUP_MESAFE <= 1.0, True)
 
 
+# ─── Geri kayma koruması kasıtlı geri gitmeyi engellememeli ─────────────────
+# Rampada "burun yukarı + hız negatif" tablosunu iki farklı şey üretir:
+# istenmeyen geri kayma ve Nav2'nin BackUp kurtarması. Koruma ikisini
+# ayırt etmezse kurtarmaya karşı komut basar; kurtarmanın tek işi aracı
+# planlanamaz pozdan çıkarmaktı, engellenirse araç orada kalır.
+from teknofest_ika.otonomi.pure_logic import rollback_mudahale_gerekli  # noqa: E402
+
+_PE, _HE, _GE = 10.0, 0.05, 0.05     # pitch eşiği, hız eşiği, geri komut eşiği
+
+
+def _mudahale(pitch, hiz, komut, bayat=False):
+    return rollback_mudahale_gerekli(pitch, hiz, komut, bayat, _PE, _HE, _GE)
+
+
+# Düz zeminde koruma hiç devreye girmez — geri gitmek serbest.
+check("düz zeminde müdahale yok",         _mudahale(0.0, -0.3, 0.0), False)
+# Rampada ileri komut varken geri kayıyorsa: GERÇEK kayma, müdahale et.
+check("rampada gerçek kayma",             _mudahale(15.0, -0.3, 0.5), True)
+check("rampada komutsuz kayma",           _mudahale(15.0, -0.3, 0.0), True)
+# Rampada geri komut varken geri gidiyorsa: KASITLI, karışma.
+check("kasıtlı geri gitmeye karışmaz",    _mudahale(15.0, -0.3, -0.5), False)
+# Komut bayatsa koruma AÇIK kalır: komut bilinmiyorken varsayım "istenmeyen
+# kayma" olmalı. Ters varsayım korumayı, ona en çok ihtiyaç duyulan anda
+# (komut yayını kesildiğinde) sessizce kapatırdı.
+check("bayat komutta koruma açık",        _mudahale(15.0, -0.3, -0.5, bayat=True), True)
+# Eşik sınırı: tam eşikte koruma devam eder, altında bırakır.
+check("eşikte koruma sürer",              _mudahale(15.0, -0.3, -_GE), True)
+check("eşiğin altında bırakır",           _mudahale(15.0, -0.3, -_GE - 0.01), False)
+# Hız negatif değilse zaten risk yok — geri komut olsa bile müdahale edilmez.
+check("ileri giderken müdahale yok",      _mudahale(15.0, 0.4, -0.5), False)
+
+_AR_KAYNAK = _kaynak('teknofest_ika/otonomi/anti_rollback.py')
+# Komut aşağı akışta gerçekten uygulanacak olan topic'ten okunmalı: kendi
+# override'ı oraya yazılmadığı için geri besleme oluşmaz.
+check("anti_rollback komutu dinliyor",    'MUX_CMD_VEL_TOPIC' in _AR_KAYNAK, True)
+check("anti_rollback niyeti sorguluyor",  'rollback_mudahale_gerekli(' in _AR_KAYNAK, True)
+check("anti_rollback bayatlığı ölçüyor",  'NAV2_CMD_BAYATLAMA_S' in _AR_KAYNAK, True)
+
+
 # ─── Sonuç ───────────────────────────────────────────────────────────────────
 print(f"\n{'='*45}")
 print(f"  TOPLAM: {PASS+FAIL} test | {PASS} GEÇTI | {FAIL} BAŞARISIZ")

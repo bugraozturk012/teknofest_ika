@@ -947,3 +947,31 @@ def tarama_kirpma_penceresi(alt_arac: float, ust_arac: float, lidar_yaw: float):
     """
     return (arac_acisi_tarama(alt_arac, lidar_yaw),
             arac_acisi_tarama(ust_arac, lidar_yaw))
+
+
+def rollback_mudahale_gerekli(pitch_deg: float, velocity: float,
+                              komut_vx: float, komut_bayat: bool,
+                              pitch_esik_deg: float, hiz_esik: float,
+                              geri_komut_esigi: float = 0.05) -> bool:
+    """
+    Geri kayma korumasının müdahale edip etmeyeceği.
+
+    `rollback_riskli` yalnız fiziğe bakar: burun yukarı + hız negatif. Bu tek
+    başına yetmiyor, çünkü aynı tabloyu KASITLI bir geri gitme de üretir —
+    Nav2'nin BackUp kurtarması rampada devreye girerse koruma onu geri kayma
+    sanıp karşı komut basar ve iki katman birbirine karşı çalışır. Kurtarmanın
+    tek işi aracı planlanamaz pozdan çıkarmak; engellenirse araç orada kalır.
+
+    Bu yüzden karar komutu da görüyor: aşağı akışa geri komut gidiyorsa
+    müdahale edilmez.
+
+    `komut_bayat` iken KORUMA AÇIK kalır. Komutun ne olduğu bilinmiyorsa
+    varsayım "istenmeyen kayma" olmalı; ters varsayım, komut yayını kesildiği
+    anda korumayı sessizce kapatırdı — yani tam da korumaya en çok ihtiyaç
+    duyulan durumda.
+    """
+    if not rollback_riskli(pitch_deg, velocity, pitch_esik_deg, hiz_esik):
+        return False
+    if komut_bayat:
+        return True
+    return komut_vx >= -geri_komut_esigi
