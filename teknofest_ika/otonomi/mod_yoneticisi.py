@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """
-mod_yoneticisi.py — Manuel / Yarı-Otonom / Tam Otonom Mod Yöneticisi
+mod_yoneticisi.py — Manuel / Tam Otonom Mod Yöneticisi
 ======================================================================
 MOD TANIMI:
   MANUAL    (0): RC kumanda doğrudan VESC'i sürer. Nav2 pasif.
-  SEMI_AUTO (1): RC hareket ettirirse override, değilse Nav2 sürer.
   FULL_AUTO (2): Tam otonom — misyon_fsm + Nav2 kontrolü.
 
-RC GEÇİŞ LOJİĞİ (Flysky FS-i6X, ch5 mod anahtarı):
-  ch5 < 1300 µs  → MANUAL
-  1300 ≤ ch5 < 1700 µs → SEMI_AUTO
-  ch5 ≥ 1700 µs  → FULL_AUTO
+RC GEÇİŞ LOJİĞİ (Flysky FS-i6X, CH6 VRB potu):
+  ch5 <  RC_MOD_ESIK_US → MANUAL
+  ch5 >= RC_MOD_ESIK_US → FULL_AUTO
+
+Eşik firmware'in kullandığı sayının aynısıdır (config.h RC_MOD_ESIK). Mega bu
+eşiğin altında RC'yi doğrudan sürer ve Jetson'ın sürüş paketlerini yok sayar,
+üstünde Jetson'ı dinler. İki taraf aynı kanalı farklı yerden bölerse potun
+arada kaldığı bantta ROS ile Mega aynı anda farklı modda olur; kanal üç
+konumlu bir anahtar değil sürekli bir pot olduğu için o bant kazayla
+girilebilecek bir yerdir. Karar bu yüzden ikili ve tek eşiklidir.
 
 YAZILIMSAL GEÇİŞ:
   ros2 topic pub /mod/komut std_msgs/msg/UInt8 "data: 2" --once
@@ -44,21 +49,21 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_msgs.msg import UInt8, Bool, Float32MultiArray, Float32
 from geometry_msgs.msg import Twist
 
+from teknofest_ika.otonomi.pure_logic import rc_mod_otonom
 from teknofest_ika.otonomi.topics import (
     RC_INPUT_TOPIC, MOD_KOMUT_TOPIC, CMD_VEL_TOPIC, E_STOP_TOPIC,
     MOD_AKTIF_TOPIC, MUX_CMD_VEL_TOPIC, MISSION_START_TOPIC, SHOOT_CMD_TOPIC,
-    SPEED_LIMIT_TOPIC, E_STOP_FORCE_RC_TOPIC,
+    SPEED_LIMIT_TOPIC, E_STOP_FORCE_RC_TOPIC, RC_MOD_ESIK_US,
 )
 
 # ─── Mod Sabitleri ─────────────────────────────────────────────────────────
 MOD_MANUAL    = 0
-MOD_SEMI_AUTO = 1
+# FULL_AUTO 1 değil 2: /mod/aktif'i okuyan pano, misyon_fsm ve kayıtlı bag'ler
+# bu değeri bekliyor, kaydırmak protokolü bozar.
 MOD_FULL_AUTO = 2
-_MOD_ISIMLER  = {0: 'MANUAL', 1: 'SEMI_AUTO', 2: 'FULL_AUTO'}
+_MOD_ISIMLER  = {0: 'MANUAL', 2: 'FULL_AUTO'}
 
 # RC PWM eşikleri (µs — Flysky standart 1000–2000)
-RC_CH5_MANUAL_MAX = 1300
-RC_CH5_SEMI_MAX   = 1700
 RC_NEUTRAL        = 1500
 RC_MIN            = 1000
 RC_MAX            = 2000
@@ -72,13 +77,10 @@ RC_CH3_LAZER_OFF = 1300   # < 1300µs → lazer kapat
 MANUAL_MAX_SPEED   = 2.0    # [m/s]
 MANUAL_MAX_ANGULAR = 1.5    # [rad/s]
 
-# Yarı-otonom override eşiği (normalize 0–1)
-SEMI_OVERRIDE_THRESHOLD = 0.20
-
 # RC zaman aşımı — sinyal kesilirse araç durdurulur
 RC_TIMEOUT_S = 0.5          # [s]
 
-# Mod geçiş debounce — switch geçici SEMI_AUTO'ya düşerse görmezden gel
+# Mod geçiş debounce — pot eşiğin etrafında titrerse mod zıplamasın
 MOD_DEBOUNCE_S = 0.25       # [s] — bu süre stabil kalmazsa mod değişmez
 
 
@@ -105,11 +107,11 @@ class ModYoneticisi(Node):
 
         self._e_stop_aktif     = False
         self._rc_estop_aktif   = False   # RC sinyal kaybı E-STOP izleme
-        # imu_guvenlik'ten gelen hız sınırı — önceden FULL_AUTO'da Nav2
-        # parametreleri üzerinden uygulanıyordu ama MANUAL/SEMI_AUTO'da RC
-        # komutuna hiç yansımıyordu (devrilme/düşük batarya gibi durumlarda
-        # manuel sürüşte de hız kısıtlanmalı — Şartname §7.8 "araç en yüksek
-        # hızı güvenlik tehdidi oluşturmayacak şekilde sınırlandırılmalı").
+        # imu_guvenlik'ten gelen hız sınırı — FULL_AUTO'da Nav2 parametreleri
+        # üzerinden de uygulanır ama MANUAL'de RC komutuna hiç yansımaz;
+        # devrilme ya da düşük batarya gibi durumlarda manuel sürüşte de hız
+        # kısıtlanmalı (Şartname §7.8 "araç en yüksek hızı güvenlik tehdidi
+        # oluşturmayacak şekilde sınırlandırılmalı").
         self._speed_limit  = float('inf')
 
         qos_rel = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
@@ -137,7 +139,7 @@ class ModYoneticisi(Node):
 
         self.get_logger().info(
             'ModYoneticisi hazır | başlangıç: MANUAL\n'
-            '  /mod/komut 0=MANUAL 1=SEMI_AUTO 2=FULL_AUTO\n'
+            '  /mod/komut 0=MANUAL 2=FULL_AUTO\n'
             '  /mux/cmd_vel → ackermann_converter'
         )
 
@@ -168,18 +170,17 @@ class ModYoneticisi(Node):
                 self._mod_bekleyen = None
 
     def _ch5_mod(self, ch5: float) -> int:
-        if ch5 < RC_CH5_MANUAL_MAX:
-            return MOD_MANUAL
-        if ch5 < RC_CH5_SEMI_MAX:
-            return MOD_SEMI_AUTO
-        return MOD_FULL_AUTO
+        return (MOD_FULL_AUTO if rc_mod_otonom(ch5, RC_MOD_ESIK_US)
+                else MOD_MANUAL)
 
     # ── Yazılımsal Komut Callback ────────────────────────────────────────────
     def _komut_cb(self, msg: UInt8):
-        if msg.data in (MOD_MANUAL, MOD_SEMI_AUTO, MOD_FULL_AUTO):
+        if msg.data in (MOD_MANUAL, MOD_FULL_AUTO):
             self._mod_degistir(int(msg.data))
         else:
-            self.get_logger().warn(f'Geçersiz mod komutu: {msg.data}')
+            self.get_logger().warn(
+                f'Geçersiz mod komutu: {msg.data} — yalnız 0=MANUAL, 2=FULL_AUTO'
+            )
 
     # ── Nav2 Twist Callback ──────────────────────────────────────────────────
     def _nav2_cb(self, msg: Twist):
@@ -266,23 +267,16 @@ class ModYoneticisi(Node):
                 out = self._rc_twist(ch1, ch2)
                 self._lazer_kontrol(ch3)
 
-        elif mod == MOD_SEMI_AUTO:
+        else:   # FULL_AUTO
             # seri_kopru lazer aktifken hareketi kilitler; MANUAL'de açık kalan
             # lazer otonomda aracı dondurur. AUX kanalı (CH4) direksiyonla ortak
             # olduğu için stick sağa itildikçe tetiklenebiliyor.
             self._lazer_kapat()
-            rc_cmd = self._rc_twist(ch1, ch2)
-            rc_norm = (abs(rc_cmd.linear.x) / MANUAL_MAX_SPEED +
-                       abs(rc_cmd.angular.z) / MANUAL_MAX_ANGULAR) / 2.0
-            out = rc_cmd if rc_norm > SEMI_OVERRIDE_THRESHOLD else nav2
-
-        else:   # FULL_AUTO
-            self._lazer_kapat()
             out = nav2
 
         # imu_guvenlik hız sınırı (devrilme/düşük batarya vb.) — FULL_AUTO'da
-        # zaten terrain_adapter→Nav2 yolundan da uygulanır, ama MANUAL/
-        # SEMI_AUTO'da bu son savunma hattı olmadan RC komutu sınırsız geçerdi.
+        # zaten terrain_adapter→Nav2 yolundan da uygulanır, ama MANUAL'de bu
+        # son savunma hattı olmadan RC komutu sınırsız geçerdi.
         if speed_limit < float('inf'):
             out.linear.x = max(-speed_limit, min(speed_limit, out.linear.x))
 

@@ -224,7 +224,7 @@ def generate_launch_description():
         name='kayar_engel_kalman', output='screen',
         parameters=[{'use_sim_time': False}]
     )
-    # Mod Yöneticisi — MANUAL/SEMI_AUTO/FULL_AUTO geçişleri ve cmd_vel mux
+    # Mod Yöneticisi — MANUAL/FULL_AUTO geçişleri ve cmd_vel mux
     mod_yoneticisi = Node(
         package='teknofest_ika', executable='mod_yoneticisi',
         name='mod_yoneticisi', output='screen',

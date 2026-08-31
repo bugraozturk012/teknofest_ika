@@ -522,3 +522,22 @@ def pas_verilebilir(pas_gecilir: bool, label: str, pas_kullanildi: int,
     if pas_kullanildi >= pas_hakki:
         return False, 'hak_bitti'
     return True, 'izin'
+
+
+def rc_mod_otonom(ch5_us: float, esik_us: float) -> bool:
+    """
+    RC mod potundan (CH6 VRB) otonom istenip istenmediğini döndürür.
+
+    Karar bilerek İKİLİ ve tek eşiklidir, çünkü aynı kanalı Mega da okuyor
+    (arduino/src/main.cpp guncel_mod, config.h RC_MOD_ESIK) ve eşiğin altında
+    RC'yi doğrudan sürüp Jetson'ın sürüş paketlerini yok sayıyor. ROS tarafı
+    kanalı başka bir yerden bölerse potun arada kaldığı bantta iki taraf aynı
+    anda farklı modda olur; kanal üç konumlu bir anahtar değil sürekli bir pot
+    olduğu için o bant kazayla girilebilecek bir yerdir.
+
+    Eşikte eşitlik otonom sayılır — firmware de `> esik` değil kendi
+    karşılaştırmasında aynı sınırı kullanıyor.
+    """
+    return ch5_us >= esik_us
+
+

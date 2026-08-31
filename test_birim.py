@@ -43,6 +43,7 @@ from teknofest_ika.otonomi.pure_logic import (  # noqa: E402
     fren_yumusat,
     kosu_butcesi,
     pas_verilebilir,
+    rc_mod_otonom,
 )
 from teknofest_ika.otonomi.topics import (  # noqa: E402
     BATTERY_WARN_SOC, BATTERY_CRITICAL_SOC, PAS_HAKKI, PAS_GECILEMEZ,
@@ -565,6 +566,31 @@ check("koniler pas geçilemez (§9)",        pas(True, 'KONİLİ_YOL', 0), (Fals
 check("hızlanma pas geçilemez (§9)",       pas(True, 'HIZLANMA_PARKURU', 0), (False, 'sartname_yasak'))
 check("hak bitince ikinci pas yok",        pas(True, 'DIK_ENGEL', 1), (False, 'hak_bitti'))
 check("yasak, hak dolu olsa da yasak",     pas(True, 'KONİLİ_YOL', 1), (False, 'sartname_yasak'))
+
+
+# ─── 17. RC Mod Eşiği — ROS ile firmware aynı sayıda bölmeli ────────────────
+from teknofest_ika.otonomi.topics import RC_MOD_ESIK_US  # noqa: E402
+
+check("eşiğin altı manuel",               rc_mod_otonom(1499, RC_MOD_ESIK_US), False)
+check("eşik dahil otonom",                rc_mod_otonom(1500, RC_MOD_ESIK_US), True)
+check("pot dipte manuel",                 rc_mod_otonom(1000, RC_MOD_ESIK_US), False)
+check("pot tepede otonom",                rc_mod_otonom(2000, RC_MOD_ESIK_US), True)
+check("ara bant yok — 1400 manuel",       rc_mod_otonom(1400, RC_MOD_ESIK_US), False)
+check("ara bant yok — 1600 otonom",       rc_mod_otonom(1600, RC_MOD_ESIK_US), True)
+
+
+def _firmware_mod_esigi():
+    """config.h'deki RC_MOD_ESIK — Mega'nın kullandığı sayı."""
+    yol = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       'arduino', 'include', 'config.h')
+    with open(yol, encoding='utf-8', errors='replace') as f:
+        m = re.search(r'^#define\s+RC_MOD_ESIK\s+(\d+)', f.read(), re.M)
+    return int(m.group(1)) if m else None
+
+
+# Aynı kanalı iki taraf okuyor. Sayılar ayrışırsa potun arada kaldığı bantta
+# ROS ile Mega aynı anda farklı modda olur ve bu yalnız sahada fark edilir.
+check("ROS eşiği = firmware eşiği",       _firmware_mod_esigi(), RC_MOD_ESIK_US)
 
 
 # ─── §7.5 fren: sınır ötesi anlam kayması koruması ──────────────────────────

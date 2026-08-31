@@ -370,6 +370,13 @@ BATTERY_CRITICAL_SOC = 10.0  # Güvenli durdurma
 # seviyesinde de garanti eder (donanım/Nano zamanlamasına tek başına güvenilmez).
 LASER_FIRE_DURATION = 1.0
 
+# RC mod anahtarı eşiği (µs) — arduino/include/config.h RC_MOD_ESIK ile AYNI
+# sayı olmak zorunda. Aynı kanalı (CH6 VRB potu) hem Mega hem mod_yoneticisi
+# okuyor: Mega eşiğin altında RC'yi doğrudan sürüp Jetson'ın sürüş paketlerini
+# yok sayar, üstünde Jetson'ı dinler. İki taraf farklı yerden bölerse potun
+# arada kaldığı bantta ROS ile Mega aynı anda farklı modda olur.
+RC_MOD_ESIK_US = 1500
+
 # Dik eğim bekleme süresi — §6.10 (saniye)
 RAMP_STOP_DURATION = 2.0
 

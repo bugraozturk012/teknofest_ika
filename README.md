@@ -125,11 +125,14 @@ lora_gcs GCS komutu       ──┘                                (GPIO kurulum
 
 ### Mod Sistemi
 
-| RC ch5 | Mod | Davranış |
+| RC ch5 (CH6 VRB potu) | Mod | Davranış |
 |---|---|---|
-| < 1300µs | MANUAL (0) | RC doğrudan sürer |
-| 1300–1700µs | SEMI_AUTO (1) | Nav2 + RC override |
-| > 1700µs | FULL_AUTO (2) | Tam otonom |
+| < 1500µs | MANUAL (0) | RC doğrudan sürer |
+| ≥ 1500µs | FULL_AUTO (2) | Tam otonom |
+
+Eşik `topics.py` `RC_MOD_ESIK_US` ve firmware `config.h` `RC_MOD_ESIK`'te
+aynı sayıdır — Mega ile Jetson aynı kanalı okuyup aynı anda mod değiştirir.
+Mega'da da yalnız bu iki hâl vardır (`main.cpp` `guncel_mod()`).
 
 ---
 
