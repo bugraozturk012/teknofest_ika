@@ -31,6 +31,27 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 
 
+def _harita_olcusu(pgm_yolu: str) -> str:
+    """PGM başlığından harita boyutu (metre). Okunamazsa '?'."""
+    try:
+        with open(pgm_yolu, 'rb') as f:
+            alan = f.read(64).split()
+        cozunurluk = 0.05   # maps/*.yaml resolution ile aynı varsayım
+        return (f'{int(alan[1]) * cozunurluk:.1f} x '
+                f'{int(alan[2]) * cozunurluk:.1f} m')
+    except Exception:
+        return '?'
+
+
+def _dosya_tarihi(yol: str) -> str:
+    import datetime
+    try:
+        return datetime.datetime.fromtimestamp(
+            os.path.getmtime(yol)).strftime('%Y-%m-%d')
+    except OSError:
+        return '?'
+
+
 def generate_launch_description():
     pkg_share = get_package_share_directory('teknofest_ika')
     nav2_pkg  = get_package_share_directory('nav2_bringup')
@@ -158,16 +179,26 @@ def generate_launch_description():
 
     if os.path.exists(gercek_harita):
         # Harita var → localization modu (haritayı yükle, yeni alan haritalama)
+        # Hangi haritaya localize olunduğu EKRANA BASILIYOR: dosyanın varlığı
+        # tek başına doğruluğunun kanıtı değil. Burada bir kez 16,05 x 1,85 m'lik
+        # bir koridor testi haritası kalmış ve araç parkur yerine ona localize
+        # olacak duruma gelmişti; kimse fark etmezdi çünkü mod sessizce seçiliyor.
         slam_exe = 'localization_slam_toolbox_node'
         slam_extra = {
             'use_sim_time': False,
             'map_file_name': os.path.splitext(gercek_harita)[0],
             'map_start_at_dock': True,
         }
+        print(f'[SLAM] LOCALIZATION modu — harita: {gercek_harita}\n'
+              f'[SLAM]   boyut: {_harita_olcusu(gercek_harita)}, '
+              f'tarih: {_dosya_tarihi(gercek_harita)}\n'
+              f'[SLAM]   Bu harita parkurun DEĞİLSE araç yanlış yere localize olur.')
     else:
         # Harita yok → mapping modu (sahayı haritala)
         slam_exe = 'async_slam_toolbox_node'
         slam_extra = {'use_sim_time': False}
+        print('[SLAM] MAPPING modu — harita sıfırdan kuruluyor, map çerçevesinin '
+              'orijini aracın şu anki yeri.')
 
     slam = Node(
         package='slam_toolbox',
