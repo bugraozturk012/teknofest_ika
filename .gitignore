@@ -13,3 +13,4 @@ maps/*.yaml
 models/
 *Zone.Identifier
 arduino/.pio/
+scripts/parkur_cad/donus_raporu.png
