@@ -1,0 +1,77 @@
+<!--
+  LYDİA — NavigateToPose davranış ağacı (Ackermann uyarlaması)
+
+  NEDEN KENDİ AĞACIMIZ VAR
+  ────────────────────────────────────────────────────────────────────────────
+  Nav2'nin stok ağacı kurtarma dalında <Spin> kullanıyor. Spin aracı YERİNDE
+  döndürür; Ackermann araç bunu yapamaz, komut verilirse titreyip timeout'a
+  girer. Bu yüzden nav2_params.yaml'ın plugin_lib_names listesinden
+  nav2_spin_action_bt_node çıkarılmıştı — ama ağaç hâlâ stok ağaçtı ve içinde
+  Spin geçiyordu. Tanınmayan düğüm = ağaç ayrıştırılamaz:
+
+    [bt_navigator] Exception when loading BT: Node not recognized: Spin
+    [lifecycle_manager] Failed to bring up all requested nodes. Aborting bringup.
+
+  (Jetson launch.log, 2026-07-19 19:56 — Nav2 bringup'ının TAMAMI iptal oldu.
+  Aracın Nav2'yi hiç koşturamamış olmasının sebeplerinden biri buydu.)
+
+  Bu ağaç stok ağacın Spin'siz halidir. Değiştirilirken kullanılan her düğüm
+  tipinin nav2_params.yaml plugin_lib_names listesinde karşılığı olmalı;
+  test_birim.py bunu doğrular.
+
+  KURTARMA SIRASI
+  ────────────────────────────────────────────────────────────────────────────
+  RoundRobin her başarısızlıkta SIRADAKİ davranışı dener:
+    1. costmap'leri temizle  — hayalet engel yüzünden plan üretilemiyorsa
+    2. GERİ GİT             — poz planlanamaz hale geldiyse (ileri-yönlü
+                              planlayıcıda R_min'den dar çıkış gerektiren
+                              pozdan hiçbir ileri yay çıkmaz; araç kımıldamadan
+                              tekrar denemek aynı sonucu verir)
+    3. bekle                — §6.8 kayar engel gibi GEÇİCİ bir engel varsa
+  Geri gitme beklemeden ÖNCE geliyor: bekleme yalnız hareketli engelde işe
+  yarar, planlanamaz pozda geçen her saniye koşu saatinden gider (koşu süresi
+  100 puanla en büyük kalem).
+
+  BACKUP SAYILARI ARACIN ÖLÇÜLEN GERÇEĞİNDEN
+  ────────────────────────────────────────────────────────────────────────────
+  backup_speed 0.5: araç 0.45 m/s ALTINDA yerinden kalkmıyor (sahada ölçüldü).
+  Stok değer 0.05 m/s'dir ve bu araçta iki kere ölüdür — velocity_smoother'ın
+  deadband_velocity'si (0.05) onu sıfırlar, kalkış sürtünmesi de geçirmez.
+  min_velocity[0] = -0.50 ile birlikte çalışır; o da 0.45'in üstünde olmalı.
+  backup_dist 0.5: planlayıcıyı yeniden çözebilir bir poza taşımaya yeter,
+  aracın ARKASI KÖR olduğu için (LiDAR gövdeye takılıyor, geri kamera yok)
+  bundan uzunu göze alınmadı.
+-->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
+      <PipelineSequence name="NavigateWithReplanning">
+        <RateController hz="1.0">
+          <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Context"
+                                service_name="global_costmap/clear_entirely_global_costmap"/>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="1" name="FollowPath">
+          <FollowPath path="{path}" controller_id="FollowPath"/>
+          <ClearEntireCostmap name="ClearLocalCostmap-Context"
+                              service_name="local_costmap/clear_entirely_local_costmap"/>
+        </RecoveryNode>
+      </PipelineSequence>
+      <ReactiveFallback name="RecoveryFallback">
+        <GoalUpdated/>
+        <RoundRobin name="RecoveryActions">
+          <Sequence name="ClearingActions">
+            <ClearEntireCostmap name="ClearLocalCostmap-Subtree"
+                                service_name="local_costmap/clear_entirely_local_costmap"/>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Subtree"
+                                service_name="global_costmap/clear_entirely_global_costmap"/>
+          </Sequence>
+          <BackUp backup_dist="0.5" backup_speed="0.5" time_allowance="10"/>
+          <Wait wait_duration="3"/>
+        </RoundRobin>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

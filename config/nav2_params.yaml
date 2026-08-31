@@ -38,7 +38,22 @@ bt_navigator:
     navigators: ['navigate_to_pose']
     navigate_to_pose:
       plugin: "nav2_bt_navigator/NavigateToPoseNavigator"
-    default_nav_to_pose_bt_xml: "navigate_to_pose_w_replanning_and_recovery.xml"
+    # ⚠️ TAM YOL ZORUNLU ve ÇALIŞMA ALANINA BAĞLI. Bu iki satır, çalışma alanı
+    # taşınırsa güncellenecek TEK yerdir (boot betiğindeki WS ile aynı kök:
+    # lydia_startup.sh → WS=${WS:-/home/lydia/lydia_ws/src/teknofest_ika_yazilim}).
+    #
+    # Stok ağaçlar KULLANILAMAZ: kurtarma dallarında <Spin> var, Ackermann araç
+    # yerinde dönemediği için nav2_spin_action_bt_node bilerek yüklenmiyor ve
+    # tanınmayan düğüm yüzünden ağaç ayrıştırılamıyor. Sahada görülen sonuç,
+    # yalnız kurtarmanın değil NAV2'NİN TAMAMININ ayağa kalkmaması:
+    #   [bt_navigator] Node not recognized: Spin
+    #   [lifecycle_manager] Failed to bring up all requested nodes. Aborting bringup.
+    # (Jetson launch.log 2026-07-19 19:56)
+    #
+    # İKİSİ DE gerekli: `navigators` yalnız navigate_to_pose dese bile
+    # bt_navigator through_poses ağacını da yüklüyor — o gün öyle düştü.
+    default_nav_to_pose_bt_xml: "/home/lydia/lydia_ws/src/teknofest_ika_yazilim/config/bt/navigate_to_pose_ackermann.xml"
+    default_nav_through_poses_bt_xml: "/home/lydia/lydia_ws/src/teknofest_ika_yazilim/config/bt/navigate_through_poses_ackermann.xml"
     plugin_lib_names:
       - nav2_compute_path_to_pose_action_bt_node
       - nav2_compute_path_through_poses_action_bt_node
@@ -227,7 +242,11 @@ velocity_smoother:
     # düşürür — asıl emniyet orada. R_min planlayıcıdaki
     # minimum_turning_radius ile aynı değerdir, biri değişirse diğeri de değişir.
     max_velocity: [0.90, 0.0, 0.37]   # vx: en hızlı arazi profili (fast)
-    min_velocity: [-0.30, 0.0, -0.37] # geri: yalnız backup recovery kullanır
+    # Geri hızı YALNIZ BackUp kurtarması kullanır (planlayıcı DUBIN, geri
+    # planlamıyor). Tavan −0.30 idi ve ÖLÜYDÜ: araç 0.45 m/s altında yerinden
+    # kalkmıyor (sahada ölçüldü), yani geri komutu verilse bile araç kımıldamazdı.
+    # −0.50, BT'deki backup_speed 0.5 ile birlikte kalkış eşiğinin üstünde kalır.
+    min_velocity: [-0.50, 0.0, -0.37]
     max_accel:    [2.50, 0.0, 3.20]
     max_decel:    [-2.50, 0.0, -3.20]
     deadband_velocity: [0.05, 0.0, 0.05]

@@ -1170,6 +1170,114 @@ check("kısılan hız tabanın üstünde",
       round(0.65 * (_R_MIN / _FP['regulated_linear_scaling_min_radius']), 2) >= _FP['regulated_linear_scaling_min_speed'], True)
 
 
+# ─── Nav2 davranış ağacı: kullanılan her düğüm KAYITLI olmalı ───────────────
+# Bu kontrol, sahada Nav2'nin tamamını düşüren hatayı yakalamak için var.
+# Stok ağaç kurtarma dalında <Spin> kullanıyor; Ackermann araç yerinde
+# dönemediği için nav2_spin_action_bt_node bilerek yüklenmiyordu. Tanınmayan
+# düğüm = ağaç ayrıştırılamaz ve bt_navigator aktive OLAMAZ:
+#   [bt_navigator] Node not recognized: Spin
+#   [lifecycle_manager] Failed to bring up all requested nodes. Aborting bringup.
+# (Jetson launch.log 2026-07-19 19:56 — enkoder takılı olsa bile Nav2 bu
+# konfigürasyonla ayağa kalkamazdı.)
+import xml.etree.ElementTree as _ET  # noqa: E402
+
+# BehaviorTree.CPP çekirdeği — eklenti gerektirmez.
+_BT_DAHILI = {
+    'root', 'BehaviorTree', 'Sequence', 'SequenceStar', 'ReactiveSequence',
+    'Fallback', 'ReactiveFallback', 'Inverter', 'ForceSuccess', 'ForceFailure',
+    'Repeat', 'RetryUntilSuccessful', 'Parallel', 'BlackboardCheckInt',
+}
+
+# Düğüm adı → nav2_params.yaml plugin_lib_names girdisi. Eşleme düzensiz
+# (BackUp → back_up), o yüzden tahmin edilmiyor, elle yazılıyor. Ağaca yeni
+# bir düğüm eklenirse burası da güncellenmeli — test o zaman "bilinmeyen
+# düğüm" diye durur, sessizce geçmez.
+_BT_EKLENTI = {
+    'ComputePathToPose':        'nav2_compute_path_to_pose_action_bt_node',
+    'ComputePathThroughPoses':  'nav2_compute_path_through_poses_action_bt_node',
+    'FollowPath':               'nav2_follow_path_action_bt_node',
+    'SmoothPath':               'nav2_smooth_path_action_bt_node',
+    'ClearEntireCostmap':       'nav2_clear_costmap_service_bt_node',
+    'GoalUpdated':              'nav2_goal_updated_condition_bt_node',
+    'GoalReached':              'nav2_goal_reached_condition_bt_node',
+    'IsStuck':                  'nav2_is_stuck_condition_bt_node',
+    'BackUp':                   'nav2_back_up_action_bt_node',
+    'DriveOnHeading':           'nav2_drive_on_heading_bt_node',
+    'Wait':                     'nav2_wait_action_bt_node',
+    'Spin':                     'nav2_spin_action_bt_node',
+    'RateController':           'nav2_rate_controller_bt_node',
+    'DistanceController':       'nav2_distance_controller_bt_node',
+    'SpeedController':          'nav2_speed_controller_bt_node',
+    'RecoveryNode':             'nav2_recovery_node_bt_node',
+    'PipelineSequence':         'nav2_pipeline_sequence_bt_node',
+    'RoundRobin':               'nav2_round_robin_node_bt_node',
+    'RemovePassedGoals':        'nav2_remove_passed_goals_action_bt_node',
+    'TruncatePath':             'nav2_truncate_path_action_bt_node',
+}
+
+_BT_PARAM  = _nav2_params()['bt_navigator']['ros__parameters']
+_EKLENTILER = set(_BT_PARAM['plugin_lib_names'])
+_KOK = os.path.dirname(os.path.abspath(__file__))
+
+
+def _bt_dosyasi(anahtar):
+    """nav2_params'taki yolu repo içindeki gerçek dosyaya çevirir."""
+    yol = _BT_PARAM[anahtar]
+    # Yol Jetson'ın çalışma alanına mutlak; repoda karşılığı config/bt altında.
+    return os.path.join(_KOK, 'config', 'bt', os.path.basename(yol)), yol
+
+
+def _bt_dugumleri(dosya):
+    return {e.tag for e in _ET.parse(dosya).iter()}
+
+
+for _anahtar in ('default_nav_to_pose_bt_xml', 'default_nav_through_poses_bt_xml'):
+    _dosya, _yol = _bt_dosyasi(_anahtar)
+    _ad = os.path.basename(_dosya)
+    check(f"{_ad} repoda var",            os.path.exists(_dosya), True)
+    # Yol MUTLAK olmalı: çıplak dosya adı verilirse bt_navigator onu çalışma
+    # dizinine göre açmaya çalışır ve bulamaz.
+    check(f"{_ad} yolu mutlak",           os.path.isabs(_yol), True)
+
+    _dugumler = _bt_dugumleri(_dosya) if os.path.exists(_dosya) else set()
+    # ASIL KONTROL: her düğümün ya dahili olması ya da eklentisinin YÜKLÜ olması.
+    _kayitsiz = sorted(
+        d for d in _dugumler
+        if d not in _BT_DAHILI and _BT_EKLENTI.get(d) not in _EKLENTILER
+    )
+    check(f"{_ad} kayıtsız düğüm yok",    _kayitsiz, [])
+    # Spin özel olarak yasak: eklentisi yüklense bile Ackermann araç yerinde
+    # dönemez, komut verilirse titreyip timeout'a girer.
+    check(f"{_ad} Spin içermiyor",        'Spin' in _dugumler, False)
+    check(f"{_ad} BackUp içeriyor",       'BackUp' in _dugumler, True)
+
+# Spin eklentisi listeye geri eklenmemeli — ağaç yüklenir ama araç yerinde
+# dönmeye çalışır. Doğru çözüm ağaçtan çıkarmaktı, eklentiyi geri koymak değil.
+check("spin eklentisi yüklenmiyor",       'nav2_spin_action_bt_node' in _EKLENTILER, False)
+
+
+# ─── BackUp gerçekten aracı hareket ettirebilmeli ───────────────────────────
+# Üç eşik birden aşılmazsa geri gitme komutu araca hiç ulaşmaz:
+#   1. velocity_smoother deadband'i altındaki komut sıfırlanır
+#   2. velocity_smoother min_velocity tavanı
+#   3. aracın kalkış sürtünmesi — 0.45 m/s altında yerinden kalkmıyor
+_KALKIS_ESIGI = 0.45          # nav2_params min_approach_linear_velocity ile aynı
+_VS = _nav2_params()['velocity_smoother']['ros__parameters']
+_BT_TO_POSE, _ = _bt_dosyasi('default_nav_to_pose_bt_xml')
+_BACKUP = [e for e in _ET.parse(_BT_TO_POSE).iter() if e.tag == 'BackUp'][0]
+_BACKUP_HIZ  = float(_BACKUP.get('backup_speed'))
+_BACKUP_MESAFE = float(_BACKUP.get('backup_dist'))
+
+check("geri tavanı kalkış eşiği üstünde", abs(_VS['min_velocity'][0]) > _KALKIS_ESIGI, True)
+check("backup hızı kalkış eşiği üstünde", _BACKUP_HIZ >= _KALKIS_ESIGI, True)
+check("backup hızı tavanı aşmıyor",       _BACKUP_HIZ <= abs(_VS['min_velocity'][0]), True)
+check("backup hızı deadband üstünde",     _BACKUP_HIZ > _VS['deadband_velocity'][0], True)
+# Mesafe: planlayıcıyı yeniden çözebilir bir poza taşımaya yetecek kadar,
+# aracın arkası kör olduğu için (LiDAR gövdeye takılıyor, geri kamera yok)
+# fazlası göze alınmadı.
+check("backup mesafesi makul",            0.2 <= _BACKUP_MESAFE <= 1.0, True)
+
+
 # ─── Sonuç ───────────────────────────────────────────────────────────────────
 print(f"\n{'='*45}")
 print(f"  TOPLAM: {PASS+FAIL} test | {PASS} GEÇTI | {FAIL} BAŞARISIZ")
