@@ -389,6 +389,13 @@ FREN_IVME_ESIK_MAX  = 5.0    # [m/s²] — üstünde tam fren (yüksek eşik = g
 FREN_TAM_DUR_ORAN   = 0.3    # hedef hız tam 0 olsa bile en fazla bu oranda fren (0-1)
 FREN_RAMP_PER_S     = 500.0  # [‰/s] fren yüzdesi değişim hızı sınırı — ani sıçramayı önler
 
+# Güvenlik dallarının (watchdog, E-STOP) yayınladığı fren değeri. SIFIR OLAMAZ:
+# firmware'de 0, "servis freni istemiyorum" demek ve kararı §7.5 park freni
+# durum makinesine devreder — makine de sıkmadan önce FREN_BEKLEME_MS bekler.
+# §6.10'un zorunlu 2 sn duruşu %45 eğimde bu pencereye düşüyor, o yüzden
+# güvenlik dalları beklemeyi atlayıp doğrudan tam fren istiyor.
+FREN_GUVENLI_DUR_BINDE = 1000
+
 # ─────────────────────────────────────────────
 # KONTROL TOPIC'LERİ (node'lar arası iç protokol)
 # ─────────────────────────────────────────────

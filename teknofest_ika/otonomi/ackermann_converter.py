@@ -95,7 +95,7 @@ from teknofest_ika.otonomi.topics import (
     MUX_CMD_VEL_TOPIC, ACKERMANN_CMD_TOPIC, E_STOP_TOPIC,
     ANTI_ROLLBACK_AKTIF_TOPIC, ANTI_ROLLBACK_CMD_TOPIC,
     FREN_KOMUT_TOPIC, FREN_IVME_ESIK_MIN, FREN_IVME_ESIK_MAX,
-    FREN_TAM_DUR_ORAN, FREN_RAMP_PER_S,
+    FREN_TAM_DUR_ORAN, FREN_RAMP_PER_S, FREN_GUVENLI_DUR_BINDE,
 )
 from teknofest_ika.otonomi.pure_logic import (
     ackermann_komut, fren_hedef_hesapla, fren_yumusat,
@@ -247,7 +247,7 @@ class AckermannConverter(Node):
             self._onceki_hiz   = 0.0
             self._onceki_zaman = None
             self._fren_orani   = 0.0
-            self._fren_pub.publish(UInt16(data=0))
+            self._fren_pub.publish(UInt16(data=FREN_GUVENLI_DUR_BINDE))
             return
 
         # anti_rollback aktifse Nav2 komutunu yoksay
@@ -326,7 +326,11 @@ class AckermannConverter(Node):
             self._onceki_hiz   = 0.0
             self._onceki_zaman = None
             self._fren_orani   = 0.0
-            self._fren_pub.publish(UInt16(data=0))
+            # Tam fren — sıfır burada freni BIRAKIYORDU. /cmd_vel kesildiğinde
+            # Jetson paket göndermeye devam ettiği için Mega'nın 700 ms heartbeat
+            # failsafe'i de devreye girmiyor; §6.10'un zorunlu duruşunda araç
+            # eğimde frensiz kalıyordu.
+            self._fren_pub.publish(UInt16(data=FREN_GUVENLI_DUR_BINDE))
 
             self.get_logger().warn(
                 f'[WATCHDOG] /cmd_vel {elapsed:.2f}s süredir gelmiyor → araç durduruldu.',

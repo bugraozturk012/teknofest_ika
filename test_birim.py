@@ -14,6 +14,7 @@ kullanır — yani burada test edilen fonksiyonlar sahada çalışan KOD ile
 birebir aynıdır.
 """
 import math
+import re
 import sys
 import time as _time
 import os
@@ -564,6 +565,51 @@ check("koniler pas geçilemez (§9)",        pas(True, 'KONİLİ_YOL', 0), (Fals
 check("hızlanma pas geçilemez (§9)",       pas(True, 'HIZLANMA_PARKURU', 0), (False, 'sartname_yasak'))
 check("hak bitince ikinci pas yok",        pas(True, 'DIK_ENGEL', 1), (False, 'hak_bitti'))
 check("yasak, hak dolu olsa da yasak",     pas(True, 'KONİLİ_YOL', 1), (False, 'sartname_yasak'))
+
+
+# ─── §7.5 fren: sınır ötesi anlam kayması koruması ──────────────────────────
+from teknofest_ika.otonomi.topics import FREN_GUVENLI_DUR_BINDE  # noqa: E402
+
+
+def _firmware_kaynak():
+    yol = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       'arduino', 'src', 'main.cpp')
+    with open(yol, encoding='utf-8', errors='replace') as f:
+        return f.read()
+
+
+def _firmware_fren_sifir_anlami():
+    """fren_uygula()'nın sıfır dalı: 'TUT' mu, 'SERBEST' mi.
+
+    Firmware bir kez sıfırı SERBEST'e çevirmiş, ROS tarafı haberdar olmamış ve
+    watchdog `data=0` yayınlayarak freni §6.10'un zorunlu duruşunun ortasında
+    bırakmıştı. Dal geri çevrilirse burada patlasın, sahada değil.
+    """
+    m = re.search(r'fren_esc_hiz\(binde > 0 \? binde / 1000\.0f : ([^)]+)\)',
+                  _firmware_kaynak())
+    return m.group(1).strip() if m else None
+
+
+check("firmware'de fren 0 = TUT (NOTR)",  _firmware_fren_sifir_anlami(), "0.0f")
+
+# Güvenlik dalları park freni makinesinin bekleme penceresini atlamalı.
+check("güvenli duruş freni sıfır değil",  FREN_GUVENLI_DUR_BINDE > 0, True)
+check("güvenli duruş freni tam fren",     FREN_GUVENLI_DUR_BINDE, 1000)
+
+
+def _firmware_fren_sabiti(ad):
+    yol = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       'arduino', 'include', 'config.h')
+    with open(yol, encoding='utf-8', errors='replace') as f:
+        m = re.search(r'^#define\s+' + ad + r'\s+(\d+)UL', f.read(), re.M)
+    return int(m.group(1)) if m else None
+
+
+# Strok süreleri ÖLÇÜLMEDİ (placeholder). Testin iddiası sayının doğruluğu değil,
+# üçünün de tanımlı ve pozitif olması — biri silinirse geçiş anında takılır.
+check("FREN_ACMA_MS tanımlı",             (_firmware_fren_sabiti('FREN_ACMA_MS') or 0) > 0, True)
+check("FREN_SIKMA_MS tanımlı",            (_firmware_fren_sabiti('FREN_SIKMA_MS') or 0) > 0, True)
+check("FREN_BEKLEME_MS tanımlı",          (_firmware_fren_sabiti('FREN_BEKLEME_MS') or 0) > 0, True)
 
 
 # ─── Sonuç ───────────────────────────────────────────────────────────────────
