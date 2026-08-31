@@ -1016,6 +1016,94 @@ check("quat_yaw birim kuaterniyon",       quat_yaw(0, 0, 0, 1), 0.0)
 check("yeniden hedefleme çok sık değil",  KAYAN_HEDEF_PERIYOT_S >= 1.0, True)
 
 
+# ─── LiDAR montaj açısı: taramayı indeksleyen her düğüm dönüşü uygulamalı ───
+from teknofest_ika.otonomi.pure_logic import (  # noqa: E402
+    tarama_acisi_arac, arac_acisi_tarama, aci_pencerede, tarama_kirpma_penceresi,
+)
+from teknofest_ika.otonomi.topics import LIDAR_MONTAJ_YAW_RAD  # noqa: E402
+
+_Y = LIDAR_MONTAJ_YAW_RAD
+
+
+def _derece(r):
+    return round(math.degrees(r), 1)
+
+
+# Sabit urdf lidar_joint ile aynı sayı olmak zorunda: TF bir açıyı, tarama
+# indeksleme başka bir açıyı kullanırsa engeller iki ayrı yere düşer.
+def _urdf_lidar_yaw():
+    yol = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'urdf', 'arac.urdf')
+    with open(yol, encoding='utf-8') as f:
+        m = re.search(r'<child link="laser_frame"/>\s*<origin[^>]*rpy="0 0 ([0-9.]+)"', f.read())
+    return float(m.group(1)) if m else None
+
+
+check("montaj açısı urdf ile aynı",       _urdf_lidar_yaw(), LIDAR_MONTAJ_YAW_RAD)
+check("ileri araç açısı → tarama",        _derece(arac_acisi_tarama(0.0, _Y)), -93.3)
+check("sağ araç açısı → tarama",          _derece(arac_acisi_tarama(-math.pi / 2, _Y)), 176.7)
+check("dönüşüm gidiş-dönüş",              _derece(tarama_acisi_arac(arac_acisi_tarama(-1.0, _Y), _Y)),
+      _derece(-1.0))
+# Sarmalı pencere: montaj dönüşünden sonra pencere ±180°'yi aşabiliyor; düz
+# karşılaştırma o pencereyi ikiye böler ve arada kalan huzmeleri sessizce atar.
+check("sarmalı pencere içi",              aci_pencerede(math.radians(179), math.radians(170), math.radians(-170)), True)
+check("sarmalı pencere dışı",             aci_pencerede(0.0, math.radians(170), math.radians(-170)), False)
+check("düz pencere içi",                  aci_pencerede(0.0, math.radians(-135), math.radians(135)), True)
+
+# ASIL REGRESYON: ±135° kırpma penceresi ARAÇ çerçevesinde uygulanmalı.
+# Tarama açısına doğrudan uygulandığında aracın sağ yanı (−131,7°…−41,7°)
+# komple inf oluyordu; bunu /scan/filtered'ı okuyan herkes miras alıyordu
+# (Nav2'nin iki costmap'i, kayar engel, koni füzyonu, §6.9 koridor ölçümü).
+def _kirpma_hayatta_kalir(arac_deg, alt_deg=-135.0, ust_deg=135.0, yaw=_Y):
+    """Verilen araç yönündeki huzme kırpmadan geçiyor mu.
+
+    preprocessing_node ile AYNI yolu izler: pencere bir kez tarama çerçevesine
+    taşınır (tarama_kirpma_penceresi), sonra huzmenin tarama açısı o pencereye
+    sokulur. `yaw=0` verilirse düzeltmenin olmadığı eski davranış çıkar.
+    """
+    alt, ust = tarama_kirpma_penceresi(math.radians(alt_deg), math.radians(ust_deg), yaw)
+    tarama   = arac_acisi_tarama(math.radians(arac_deg), _Y)   # huzme gerçekte nerede
+    if alt > ust:                       # pencere ±180°'yi aşıyor
+        return tarama >= alt or tarama <= ust
+    return alt <= tarama <= ust
+
+
+check("sağ yan kırpmadan geçer",          _kirpma_hayatta_kalir(-90), True)
+check("sağ-ön kırpmadan geçer",           _kirpma_hayatta_kalir(-45), True)
+check("sol yan kırpmadan geçer",          _kirpma_hayatta_kalir(90), True)
+check("ileri kırpmadan geçer",            _kirpma_hayatta_kalir(0), True)
+# Pencere hâlâ ARKAYI kesiyor — kırpmanın var olma sebebi bu, tamamen açmak
+# düzeltme değil, kuralın iptali olurdu.
+check("arka hâlâ kesiliyor",              _kirpma_hayatta_kalir(180), False)
+# Düzeltme geri alınırsa (montaj açısı uygulanmazsa) sağ yan yeniden körleşir —
+# hatanın kendisi burada kilitleniyor, yalnız doğru davranış değil.
+check("düzeltmesiz sağ yan körleşir",     _kirpma_hayatta_kalir(-90, yaw=0.0), False)
+check("düzeltmesiz arka açılır",          _kirpma_hayatta_kalir(180, yaw=0.0), True)
+
+
+def _kaynak(yol):
+    tam = os.path.join(os.path.dirname(os.path.abspath(__file__)), yol)
+    with open(tam, encoding='utf-8') as f:
+        return f.read()
+
+
+# Taramayı dizi olarak indeksleyen dört düğüm de dönüşü uygulamak zorunda.
+# TF yalnız costmap'e YERLEŞTİRMEYİ düzeltir; dizi indeksini düzeltmez.
+for _ad, _yol in [
+    ('preprocessing', 'teknofest_ika/gorsel/preprocessing_node.py'),
+    ('kayar engel kalman', 'teknofest_ika/gorsel/kayar_engel_kalman.py'),
+    ('kayar engel costmap', 'teknofest_ika/gorsel/kayar_engel_costmap.py'),
+    ('koni füzyonu', 'teknofest_ika/gorsel/cone_fusion_node.py'),
+]:
+    check(f"{_ad} montaj açısını uygular", 'LIDAR_MONTAJ_YAW_RAD' in _kaynak(_yol), True)
+
+check("preprocessing pencereyi çevirir",
+      'tarama_kirpma_penceresi(' in _kaynak('teknofest_ika/gorsel/preprocessing_node.py'), True)
+
+# Açı sabiti tek yerde: elle yazılmış 1.6284 kalmamalı (iki kopya ayrışırsa
+# hangisinin geçerli olduğu düğüm sırasına kalır).
+check("misyon_fsm sabiti elle yazmaz",    '1.6284' in _fsm_kaynak(), False)
+
+
 # ─── Sonuç ───────────────────────────────────────────────────────────────────
 print(f"\n{'='*45}")
 print(f"  TOPLAM: {PASS+FAIL} test | {PASS} GEÇTI | {FAIL} BAŞARISIZ")

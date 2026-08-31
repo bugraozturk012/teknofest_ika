@@ -893,3 +893,57 @@ def kayan_hedef_karari(kat_edilen_m: float, mesafe_m: float,
     if hedefsiz_ardisik >= hedefsiz_sinir:
         return 'hedef_yok'
     return 'devam'
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LİDAR MONTAJ AÇISI DÖNÜŞÜMLERİ
+#
+# LaserScan'in angle_min/angle_increment'i TARAMA çerçevesindedir. LiDAR
+# gövdeye dönük monte olduğu için tarama açısı ile araç açısı aynı şey
+# değildir; taramayı dizi olarak indeksleyen her düğüm dönüşü kendi
+# uygulamak zorundadır (TF yalnız costmap'e yerleştirmeyi düzeltir).
+# ─────────────────────────────────────────────────────────────────────────────
+
+def tarama_acisi_arac(tarama_acisi: float, lidar_yaw: float) -> float:
+    """Tarama çerçevesindeki açıyı araç çerçevesine çevirir [rad, −π…π]."""
+    return math.remainder(tarama_acisi + lidar_yaw, 2.0 * math.pi)
+
+
+def arac_acisi_tarama(arac_acisi: float, lidar_yaw: float) -> float:
+    """Araç çerçevesindeki açıyı tarama çerçevesine çevirir [rad, −π…π]."""
+    return math.remainder(arac_acisi - lidar_yaw, 2.0 * math.pi)
+
+
+def aci_pencerede(aci: float, alt: float, ust: float) -> bool:
+    """
+    `aci` [alt, ust] penceresinde mi — SARMALI karşılaştırma.
+
+    Düz `alt <= aci <= ust` yetmez: montaj dönüşünden sonra pencere ±180°
+    sınırını aşabiliyor (örn. araç çerçevesinde bitişik olan iki açı tarama
+    çerçevesinde +176° ve −179° olarak görünür). Düz karşılaştırma o pencereyi
+    ikiye böler ve arada kalan huzmeleri sessizce atar.
+    """
+    genislik = math.remainder(ust - alt, 2.0 * math.pi)
+    if genislik < 0.0:
+        genislik += 2.0 * math.pi
+    fark = math.remainder(aci - alt, 2.0 * math.pi)
+    if fark < 0.0:
+        fark += 2.0 * math.pi
+    return fark <= genislik
+
+
+def tarama_kirpma_penceresi(alt_arac: float, ust_arac: float, lidar_yaw: float):
+    """
+    ARAÇ çerçevesinde tanımlı bir açı penceresini TARAMA çerçevesine taşır.
+    Dönüş: `(alt, ust)` — ikisi de [−π, π).
+
+    `alt > ust` çıkabilir ve bu bir hata DEĞİLDİR: montaj dönüşünden sonra
+    pencere ±180° sınırını aşar. Çağıran o durumda `>= alt VEYA <= ust`
+    uygulamalı; düz `alt <= a <= ust` pencereyi ikiye böler ve arada kalan
+    huzmeleri sessizce atar.
+
+    Pencere taramanın kendisine değil bir kez pencereye uygulanıyor: dönüşüm
+    her tarama için 600+ açıya değil, açılışta iki sayıya yapılıyor.
+    """
+    return (arac_acisi_tarama(alt_arac, lidar_yaw),
+            arac_acisi_tarama(ust_arac, lidar_yaw))

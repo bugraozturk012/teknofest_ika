@@ -443,6 +443,22 @@ KORIDOR_TOPLAM_TOLERANS = 0.60   # sol+sağ bu kadar sapabilir, fazlası koridor
 KORIDOR_PENCERE_RAD     = 0.26   # ±15° — duvarın düz kısmını yakalar
 
 # ─────────────────────────────────────────────
+# LİDAR MONTAJ AÇISI — TEK DOĞRULUK KAYNAĞI
+# ─────────────────────────────────────────────
+# LiDAR gövdeye 93,3° dönük monte (sahada huniyle çift yönlü kalibre edildi).
+# Bu dönüş TF'te de basılıyor (lydia_startup.sh LIDAR_YAW_RAD, urdf
+# lidar_joint) — Nav2 costmap yalnız TF'e baktığı için orada yeterli.
+#
+# ⚠️ AMA taramayı DİZİ OLARAK indeksleyen her düğüm bu dönüşü kendi
+# uygulamak zorundadır: LaserScan.angle_min/increment tarama çerçevesindedir,
+# araç çerçevesi değil. Bu atlandığı için bir dönem preprocessing aracın SAĞ
+# yanını komple `inf` yapıyor, kayar engel arayıcısı aracın SOLUNU tarıyor ve
+# koni füzyonu mesafeyi 93° yanlış yönden okuyordu — üçü de hata basmadan.
+#
+# Dönüşüm pure_logic.tarama_acisi_arac / arac_acisi_tarama'da.
+LIDAR_MONTAJ_YAW_RAD = 1.6284   # [rad] 93,3° — urdf lidar_joint ile AYNI sayı
+
+# ─────────────────────────────────────────────
 # KAYAN HEDEF — haritasız sürüş (pure_logic.koridor_merkez_cizgisi / ic_duvar_hedefi)
 # ─────────────────────────────────────────────
 # Hedef `map` çerçevesinde sabit bir nokta değil, her döngüde taramadan

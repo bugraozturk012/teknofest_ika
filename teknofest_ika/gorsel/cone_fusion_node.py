@@ -17,7 +17,10 @@ from vision_msgs.msg import Detection2DArray
 from std_msgs.msg import Header
 from image_geometry import PinholeCameraModel
 
-from teknofest_ika.otonomi.topics import SCAN_FILTERED_TOPIC, YOLO_RAW_TOPIC, CONE_FUSION_CLOUD_TOPIC
+from teknofest_ika.otonomi.topics import (
+    SCAN_FILTERED_TOPIC, YOLO_RAW_TOPIC, CONE_FUSION_CLOUD_TOPIC,
+    LIDAR_MONTAJ_YAW_RAD,
+)
 
 
 class ConeFusionNode(Node):
@@ -171,7 +174,17 @@ class ConeFusionNode(Node):
             return dx * angle_per_pixel
 
     def _get_lidar_distance(self, scan: LaserScan, angle_deg: float):
-        angle_rad = math.radians(angle_deg)
+        """Kameradan gelen ARAÇ çerçevesindeki kerterizde LiDAR mesafesi.
+
+        `angle_deg` kameranın gördüğü yön, yani araç çerçevesinde. Tarama
+        dizisi ise LiDAR'ın kendi çerçevesinde; LiDAR gövdeye 93,3° dönük
+        monte olduğu için kerteriz doğrudan indekse çevrilemez. Çevrilmediği
+        sürece "tam önümdeki koni" için aracın ~93° solundaki mesafe okunuyor
+        ve koni costmap'e o mesafeyle basılıyordu.
+        """
+        # Araç çerçevesi → tarama çerçevesi (sarmalı).
+        angle_rad = math.remainder(
+            math.radians(angle_deg) - LIDAR_MONTAJ_YAW_RAD, 2.0 * math.pi)
         if angle_rad < scan.angle_min or angle_rad > scan.angle_max:
             return None
         idx = int((angle_rad - scan.angle_min) / scan.angle_increment)

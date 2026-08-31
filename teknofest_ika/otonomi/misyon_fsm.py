@@ -110,7 +110,7 @@ from teknofest_ika.otonomi.topics import (
     IMU_TOPIC, IMU_PITCH_RAMP_THRESHOLD,
     KORIDOR_SAPMA_UYARI_M, KORIDOR_TOPLAM_TOLERANS, KORIDOR_PENCERE_RAD,
     KAYAN_HEDEF_PERIYOT_S, KAYAN_HEDEF_FRAME, KAYAN_HEDEF_YOK_SINIR,
-    KAYAN_ODOM_BAYATLAMA_S,
+    KAYAN_ODOM_BAYATLAMA_S, LIDAR_MONTAJ_YAW_RAD,
 )
 from teknofest_ika.otonomi.pure_logic import (
     DetectionsStore, stop_check as _stop_check_pure, hizlanma_hiz_profili,
@@ -148,7 +148,7 @@ class KoridorIzleyici:
     gerekip gerekmediğine buradan çıkan ölçümle karar verilecek.
     """
 
-    def __init__(self, node, lidar_yaw_rad: float = 1.6284):
+    def __init__(self, node, lidar_yaw_rad: float = LIDAR_MONTAJ_YAW_RAD):
         self.node = node
         self._pub = node.create_publisher(Float32, ENGEBELI_SAPMA_TOPIC, 10)
 
@@ -562,7 +562,7 @@ class KayanHedefSurucusu:
     ODOM_ILERLEME_UYARI_S = 6.0
     ODOM_ILERLEME_M       = 0.20
 
-    def __init__(self, node: Node, nav: Nav2Client, lidar_yaw_rad: float = 1.6284):
+    def __init__(self, node: Node, nav: Nav2Client, lidar_yaw_rad: float = LIDAR_MONTAJ_YAW_RAD):
         self.node = node
         self.nav  = nav
         # LiDAR gövdeye dönük monte; düzeltme TF'te uygulanıyor, ham taramada

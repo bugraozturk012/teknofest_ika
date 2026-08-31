@@ -29,11 +29,15 @@ from std_msgs.msg import String
 
 from teknofest_ika.otonomi.topics import (
     SCAN_FILTERED_TOPIC, MOVING_OBS_TOPIC as OUTPUT_TOPIC, MOVING_OBS_DIR_TOPIC,
+    LIDAR_MONTAJ_YAW_RAD,
 )
 
 # Engel arama penceresi (araç önünde, ±60°, 0.5–4 m arası)
 ENGEL_MIN_MESAFE = 0.5
 ENGEL_MAX_MESAFE = 4.0
+# Arama penceresi ARAÇ çerçevesinde: 0° = ileri. Tarama çerçevesine
+# çevrilmeden uygulandığında pencere aracın 33°…153°'sine, yani SOL YANINA
+# düşüyordu — §6.8 engeli aracın önünde git-gel yaptığı için hiç görülmüyordu.
 ENGEL_ACI_MIN    = -math.radians(60)
 ENGEL_ACI_MAX    =  math.radians(60)
 
@@ -144,7 +148,13 @@ class KayarEngelKalman(Node):
     def _engel_bul(self, msg: LaserScan):
         """Arama penceresindeki en yakın noktanın lateral konumunu döndürür."""
         ranges = np.asarray(msg.ranges, dtype=np.float32)
-        acılar = msg.angle_min + np.arange(len(ranges), dtype=np.float32) * msg.angle_increment
+        tarama = (msg.angle_min
+                  + np.arange(len(ranges), dtype=np.float32) * msg.angle_increment)
+        # Tarama açıları → araç çerçevesi. Hem pencere hem de aşağıdaki lateral
+        # konum araç çerçevesinde olmalı: sin() tarama açısıyla alınırsa engelin
+        # sol/sağ kararı da 93° dönük çıkar.
+        acılar = (np.remainder(tarama + LIDAR_MONTAJ_YAW_RAD + np.pi,
+                               2.0 * np.pi) - np.pi)
 
         maske = (
             np.isfinite(ranges) &
