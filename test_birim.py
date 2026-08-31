@@ -899,6 +899,102 @@ check("iç duvar hedefi kısa tutulur",     _IMZA['ileri_m'].default <= 2.5, Tru
 check("iç duvar penceresi dar tutulur",   _IMZA['maks_yanal'].default <= 2.4, True)
 
 
+# ─── Hedefleme modu: harita hedefi ↔ kayan hedef ────────────────────────────
+from teknofest_ika.otonomi.pure_logic import (  # noqa: E402
+    hedefleme_modu_sec, kayan_hedef_karari, quat_yaw, arac_hedefini_odoma_tasi,
+)
+from teknofest_ika.otonomi.topics import (  # noqa: E402
+    KAYAN_HEDEF_FRAME, KAYAN_HEDEF_PERIYOT_S,
+)
+
+# Waypoint'ler doluyken 'oto' harita yolunu seçer, boşken kayan hedefe geçer.
+# Bu ikinci hal bugünkü gerçek durum: waypoint alanları 11/11 (0,0).
+check("oto + dolu waypoint → harita",     hedefleme_modu_sec('oto', True),  ('harita', 'oto'))
+check("oto + boş waypoint → kayan",       hedefleme_modu_sec('oto', False), ('kayan', 'oto'))
+check("açık istek harita",                hedefleme_modu_sec('harita', True), ('harita', 'istendi'))
+check("açık istek kayan",                 hedefleme_modu_sec('kayan', False), ('kayan', 'istendi'))
+# Açıkça 'harita' istenmiş ama waypoint'ler boşsa isteğe UYULUR — ancak
+# gerekçe bunu söyler, çağıran yüksek sesle uyarabilsin diye. Sessizce kayan
+# moda kaymak, aracın neden başka türlü sürdüğünü kimseye açıklamazdı.
+check("harita ama waypointler boş",       hedefleme_modu_sec('harita', False),
+      ('harita', 'harita_ama_waypointler_bos'))
+# Yazım hatası çökertmemeli (koşu tamamen engellenirdi) ama sessizce de
+# geçmemeli: 'oto' gibi davranıp gerekçede bildirir.
+check("geçersiz mod oto gibi davranır",   hedefleme_modu_sec('kyan', False)[0], 'kayan')
+check("geçersiz mod gerekçede görünür",   hedefleme_modu_sec('kyan', False)[1].startswith('gecersiz'), True)
+
+# Aşama bitişi: kat edilen YOL ölçütü. Kuş uçuşu ölçüt U dönüşünde aşamayı
+# yolun yarısında bitirirdi (22 m yol ↔ 11,3 m kuş uçuşu).
+check("mesafe dolmadan devam",            kayan_hedef_karari(5.0, 22.0, 0, 8), 'devam')
+check("mesafe dolunca tamam",             kayan_hedef_karari(22.0, 22.0, 0, 8), 'tamam')
+check("mesafe aşılınca da tamam",         kayan_hedef_karari(23.5, 22.0, 0, 8), 'tamam')
+# Varış ölçütü önce bakılır: istasyon sonunda koridor açılıp hedef üretilemese
+# bile aşama bitmiştir, kurtarmaya düşmek boşuna deneme harcardı.
+check("varış hedefsizlikten önce gelir",  kayan_hedef_karari(22.0, 22.0, 8, 8), 'tamam')
+check("ardışık hedefsizlik başarısız",    kayan_hedef_karari(5.0, 22.0, 8, 8), 'hedef_yok')
+check("sınırın altında hâlâ devam",       kayan_hedef_karari(5.0, 22.0, 7, 8), 'devam')
+# mesafe_m yoksa (0.0) aşama asla 'tamam' demez — bütçesi dolana kadar sürer.
+# misyon_fsm bu yüzden kayan modda mesafesiz aşamaları başlangıçta uyarıyor.
+check("mesafesiz aşama bitmez",           kayan_hedef_karari(99.0, 0.0, 0, 8), 'devam')
+
+
+# ─── waypoints.yaml: kayan hedef alanları ───────────────────────────────────
+# Kayan modda aşamanın nerede bittiğini YALNIZ mesafe_m söyler. Alan düşerse
+# aşama timeout'a kadar sürer ve koşu saatinden yer — hata basılmaz.
+_ASAMALAR = _ASAMA
+check("her aşamada mesafe_m var",         all(float(a.get('mesafe_m', 0)) > 0 for a in _ASAMALAR), True)
+# CAD'den ölçülen yol uzunlukları; toplamı 111,9 m. Kuş uçuşu 83 m'lik
+# parkurda U dönüşleri yolu 1,5-2 katına çıkarıyor.
+check("mesafe toplamı CAD ile uyumlu",    round(sum(float(a['mesafe_m']) for a in _ASAMALAR), 1), 111.9)
+# U dönüşleri: 3→4 sola dönerken iç duvar sağda, 6→7 sağa dönerken solda.
+# Yanlış yan, aracı virajın DIŞ duvarına sürer.
+_VIRAJLAR = {a['isim']: a.get('viraj') for a in _ASAMALAR if a.get('viraj')}
+check("U dönüşü olan iki aşama",          len(_VIRAJLAR), 2)
+check("DIK_ENGEL iç duvarı sağda",        _VIRAJLAR.get('DIK_ENGEL'), 'sag')
+check("ENGEBELİ_ARAZİ iç duvarı solda",   _VIRAJLAR.get('ENGEBELİ_ARAZİ'), 'sol')
+# viraj değeri ic_duvar_hedefi'nin kabul ettiği iki dizeden biri olmalı;
+# başka bir şey yazılırsa fonksiyon hedef üretmez ve viraj hedefsiz kalır.
+check("viraj değerleri geçerli",          set(_VIRAJLAR.values()) <= {'sol', 'sag'}, True)
+
+# waypoints.yaml'daki varsayılan mod da geçerli bir değer olmalı.
+_MOD = _WPY['parametreler'].get('hedefleme_modu')
+check("varsayılan mod geçerli",           _MOD in ('harita', 'kayan', 'oto'), True)
+
+
+# ─── misyon_fsm: kayan hedef bağlantısı ─────────────────────────────────────
+# Kayan sürüş 'e_stop' döndürebiliyor; NavigateState bunu doğrudan iletmezse
+# E-STOP kurtarmaya düşer ve araç saniyelerce oyalanır (bir kez böyle oldu).
+check("kayan e_stop doğrudan iletiliyor", "if result == 'e_stop':" in _fsm_kaynak(), True)
+# Aşama sonunda etkin hedef iptal edilmezse Nav2 son kayan hedefe (2-8 m
+# ileri) sürmeye devam eder ve araç istasyonu geçer.
+check("sürüş sonunda hedef iptal edilir", 'self.nav.iptal()' in _fsm_kaynak(), True)
+# Hedef gönderilmeden önce odom'a taşınmalı; taşıma atlanırsa araç
+# çerçevesindeki sayı odom sayısı sanılır ve hedef parkurun dışına düşer.
+check("hedef odoma taşınarak gönderilir", 'arac_hedefini_odoma_tasi(hedef, poz)' in _fsm_kaynak(), True)
+# Hedef odom çerçevesinde gönderilir. 'map' olsaydı SLAM düzeltmesi hedefi
+# sıçratırdı; araç çerçevesi ('base_link') olsaydı Nav2 hedefi her yeniden
+# planlamada o anki poza göre çözer, hedef araçla birlikte kayar ve asla
+# varılmaz — ikisi de kayan hedefin anlamını bozar.
+check("kayan hedef odom çerçevesinde",    KAYAN_HEDEF_FRAME, 'odom')
+
+# Araç çerçevesindeki hedefin odom'a taşınması. Araç (5,5)'te +y'ye bakarken
+# 2 m ilerisi (5,7) olmalı — eksen karışırsa hedef 90° yanlış yere düşer.
+_TASINAN = arac_hedefini_odoma_tasi((2.0, 0.0, 0.0), (5.0, 5.0, math.pi / 2))
+check("hedef odoma taşınır — x",          round(_TASINAN[0], 3), 5.0)
+check("hedef odoma taşınır — y",          round(_TASINAN[1], 3), 7.0)
+check("hedef yönü poza eklenir",          round(_TASINAN[2], 4), round(math.pi / 2, 4))
+# Araç orijinde ve hizalıysa dönüşüm kimlik olmalı.
+check("orijinde dönüşüm kimlik",          arac_hedefini_odoma_tasi((3.0, 1.0, 0.5), (0.0, 0.0, 0.0)),
+      (3.0, 1.0, 0.5))
+check("quat_yaw 90 derece",               round(quat_yaw(0, 0, math.sin(math.pi / 4), math.cos(math.pi / 4)), 4),
+      round(math.pi / 2, 4))
+check("quat_yaw birim kuaterniyon",       quat_yaw(0, 0, 0, 1), 0.0)
+# Yeniden hedefleme periyodu Nav2'nin planlama süresinden kısa olmamalı:
+# her hedef öncekini preempt ediyor, çok sık gönderilirse planlayıcı hiçbir
+# planı bitiremez.
+check("yeniden hedefleme çok sık değil",  KAYAN_HEDEF_PERIYOT_S >= 1.0, True)
+
+
 # ─── Sonuç ───────────────────────────────────────────────────────────────────
 print(f"\n{'='*45}")
 print(f"  TOPLAM: {PASS+FAIL} test | {PASS} GEÇTI | {FAIL} BAŞARISIZ")

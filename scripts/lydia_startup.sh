@@ -91,6 +91,10 @@ trap temizle TERM INT
 # başlatılmadan önce bilinmeli, Nav2 bloğu ise betiğin çok sonrasında.
 # Anahtarın ön koşulları o bloğun başında yazılı.
 : "${NAV2_AKTIF:=0}"
+# HEDEFLEME_MODU: misyon_fsm hedefleri nereden alsın. Boş bırakılırsa
+# waypoints.yaml'daki `hedefleme_modu` geçerli olur. Değerler ve ne zaman
+# hangisinin seçileceği Nav2 bloğunun içinde, düğüm başlatılan yerde yazılı.
+: "${HEDEFLEME_MODU:=}"
 # IMU_GUVENLIK_AKTIF: yatış açısına göre /speed_limit yayınlar ve 15°'de
 # E-STOP zorlar. Kapalı çünkü eşiği IMU'nun montaj yönüne güveniyor: BMI160
 # karta dönük lehimliyse araç düz dururken bile devrilmiş sanılır ve sürekli
@@ -418,7 +422,20 @@ if [ "$NAV2_AKTIF" = "1" ]; then
         sleep 2
         ros2 run teknofest_ika kayar_engel_costmap    > "$LOG/kayar_costmap.log" 2>&1 &
         sleep 2
-        ros2 run teknofest_ika misyon_fsm             > "$LOG/misyon_fsm.log" 2>&1 &
+        # HEDEFLEME_MODU: harita | kayan | oto (boş → waypoints.yaml'daki değer).
+        #   harita  waypoint koordinatları map çerçevesinde Nav2'ye verilir;
+        #           `parkur_cad.donusum` ölçülmüş ve `waypoint:` alanları
+        #           doldurulmuş olmalı, yoksa koşu parkuru sürmeden biter.
+        #   kayan   hedef her döngüde LiDAR taramasından üretilir; haritaya da
+        #           waypoint koordinatına da ihtiyaç yok, aşamalar mesafe_m
+        #           kadar yol kat edilince biter.
+        #   oto     waypoint'ler doluysa harita, hepsi (0,0) ise kayan.
+        if [ -n "$HEDEFLEME_MODU" ]; then
+            ros2 run teknofest_ika misyon_fsm --ros-args \
+                -p hedefleme_modu:="$HEDEFLEME_MODU" > "$LOG/misyon_fsm.log" 2>&1 &
+        else
+            ros2 run teknofest_ika misyon_fsm         > "$LOG/misyon_fsm.log" 2>&1 &
+        fi
         sleep 2
         echo "Nav2 yolu başlatıldı (tabela → terrain_adapter → controller)"
     fi

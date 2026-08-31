@@ -94,6 +94,8 @@ asamalar:
     pas_gecilir: false
     pas_puan: 10        # §9 su geçişi ve yağmur
     timeout_saniye: 50     # 10.0 m ÷ 0.20 m/s — başlangıç→1 varsayılan 10 m · su geçişi §6.4
+    mesafe_m: 10.0         # [m] kayan hedef yolunda aşamanın bitiş ölçütü — CAD'den
+                           # planlayıcıyla ölçülen GERÇEK yol (kuş uçuşu değil).
     aciklama: "Sulu yol — μ≈0.3, yavaş geç, frenleme mesafesi artar"
 
   - isim: TASLI_YOL
@@ -109,6 +111,8 @@ asamalar:
     pas_gecilir: false
     pas_puan: 5        # §9 çakıllı / taşlı yol
     timeout_saniye: 40     # 7.2 m ÷ 0.20 m/s — çakıllı/taşlı yol §6.3
+    mesafe_m: 7.2          # [m] kayan hedef yolunda aşamanın bitiş ölçütü — CAD'den
+                           # planlayıcıyla ölçülen GERÇEK yol (kuş uçuşu değil).
     aciklama: "Taşlı yol — lateral temas düzensiz, hız kısılır"
 
   - isim: YAN_EGIM
@@ -124,6 +128,8 @@ asamalar:
     pas_gecilir: false
     pas_puan: 5        # §9 yan eğim
     timeout_saniye: 25     # 5.0 m ÷ 0.20 m/s — yan eğim §6.5 · taban 25 s
+    mesafe_m: 5.0          # [m] kayan hedef yolunda aşamanın bitiş ölçütü — CAD'den
+                           # planlayıcıyla ölçülen GERÇEK yol (kuş uçuşu değil).
     aciklama: "Yan eğim %20 (§6.5, 11,31°) — roll eşikleri topics.py'de
       (uyarı 13°, dur 15°, E-STOP 20°) ama bunları uygulayan imu_guvenlik
       düğümü VARSAYILAN KAPALI (IMU_GUVENLIK_AKTIF=0): eşiği IMU'nun montaj
@@ -142,6 +148,10 @@ asamalar:
     pas_gecilir: false
     pas_puan: 5        # §9 dik engel
     timeout_saniye: 90     # 22.0 m ÷ 0.25 m/s — sol U dönüşü + 15 cm blok §6.6 — en uzun segment
+    mesafe_m: 22.0         # [m] kayan hedef yolunda aşamanın bitiş ölçütü — CAD'den
+                           # planlayıcıyla ölçülen GERÇEK yol (kuş uçuşu değil).
+    viraj: sag             # sol U dönüşü: y=0 → y=10 şeridine sağa dönülür, iç duvar SAĞDA.
+                           # Merkez çizgisi hedef veremeyince bu duvara düşülür.
     aciklama: "Dik engel — Nav2 lokal costmap engeli kaçınır"
 
   - isim: KONİLİ_YOL
@@ -157,6 +167,8 @@ asamalar:
     pas_gecilir: false
     pas_puan: 50        # §9 trafik konileri — otonom koşuda PAS GEÇİLEMEZ
     timeout_saniye: 25     # 5.0 m ÷ 0.30 m/s — düz şerit · taban 25 s
+    mesafe_m: 5.0          # [m] kayan hedef yolunda aşamanın bitiş ölçütü — CAD'den
+                           # planlayıcıyla ölçülen GERÇEK yol (kuş uçuşu değil).
     aciklama: "Konili yol slalom — dar geçiş, cone_fusion_node aktif"
 
   - isim: KAYAR_ENGEL
@@ -172,6 +184,8 @@ asamalar:
     pas_gecilir: false
     pas_puan: 50        # §9 kayar engel (temassız geçilirse)
     timeout_saniye: 65     # 9.8 m ÷ 0.15 m/s — 8 koni slalomu §6.7 — en yavaş segment
+    mesafe_m: 9.8          # [m] kayan hedef yolunda aşamanın bitiş ölçütü — CAD'den
+                           # planlayıcıyla ölçülen GERÇEK yol (kuş uçuşu değil).
     aciklama: "Kayar engel — pozisyon değişkendir, kayar_yon beklenir"
 
   - isim: ENGEBELİ_ARAZİ
@@ -187,6 +201,10 @@ asamalar:
     pas_gecilir: false
     pas_puan: 5        # §9 engebeli arazi
     timeout_saniye: 65     # 15.7 m ÷ 0.25 m/s — sağ U dönüşü
+    mesafe_m: 15.7         # [m] kayan hedef yolunda aşamanın bitiş ölçütü — CAD'den
+                           # planlayıcıyla ölçülen GERÇEK yol (kuş uçuşu değil).
+    viraj: sol             # sağ U dönüşü: y=10 → y=20 şeridine sola dönülür, iç duvar SOLDA.
+                           # Merkez çizgisi hedef veremeyince bu duvara düşülür.
     aciklama: "Engebeli arazi — titreşim tolere, hız minimum"
 
   - isim: DIK_EGIM_GIRIS
@@ -202,6 +220,8 @@ asamalar:
     pas_gecilir: false
     pas_puan: 15        # §9 dik eğimler parkuru — giriş+çıkış TEK aşama, puan bir kez
     timeout_saniye: 65     # 13.0 m ÷ 0.20 m/s — engebeli arazi §6.9
+    mesafe_m: 13.0         # [m] kayan hedef yolunda aşamanın bitiş ölçütü — CAD'den
+                           # planlayıcıyla ölçülen GERÇEK yol (kuş uçuşu değil).
     aciklama: >
       §6.10 Dik eğim girişi. Rampa öncesi düz zemin. Rampa dibindeki STOP işareti
       NavigateState tarafından tespit edilir (Tabela_stop/class_id=13):
@@ -227,6 +247,8 @@ asamalar:
     pas_gecilir: false
     pas_puan: 50        # §9 atış (iç daire); §9 pas örneği doğrudan bu aşamayı -50 diye verir
     timeout_saniye: 25     # 2.5 m ÷ 0.20 m/s — %45 rampa çıkışı §6.10 · taban 25 s
+    mesafe_m: 2.5          # [m] kayan hedef yolunda aşamanın bitiş ölçütü — CAD'den
+                           # planlayıcıyla ölçülen GERÇEK yol (kuş uçuşu değil).
     aciklama: "Atış bölgesi — araç durur, nişan alır, lazer ateşlenir (max 3 deneme)"
 
 
@@ -243,6 +265,8 @@ asamalar:
     pas_gecilir: false
     pas_puan: 0        # §9 puanı DIK_EGIM_GIRIS üzerinde, iki kez sayılmaz
     timeout_saniye: 25     # 2.5 m ÷ 0.20 m/s — %45 rampa inişi §6.10 · taban 25 s
+    mesafe_m: 2.5          # [m] kayan hedef yolunda aşamanın bitiş ölçütü — CAD'den
+                           # planlayıcıyla ölçülen GERÇEK yol (kuş uçuşu değil).
     aciklama: >
       §6.10 Dik eğim çıkışı. Rampa üzerinde çıkarken ve inerken STOP işaretleri
       NavigateState tarafından ayrı ayrı işlenir. Cooldown=3s rampa geçiş süresinden
@@ -269,6 +293,8 @@ asamalar:
     pas_gecilir: false
     pas_puan: 25        # §9 hızlanma — PAS GEÇİLEMEZ
     timeout_saniye: 65     # 19.2 m ÷ 0.30 m/s — düz şerit
+    mesafe_m: 19.2         # [m] kayan hedef yolunda aşamanın bitiş ölçütü — CAD'den
+                           # planlayıcıyla ölçülen GERÇEK yol (kuş uçuşu değil).
     aciklama: >
       §6.11 Hızlanma parkuru girişi. Nav2 bu noktaya götürür, sonra
       HizlanmaState devralır: Nav2 bypass, doğrudan /cmd_vel 3.0 m/s,
@@ -281,6 +307,18 @@ parametreler:
   hedef_tolerans_yaw: 0.20        # nav2_params.yaml yaw_goal_tolerance ile eşleştirildi [rad]
   asama_timeout_saniye: 120.0     # YEDEK tavan — yalnız timeout_saniye'si olmayan aşama için [s]
   baslangic_bekleme: 3.0          # Otonom moda geçişte bekleme süresi [s]
+
+  # Hedefleme yolu — koşu başında BİR KEZ seçilir, gerekçesiyle loglanır.
+  #   harita : waypoint koordinatları Nav2'ye `map` çerçevesinde verilir.
+  #            Anlamlı olması için `parkur_cad.donusum` ölçülmüş ve
+  #            `waypoint:` alanları doldurulmuş olmalı.
+  #   kayan  : hedef her döngüde LiDAR taramasından üretilir; waypoint
+  #            koordinatına da SLAM haritasının doğruluğuna da ihtiyaç yok.
+  #            Aşama, `mesafe_m` kadar YOL kat edilince biter.
+  #   oto    : waypoint'ler doluysa harita, hepsi (0,0) ise kayan.
+  # `ros2 run ... --ros-args -p hedefleme_modu:=kayan` ile ezilir
+  # (lydia_startup.sh HEDEFLEME_MODU değişkeni).
+  hedefleme_modu: harita
   kosu_suresi_saniye: 900.0       # §6.12 — atış dahil tüm koşu 15 dakika [s]
   # §6.10 rampa — RampaState Nav2'yi baypas edip doğrudan /cmd_vel basar.
   # ⚠️ İKİSİ DE ÖLÇÜLMEDİ. Tırmanış: patinaj yapmayacak kadar yüksek, tepede

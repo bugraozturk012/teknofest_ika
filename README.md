@@ -360,11 +360,34 @@ controller: RegulatedPurePursuitController
 | Durum | Açıklama |
 |---|---|
 | IDLE | `/mission_start True` bekler |
-| NAVIGATE | waypoints.yaml'dan sıradaki hedefe Nav2 ile gider |
+| NAVIGATE | sıradaki aşamayı sürer (hedefleme yolu aşağıda) |
 | SHOOT_APPROACH | ATIS waypoint'ine yaklaşır, hedef onayı bekler |
 | SHOOT | `hedef_hata ≤ ±5px` ise `/shoot_command True` |
 | HIZLANMA | Nav2 bypass — direkt /cmd_vel, 10m/s, 30m mesafe |
-| ERROR_RECOVERY | Nav2 timeout/hata → geri dönüş |
+| ERROR_RECOVERY | navigasyon hatası → 2 deneme, sonra sonraki aşama |
+
+**Hedefleme Yolu (`hedefleme_modu`)**
+
+NAVIGATE aşamayı iki yoldan biriyle sürer. Seçim koşu başında bir kez yapılır
+ve gerekçesiyle loglanır.
+
+| mod | hedef nereden | aşama ne zaman biter | ön koşul |
+|---|---|---|---|
+| `harita` | `waypoints.yaml` → `waypoint:` (map çerçevesi) | Nav2 hedefe varınca | `parkur_cad.donusum` ölçülmüş ve koordinatlar doldurulmuş olmalı |
+| `kayan` | her 1,5 s'de LiDAR taramasından üretilir | `mesafe_m` kadar yol kat edilince | odometri (enkoder) |
+| `oto` | waypoint'ler doluysa `harita`, hepsi (0,0) ise `kayan` | — | — |
+
+Kayan hedef haritaya da waypoint koordinatına da ihtiyaç duymaz: hedef araç
+çerçevesinde doğar, `odom` çerçevesine taşınıp Nav2'ye verilir ve bir sonraki
+döngüde yenisiyle değiştirilir. Düz şeritte koridorun merkez çizgisi, U
+dönüşünde aşamanın `viraj` alanında yazan iç duvar takip edilir; merkez çizgisi
+hedef veremediği anda iç duvara düşülür.
+
+Sahada değiştirmek için:
+
+```bash
+HEDEFLEME_MODU=kayan NAV2_AKTIF=1 ENKODER_AKTIF=1 ./scripts/lydia_startup.sh
+```
 
 **Özel Durumlar:**
 - `DIK_EGIM_GIRIS/CIKIS`: STOP tabelasında 2s dur (Şartname §6.10). STOP

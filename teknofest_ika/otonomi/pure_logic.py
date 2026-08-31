@@ -811,3 +811,85 @@ def ic_duvar_hedefi(ranges, angle_min: float, angle_increment: float,
     # Teğete dik, duvardan koridorun içine doğru
     nx, ny = ty * isaret, -tx * isaret
     return p[0] + nx * hedef_mesafe, p[1] + ny * hedef_mesafe, math.atan2(ty, tx)
+
+
+def quat_yaw(qx: float, qy: float, qz: float, qw: float) -> float:
+    """Kuaterniyondan yaw [rad]. Düzlemsel dönüşümler için roll/pitch gerekmez."""
+    return math.atan2(2.0 * (qw * qz + qx * qy),
+                      1.0 - 2.0 * (qy * qy + qz * qz))
+
+
+def arac_hedefini_odoma_tasi(hedef, odom_poz):
+    """
+    Araç çerçevesinde üretilmiş `(x, y, yaw)` hedefini `odom` çerçevesine taşır.
+    `odom_poz` = (x, y, yaw), aracın odom'daki anlık pozu.
+
+    NEDEN GEREKLİ
+    ─────────────────────────────────────────────────────────────────────────
+    Hedef Nav2'ye araç çerçevesinde verilirse Nav2 onu HER YENİDEN PLANLAMADA
+    o anki araç pozuna göre yeniden çözer: hedef araçla birlikte kayar, asla
+    varılmaz ve hedef denetleyicisi hiç tetiklenmez. Araç çerçevesindeki
+    hedef "2 m ilerisi" demektir, "şu nokta" değil.
+
+    `odom` seçilir, `map` değil: odom sürüklenir ama SIÇRAMAZ. Hedef zaten
+    her döngüde taramadan yeniden doğduğu için 1,5 saniyelik ömrü boyunca
+    sürüklenmenin etkisi ölçülemeyecek kadar küçüktür; `map` ise SLAM
+    düzeltmesiyle sıçrayabilir ve hedefi bir anda metrelerce kaydırır.
+    """
+    ox, oy, oyaw = odom_poz
+    hx, hy, hyaw = hedef
+    return (ox + math.cos(oyaw) * hx - math.sin(oyaw) * hy,
+            oy + math.sin(oyaw) * hx + math.cos(oyaw) * hy,
+            oyaw + hyaw)
+
+
+def hedefleme_modu_sec(istenen: str, waypoint_dolu: bool):
+    """
+    Koşunun hangi hedefleme yoluyla sürüleceğini seçer. Dönüş: `(mod, gerekçe)`.
+
+    'harita'  waypoints.yaml'ın `map` çerçevesindeki koordinatları Nav2'ye
+              hedef olarak verilir. Koordinatların anlamlı olması için SLAM
+              haritası ile parkur arasındaki katı dönüşümün ölçülmüş olması
+              gerekir (`parkur_cad.donusum`).
+    'kayan'   hedef her döngüde LiDAR taramasından yeniden üretilir; `map`
+              çerçevesine de waypoint koordinatlarına da ihtiyaç yoktur.
+    'oto'     waypoint'ler doluysa 'harita', hepsi (0,0) ise 'kayan'.
+
+    Seçim KOŞU BAŞINDA bir kez yapılır. Koşu ortasında sessizce mod
+    değiştirmek en kötüsü olurdu: araç neden başka türlü davrandığını kimse
+    anlamaz, log'da da tek bir satır olarak kaybolur.
+
+    Tanınmayan bir değer 'oto' gibi ele alınır ve gerekçede bildirilir.
+    Çökmek koşuyu tamamen engellerdi; sessizce 'harita'ya düşmek ise
+    waypoint'ler (0,0) iken aracı hiç sürmeden "tamamlandı" dedirtirdi.
+    """
+    if istenen not in ('harita', 'kayan', 'oto'):
+        return ('harita' if waypoint_dolu else 'kayan'), f'gecersiz_istenen:{istenen}'
+    if istenen == 'oto':
+        return ('harita' if waypoint_dolu else 'kayan'), 'oto'
+    if istenen == 'harita' and not waypoint_dolu:
+        # İstenen açıkça 'harita' ise ona uyulur; ama bu koşunun parkuru hiç
+        # sürmeden biteceği anlamına gelir, çağıran yüksek sesle uyarmalı.
+        return 'harita', 'harita_ama_waypointler_bos'
+    return istenen, 'istendi'
+
+
+def kayan_hedef_karari(kat_edilen_m: float, mesafe_m: float,
+                       hedefsiz_ardisik: int, hedefsiz_sinir: int) -> str:
+    """
+    Kayan hedefle sürülen bir aşamanın devam edip etmeyeceği.
+    Dönüş: 'tamam' | 'hedef_yok' | 'devam'.
+
+    `kat_edilen_m` odometreden biriktirilen YOL UZUNLUĞU olmalı, başlangıç
+    noktasına olan uzaklık değil: U dönüşünde ikisi 22 m'ye karşı 11 m gibi
+    ayrışır ve kuş uçuşu ölçüt aşamayı yolun yarısında bitirirdi.
+
+    Varış ölçütü önce bakılır: mesafe tamamlandıysa hedef üretilememesi
+    önemsizdir, aşama zaten bitmiştir (istasyonun sonunda koridor açılıp
+    tarama koridor geometrisini tutmayabilir).
+    """
+    if mesafe_m > 0.0 and kat_edilen_m >= mesafe_m:
+        return 'tamam'
+    if hedefsiz_ardisik >= hedefsiz_sinir:
+        return 'hedef_yok'
+    return 'devam'

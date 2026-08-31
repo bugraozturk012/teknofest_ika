@@ -442,6 +442,26 @@ KORIDOR_TOPLAM_TOLERANS = 0.60   # sol+sağ bu kadar sapabilir, fazlası koridor
 # tarama çerçevesinde okunur ve montaj açısıyla kaydırılır.
 KORIDOR_PENCERE_RAD     = 0.26   # ±15° — duvarın düz kısmını yakalar
 
+# ─────────────────────────────────────────────
+# KAYAN HEDEF — haritasız sürüş (pure_logic.koridor_merkez_cizgisi / ic_duvar_hedefi)
+# ─────────────────────────────────────────────
+# Hedef `map` çerçevesinde sabit bir nokta değil, her döngüde taramadan
+# yeniden üretilen bir nokta. Bu yüzden SLAM haritasının doğruluğuna da
+# waypoint koordinatlarına da ihtiyaç duymaz; odometri yalnız "bu aşamada ne
+# kadar yol gittim" için kullanılır ve hedefe HİÇ birikmez.
+KAYAN_HEDEF_PERIYOT_S  = 1.5    # [s] yeniden hedefleme periyodu (~0,67 Hz)
+# Periyot bilerek Nav2'nin planlama süresinden (max_planning_time 5 s) kısa
+# değil, uzun tutuldu: her yeni hedef öncekini preempt ediyor, çok sık
+# gönderilirse planlayıcı hiçbir planı bitiremeden yenisine başlar.
+# Hedef taramadan araç çerçevesinde doğar ama Nav2'ye ODOM çerçevesinde
+# gönderilir: araç çerçevesindeki bir hedefi Nav2 her yeniden planlamada
+# o anki poza göre yeniden çözer, yani hedef araçla birlikte kayar ve
+# asla varılmaz. odom sürüklenir ama sıçramaz; hedefin ömrü zaten bir
+# periyot (1,5 s) olduğu için sürüklenme ölçülemeyecek kadar küçük kalır.
+KAYAN_HEDEF_FRAME      = "odom"
+KAYAN_HEDEF_YOK_SINIR  = 8      # ardışık bu kadar döngüde hedef üretilemezse aşama başarısız
+KAYAN_ODOM_BAYATLAMA_S = 1.0    # [s] /odom bu süre gelmezse kat edilen yol ölçülemiyor demektir
+
 # Mod yönetimi
 MOD_KOMUT_TOPIC   = "/mod/komut"    # yazılımsal/GCS mod değiştirme (UInt8)
 MOD_AKTIF_TOPIC   = "/mod/aktif"    # geçerli mod (UInt8)

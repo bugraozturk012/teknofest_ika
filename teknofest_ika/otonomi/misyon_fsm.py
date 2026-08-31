@@ -109,6 +109,8 @@ from teknofest_ika.otonomi.topics import (
     SCAN_FILTERED_TOPIC, ENGEBELI_SAPMA_TOPIC, KORIDOR_GENISLIGI_M,
     IMU_TOPIC, IMU_PITCH_RAMP_THRESHOLD,
     KORIDOR_SAPMA_UYARI_M, KORIDOR_TOPLAM_TOLERANS, KORIDOR_PENCERE_RAD,
+    KAYAN_HEDEF_PERIYOT_S, KAYAN_HEDEF_FRAME, KAYAN_HEDEF_YOK_SINIR,
+    KAYAN_ODOM_BAYATLAMA_S,
 )
 from teknofest_ika.otonomi.pure_logic import (
     DetectionsStore, stop_check as _stop_check_pure, hizlanma_hiz_profili,
@@ -116,6 +118,9 @@ from teknofest_ika.otonomi.pure_logic import (
     kosu_butcesi, pas_verilebilir as _pas_verilebilir_pure,
     kurtarma_karari as _kurtarma_karari_pure,
     quat_to_roll_pitch_deg, rollback_riskli, rampa_faz_gecisi,
+    koridor_merkez_cizgisi, kayan_hedef, ic_duvar_hedefi,
+    hedefleme_modu_sec, kayan_hedef_karari,
+    quat_yaw, arac_hedefini_odoma_tasi,
 )
 
 # §6.10: dik eğim çıkış/iniş noktalarında STOP tabelası kaçırılsa bile
@@ -241,6 +246,8 @@ class Nav2Client:
             'navigate_to_pose',
             callback_group=ReentrantCallbackGroup()
         )
+        # Kayan hedef sürüşünde etkin goal'ın handle'ı — iptal için saklanır.
+        self._son_handle = None
 
     def go_to(self, x: float, y: float, yaw: float,
               timeout_sec: float = 120.0,
@@ -316,9 +323,58 @@ class Nav2Client:
             )
         return 'success' if success else 'failed'
 
-    def _build_pose(self, x: float, y: float, yaw: float) -> PoseStamped:
+    def hedef_gonder(self, x: float, y: float, yaw: float,
+                     frame_id: str = KAYAN_HEDEF_FRAME) -> bool:
+        """
+        Bloklamadan hedef gönderir; gönderilen hedef öncekini preempt eder.
+        Kayan hedef sürüşü için: hedef sürekli yenilendiği için `go_to`'nun
+        "gönder ve sonucu bekle" akışı burada kullanılamaz.
+
+        `frame_id` varsayılan olarak araç çerçevesidir. Hedef taramadan
+        üretildiği için araç çerçevesinde doğar; Nav2 kabul anında TF ile
+        global çerçeveye çevirir. Böylece `map` çerçevesinin kayması hedefe
+        birikmez — her döngüde hedef zaten yeniden doğuyor.
+        """
+        if not self._client.server_is_ready():
+            if not self._client.wait_for_server(timeout_sec=2.0):
+                self.node.get_logger().error(
+                    'Nav2 /navigate_to_pose hazır değil — kayan hedef gönderilemiyor.'
+                )
+                return False
+
+        goal = NavigateToPose.Goal()
+        goal.pose = self._build_pose(x, y, yaw, frame_id)
+
+        future = self._client.send_goal_async(goal)
+        future.add_done_callback(self._hedef_kabul_edildi)
+        return True
+
+    def _hedef_kabul_edildi(self, future):
+        """send_goal_async sonucu — iptal edebilmek için handle saklanır."""
+        try:
+            handle = future.result()
+        except Exception as e:
+            self.node.get_logger().warn(f'Nav2 kayan hedef gönderilemedi: {e}')
+            return
+        if handle.accepted:
+            self._son_handle = handle
+        else:
+            self.node.get_logger().warn('Nav2 kayan hedefi reddetti.')
+
+    def iptal(self):
+        """Etkin kayan hedefi iptal eder. Nav2 iptalde aracı durdurur."""
+        handle = self._son_handle
+        self._son_handle = None
+        if handle is not None:
+            try:
+                handle.cancel_goal_async()
+            except Exception as e:
+                self.node.get_logger().warn(f'Nav2 hedef iptali başarısız: {e}')
+
+    def _build_pose(self, x: float, y: float, yaw: float,
+                    frame_id: str = 'map') -> PoseStamped:
         pose = PoseStamped()
-        pose.header.frame_id = 'map'
+        pose.header.frame_id = frame_id
         pose.header.stamp    = self.node.get_clock().now().to_msg()
         pose.pose.position.x = x
         pose.pose.position.y = y
@@ -466,9 +522,228 @@ class IdleState(smach.State):
 # STATE 2 — NAVIGATE
 # ═══════════════════════════════════════════════════════════════════════════════
 
+class KayanHedefSurucusu:
+    """
+    Haritasız sürüş: hedef her döngüde LiDAR taramasından yeniden üretilir.
+
+    NEDEN
+    ─────────────────────────────────────────────────────────────────────────
+    'harita' yolunda hedefler `map` çerçevesinde sabit noktalardır ve o
+    çerçevenin orijini aracın boot ettiği yerdir. Harita koşarken kurulduğu
+    için bir istasyonun map koordinatı ÖNCEDEN bilinemez; ancak parkur CAD'i
+    ile harita arasında ölçülecek tek bir katı dönüşümle bağlanabilir
+    (`waypoints.yaml` → `parkur_cad.donusum`). O dönüşüm ölçülmemişse ya da
+    SLAM'in `map→odom` düzeltmesi koşu ortasında sıçrarsa hedefler kayar.
+
+    Bu sınıf o zincire hiç girmez. Hedef araç çerçevesinde doğar, Nav2'ye
+    `base_link` çerçevesinde verilir ve bir sonraki döngüde yenisiyle
+    değiştirilir. Odometri yalnız "bu aşamada ne kadar yol gittim" sorusu
+    için kullanılır; hedefin kendisine HİÇ karışmaz, dolayısıyla odometri
+    kayması hedefe birikmez.
+
+    HEDEF NEREDEN ÜRETİLİR
+    ─────────────────────────────────────────────────────────────────────────
+    Önce koridorun merkez çizgisi denenir (`koridor_merkez_cizgisi` +
+    `kayan_hedef`). Düz şeritte çalışan yol budur. U dönüşünde 180° sensör
+    menzilinin içinde tamamlandığı için merkez çizgisi 5–13 m boyunca hedef
+    üretemiyor; orada aşamanın `viraj` alanında yazan iç duvar takip edilir
+    (`ic_duvar_hedefi`). Seçim kendiliğinden olur: merkez çizgisi hedef
+    veremediği anda iç duvara düşülür, dönüşün nerede başladığını bilmek
+    gerekmez.
+
+    Aşama, waypoint koordinatına varışla değil, `mesafe_m` kadar YOL
+    KAT EDİLMESİYLE biter. Mesafeler parkur CAD'inden planlayıcıyla ölçüldü
+    (`scripts/parkur_cad/donus.py`), kuş uçuşu değil gerçek yol uzunluğudur.
+    """
+
+    # Odometri ilerlemiyorsa (enkoder takılı değil / kopuk) bu yalnız
+    # UYARILIR, aşama düşürülmez: §6.8 kayar engelde araç meşru olarak
+    # bekliyor olabilir. Gerçek takılmayı aşamanın kendi bütçesi yakalar.
+    ODOM_ILERLEME_UYARI_S = 6.0
+    ODOM_ILERLEME_M       = 0.20
+
+    def __init__(self, node: Node, nav: Nav2Client, lidar_yaw_rad: float = 1.6284):
+        self.node = node
+        self.nav  = nav
+        # LiDAR gövdeye dönük monte; düzeltme TF'te uygulanıyor, ham taramada
+        # değil (KoridorIzleyici ile aynı gerekçe).
+        self._lidar_yaw = lidar_yaw_rad
+
+        self._lock       = threading.Lock()
+        self._scan       = None    # (ranges, angle_min, angle_increment)
+        self._konum      = None    # son /odom konumu
+        self._poz        = None    # (x, y, yaw) — hedefi odom'a taşımak için
+        self._odom_zaman = 0.0     # wall-clock — son /odom mesajının geliş anı
+        self._yol        = 0.0     # aşama başından biriken YOL UZUNLUĞU [m]
+
+        node.create_subscription(LaserScan, SCAN_FILTERED_TOPIC, self._on_scan, 10)
+        node.create_subscription(Odometry, ODOM_TOPIC, self._on_odom, 10)
+
+    def _on_scan(self, msg: LaserScan):
+        with self._lock:
+            self._scan = (list(msg.ranges), msg.angle_min, msg.angle_increment)
+
+    def _on_odom(self, msg: Odometry):
+        p = msg.pose.pose.position
+        q = msg.pose.pose.orientation
+        with self._lock:
+            if self._konum is not None:
+                # Kuş uçuşu değil, artımların toplamı: U dönüşünde ikisi
+                # 22 m'ye karşı 11 m ayrışır ve kuş uçuşu ölçüt aşamayı
+                # yolun yarısında bitirirdi.
+                self._yol += math.hypot(p.x - self._konum[0], p.y - self._konum[1])
+            self._konum      = (p.x, p.y)
+            self._poz        = (p.x, p.y, quat_yaw(q.x, q.y, q.z, q.w))
+            self._odom_zaman = time.time()
+
+    def hedef_uret(self, taraf):
+        """Taramadan (x, y, yaw) üretir. Dönüş: (hedef | None, kaynak)."""
+        with self._lock:
+            scan = self._scan
+        if scan is None:
+            return None, 'tarama_yok'
+        ranges, amin, inc = scan
+
+        cizgi = koridor_merkez_cizgisi(ranges, amin, inc, self._lidar_yaw,
+                                       KORIDOR_GENISLIGI_M)
+        hedef = kayan_hedef(cizgi)
+        if hedef is not None:
+            return hedef, 'merkez'
+
+        if taraf:
+            hedef = ic_duvar_hedefi(ranges, amin, inc, self._lidar_yaw, taraf)
+            if hedef is not None:
+                return hedef, f'ic_duvar_{taraf}'
+
+        return None, 'hedef_yok'
+
+    def sur(self, label: str, mesafe_m: float, taraf, deadline: float,
+            dur_kontrol=None, e_stop_fn=None) -> str:
+        """
+        Aşamayı kayan hedefle sürer. Bloklar.
+        Dönüş: 'success' | 'timeout' | 'failed' | 'stop_requested' | 'e_stop'
+        """
+        if mesafe_m <= 0.0:
+            self.node.get_logger().error(
+                f'[KAYAN] {label}: mesafe_m yok — aşamanın nerede biteceği '
+                'bilinmiyor, sürülmüyor.'
+            )
+            return 'failed'
+
+        with self._lock:
+            self._yol   = 0.0
+            self._konum = None
+
+        self.node.get_logger().info(
+            f'[KAYAN] {label} → {mesafe_m:.1f} m yol, '
+            f'viraj={taraf or "yok"}, bütçe={deadline - time.time():.0f}s'
+        )
+
+        hedefsiz       = 0
+        sonraki_hedef  = 0.0
+        son_ilerleme_t = time.time()
+        son_ilerleme_y = 0.0
+        try:
+            while rclpy.ok():
+                simdi = time.time()
+                if e_stop_fn and e_stop_fn():
+                    self.node.get_logger().error('[KAYAN] E-STOP — sürüş iptal.')
+                    return 'e_stop'
+                if dur_kontrol and dur_kontrol():
+                    return 'stop_requested'
+                if simdi >= deadline:
+                    with self._lock:
+                        yol = self._yol
+                    self.node.get_logger().warn(
+                        f'[KAYAN] {label}: bütçe doldu — {yol:.1f}/{mesafe_m:.1f} m.'
+                    )
+                    return 'timeout'
+
+                with self._lock:
+                    yol        = self._yol
+                    odom_zaman = self._odom_zaman
+
+                if odom_zaman == 0.0 or simdi - odom_zaman > KAYAN_ODOM_BAYATLAMA_S:
+                    # Kat edilen yol ölçülemiyorsa aşamanın biteceği nokta da
+                    # bilinmiyor demektir; kör sürmek yerine kurtarmaya düşülür.
+                    self.node.get_logger().error(
+                        f'[KAYAN] {label}: /odom yok ya da bayat — kat edilen '
+                        'yol ölçülemiyor, sürüş kesiliyor.'
+                    )
+                    return 'failed'
+
+                karar = kayan_hedef_karari(yol, mesafe_m, hedefsiz,
+                                           KAYAN_HEDEF_YOK_SINIR)
+                if karar == 'tamam':
+                    self.node.get_logger().info(
+                        f'[KAYAN] {label} tamam — {yol:.1f} m kat edildi.'
+                    )
+                    return 'success'
+                if karar == 'hedef_yok':
+                    self.node.get_logger().error(
+                        f'[KAYAN] {label}: {KAYAN_HEDEF_YOK_SINIR} ardışık '
+                        f'döngüde hedef üretilemedi ({yol:.1f}/{mesafe_m:.1f} m) — '
+                        'koridor taramada tutmuyor.'
+                    )
+                    return 'failed'
+
+                if yol - son_ilerleme_y >= self.ODOM_ILERLEME_M:
+                    son_ilerleme_y = yol
+                    son_ilerleme_t = simdi
+                elif simdi - son_ilerleme_t > self.ODOM_ILERLEME_UYARI_S:
+                    self.node.get_logger().warn(
+                        f'[KAYAN] {label}: {self.ODOM_ILERLEME_UYARI_S:.0f}s '
+                        f'ilerleme yok ({yol:.1f} m) — enkoder ya da engel?'
+                    )
+                    son_ilerleme_t = simdi
+
+                if simdi >= sonraki_hedef:
+                    hedef, kaynak = self.hedef_uret(taraf)
+                    if hedef is None:
+                        hedefsiz += 1
+                        self.node.get_logger().warn(
+                            f'[KAYAN] {label}: hedef üretilemedi ({kaynak}) '
+                            f'{hedefsiz}/{KAYAN_HEDEF_YOK_SINIR}'
+                        )
+                    else:
+                        hedefsiz = 0
+                        with self._lock:
+                            poz = self._poz
+                        # Hedef araç çerçevesinde doğdu; odom'a taşınmadan
+                        # gönderilirse Nav2 her yeniden planlamada onu o anki
+                        # poza göre yeniden çözer ve hedef araçla kayar.
+                        ox, oy, oyaw = arac_hedefini_odoma_tasi(hedef, poz)
+                        if self.nav.hedef_gonder(ox, oy, oyaw):
+                            self.node.get_logger().info(
+                                f'[KAYAN] {label}: hedef {kaynak} '
+                                f'araçtan ({hedef[0]:.2f}, {hedef[1]:.2f}) → '
+                                f'odom ({ox:.2f}, {oy:.2f}) '
+                                f'yol {yol:.1f}/{mesafe_m:.1f} m'
+                            )
+                    sonraki_hedef = simdi + KAYAN_HEDEF_PERIYOT_S
+
+                time.sleep(0.1)
+        finally:
+            # Hangi yoldan çıkılırsa çıkılsın etkin hedef iptal edilmeli:
+            # kalırsa Nav2 aşama bittikten sonra da ileri sürmeye devam eder.
+            self.nav.iptal()
+
+        return 'failed'
+
+
 class NavigateState(smach.State):
     """
     Waypoint listesini sırayla işler.
+
+    Aşamayı sürmenin iki yolu var, seçim `hedefleme_modu` ile koşu başında
+    yapılır (bkz. main):
+      'harita' → waypoint'in map çerçevesindeki koordinatı Nav2'ye verilir,
+                 varış Nav2'nin hedef denetleyicisinden gelir.
+      'kayan'  → KayanHedefSurucusu: hedef her döngüde taramadan üretilir,
+                 aşama `mesafe_m` kadar yol kat edilince biter. Waypoint
+                 koordinatı da SLAM haritası da kullanılmaz.
+    STOP (§6.10), pas hakkı (§9), aşama bütçesi ve E-STOP mantığı iki yolda
+    da aynıdır — yalnız sürüş çağrısı değişir.
 
     Her waypoint için:
       1. Nav2'ye hedef gönder, bekle.
@@ -492,7 +767,8 @@ class NavigateState(smach.State):
     MAX_STOP = 3
 
     def __init__(self, node: Node, nav: Nav2Client, det_store: DetectionsStore,
-                 saat: 'MisyonSaati', stage_timeout: float = 120.0):
+                 saat: 'MisyonSaati', stage_timeout: float = 120.0,
+                 kayan: 'KayanHedefSurucusu' = None):
         smach.State.__init__(
             self,
             outcomes=['next_waypoint', 'shoot_waypoint', 'hizlanma_waypoint',
@@ -506,6 +782,10 @@ class NavigateState(smach.State):
         self.det_store             = det_store
         self.saat                  = saat
         self.stage_timeout         = stage_timeout
+        # None → 'harita' yolu (waypoint koordinatları Nav2'ye verilir).
+        # Dolu → 'kayan' yolu: hedef her döngüde taramadan üretilir, waypoint
+        # koordinatlarına ve `map` çerçevesinin doğruluğuna ihtiyaç kalmaz.
+        self.kayan                 = kayan
         # §9: pas hakkı koşu başına, aşama başına değil. Sayaç state örneği
         # üzerinde tutulur; NavigateState her waypoint için yeniden execute
         # edilir ama nesne aynı kalır.
@@ -578,10 +858,16 @@ class NavigateState(smach.State):
         wp    = waypoints[idx]
         label = wp.get('label', '')
 
-        self.node.get_logger().info(
-            f'[NAVIGATE] {idx+1}/{len(waypoints)} → {label} '
-            f'({wp["x"]:.2f}, {wp["y"]:.2f})'
-        )
+        if self.kayan is not None:
+            self.node.get_logger().info(
+                f'[NAVIGATE] {idx+1}/{len(waypoints)} → {label} '
+                f'(kayan hedef, {float(wp.get("mesafe_m", 0.0)):.1f} m)'
+            )
+        else:
+            self.node.get_logger().info(
+                f'[NAVIGATE] {idx+1}/{len(waypoints)} → {label} '
+                f'({wp["x"]:.2f}, {wp["y"]:.2f})'
+            )
 
         # Nav2'ye git — STOP işareti görülürse ortada kesilir, 2s beklenir, tekrar gönderilir.
         # Aşama timeout'u waypoint'in TAMAMINI kapsar: her STOP'tan sonra go_to'yu
@@ -614,15 +900,30 @@ class NavigateState(smach.State):
         try:
             while True:
                 kalan = wp_deadline - time.time()
+                dur_kontrol = (self._stop_check
+                               if stop_sayaci < self.MAX_STOP else None)
                 if kalan <= 0.0:
                     result = 'timeout'
+                elif self.kayan is not None:
+                    result = self.kayan.sur(
+                        label,
+                        float(wp.get('mesafe_m', 0.0)),
+                        wp.get('viraj'),
+                        deadline=time.time() + kalan,
+                        dur_kontrol=dur_kontrol,
+                        e_stop_fn=lambda: self.det_store.get_field('e_stop', False),
+                    )
                 else:
                     result = self.nav.go_to(
                         wp['x'], wp['y'], wp.get('yaw', 0.0),
                         timeout_sec=kalan,
-                        stop_check_fn=(self._stop_check
-                                       if stop_sayaci < self.MAX_STOP else None),
+                        stop_check_fn=dur_kontrol,
                     )
+
+                # E-STOP kurtarmaya UĞRAMAZ (bkz. ErrorRecoveryState): kurtarma
+                # denemesi harcamak aracı saniyelerce oyalıyordu.
+                if result == 'e_stop':
+                    return 'e_stop'
 
                 if result == 'stop_requested':
                     stop_sayaci += 1
@@ -1704,6 +2005,11 @@ def load_waypoints(yaml_path: str):
                 # §9: pas geçilen aşamanın alınabilecek en yüksek puanı eksi
                 # olarak yazılır. Log'da bedelin görünmesi için taşınıyor.
                 'pas_puan':    a.get('pas_puan', 0.0),
+                # Kayan hedef yolu için: aşamanın CAD'den ölçülen YOL uzunluğu
+                # ve (varsa) U dönüşünde takip edilecek iç duvarın yanı.
+                # 'harita' yolunda ikisi de okunmaz.
+                'mesafe_m':    a.get('mesafe_m', 0.0),
+                'viraj':       a.get('viraj'),
             })
 
         parametreler = data.get('parametreler', {})
@@ -1804,6 +2110,44 @@ def main():
     rampa_inis         = float(parametreler.get('rampa_inis_hiz',     0.40))
     node.get_logger().info(f'Aşama timeout: {stage_timeout:.0f}s | Başlangıç bekleme: {baslangic_bekleme:.0f}s (waypoints.yaml)')
 
+    # ── Hedefleme yolu: 'harita' | 'kayan' | 'oto' ────────────────────────
+    # Varsayılan waypoints.yaml'dan gelir, `-p hedefleme_modu:=kayan` ile
+    # ezilir (lydia_startup.sh HEDEFLEME_MODU değişkeni). Seçim koşu başında
+    # BİR KEZ yapılır ve gerekçesiyle loglanır.
+    node.declare_parameter('hedefleme_modu',
+                           str(parametreler.get('hedefleme_modu', 'harita')))
+    istenen_mod = node.get_parameter('hedefleme_modu').value
+    waypoint_dolu = any(w['x'] != 0.0 or w['y'] != 0.0 for w in waypoints)
+    hedefleme_modu, mod_gerekce = hedefleme_modu_sec(istenen_mod, waypoint_dolu)
+
+    kayan_surucu = None
+    if hedefleme_modu == 'kayan':
+        eksik = [w['label'] for w in waypoints if float(w.get('mesafe_m', 0.0)) <= 0.0]
+        if eksik:
+            # Mesafesiz aşama kayan modda nerede biteceğini bilmez ve bütçesi
+            # dolana kadar sürer. Sessizce sürmektense baştan söylenir.
+            node.get_logger().error(
+                f'[MOD] kayan hedef seçildi ama mesafe_m yok: {", ".join(eksik)} — '
+                'bu aşamalar timeout\'a düşecek.'
+            )
+        kayan_surucu = KayanHedefSurucusu(node, nav)
+        node.get_logger().warn(
+            f'[MOD] KAYAN HEDEF ({mod_gerekce}) — hedefler LiDAR taramasından '
+            'üretiliyor, waypoint koordinatları ve SLAM haritası KULLANILMIYOR. '
+            'Aşamalar mesafe_m kadar yol kat edilince biter.'
+        )
+    else:
+        node.get_logger().info(
+            f'[MOD] HARİTA HEDEFİ ({mod_gerekce}) — waypoint koordinatları '
+            'Nav2\'ye map çerçevesinde veriliyor.'
+        )
+        if not waypoint_dolu:
+            node.get_logger().error(
+                '[MOD] UYARI: waypoint\'ler 11/11 (0,0) — bu koşu parkuru hiç '
+                'sürmeden "tamamlandı" der. hedefleme_modu:=kayan ya da :=oto '
+                'ile kayan hedefe geçilebilir.'
+            )
+
     saat = MisyonSaati(node, kosu_suresi)
     node.get_logger().info(
         f'Koşu limiti: {kosu_suresi / 60.0:.0f} dk (§6.12) | '
@@ -1845,7 +2189,8 @@ def main():
 
         smach.StateMachine.add(
             'NAVIGATE',
-            NavigateState(node, nav, det_store, saat, stage_timeout),
+            NavigateState(node, nav, det_store, saat, stage_timeout,
+                          kayan=kayan_surucu),
             transitions={
                 'next_waypoint':    'NAVIGATE',
                 'shoot_waypoint':   'SHOOT_APPROACH',
