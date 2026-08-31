@@ -36,17 +36,31 @@ DURUM DİYAGRAMI:
                        │                                             │
                        ├─ type=hizlanma → [HIZLANMA] ────────────────┤
                        │                                             │
+                       ├─ type=rampa ──→ [RAMPA] ────────────────────┤
+                       │   (§6.10 Nav2 baypas: doğrudan /cmd_vel)     │
                        ├─ liste bitti ──→ [MISSION_COMPLETE] → GOREV_TAMAMLANDI
                        │                                             │
                        └───────────── [NAVIGATE] ←───────────────────┘
-                       ↓ (hata)                    ↑ recovered
-                 [ERROR_RECOVERY] ─────────────────┘
-                       ↓ 3 deneme
-                 [MISSION_ABORT] → GOREV_IPTAL
+                       ↓ failed                 ↑ recovered (aynı wp)
+                 [ERROR_RECOVERY] ──────────────┤
+                       ↓ 2 deneme               ↑ sonraki_asama (wp+1)
+                       └────────────────────────┘
+
+  E-STOP → [MISSION_ABORT]         §6.12 süre doldu → [MISSION_ABORT]
+
+  Görevi bitiren yollar YALNIZ ikisidir: E-STOP ve §6.12 süre dolması.
+  İkisi de kurtarmaya uğramadan doğrudan MISSION_ABORT'a gider.
+
+  Bir aşama 2 denemede de olmazsa o aşamadan VAZGEÇİLİR ve sıradaki
+  waypoint'e geçilir — görev sürer. Eskiden görev iptal ediliyordu ve
+  5 puanlık bir istasyonda takılmak, aşağı akıştaki koniler (50), kayar
+  engel (50), atış (50), hızlanma (25) ve sıralamaya giren koşu süresi
+  (100) puanlarının tamamını götürüyordu. Vazgeçmek §9 pası DEĞİLDİR:
+  pas, aracın aşama sonuna elle taşınmasıdır ve puanı eksiye yazar.
 
   MISSION_COMPLETE ve MISSION_ABORT AYRI durumlardır: ilki
   /mission_status = 'COMPLETE', ikincisi 'ABORTED' yayınlar. Kurtarma
-  bütçesi (3) aşama başınadır — NavigateState her tamamlanan waypoint'te
+  bütçesi (2) aşama başınadır — NavigateState her tamamlanan waypoint'te
   sayacı sıfırlar.
 
 BAĞIMLILIKLAR:
@@ -73,11 +87,12 @@ import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 from std_msgs.msg import Bool, Float32, String, UInt8
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import LaserScan, Imu
 from nav2_msgs.action import NavigateToPose
 
 import smach
@@ -92,12 +107,15 @@ from teknofest_ika.otonomi.topics import (
     CMD_VEL_TOPIC, ODOM_TOPIC, RAMP_STOP_DURATION,
     MISYON_KALAN_SURE_TOPIC, KOSU_SURESI_S, PAS_HAKKI, PAS_GECILEMEZ,
     SCAN_FILTERED_TOPIC, ENGEBELI_SAPMA_TOPIC, KORIDOR_GENISLIGI_M,
+    IMU_TOPIC, IMU_PITCH_RAMP_THRESHOLD,
     KORIDOR_SAPMA_UYARI_M, KORIDOR_TOPLAM_TOLERANS, KORIDOR_PENCERE_RAD,
 )
 from teknofest_ika.otonomi.pure_logic import (
     DetectionsStore, stop_check as _stop_check_pure, hizlanma_hiz_profili,
     durma_degerlendir, tarama_yan_mesafe, koridor_sapmasi, aci_sarmala,
     kosu_butcesi, pas_verilebilir as _pas_verilebilir_pure,
+    kurtarma_karari as _kurtarma_karari_pure,
+    quat_to_roll_pitch_deg, rollback_riskli, rampa_faz_gecisi,
 )
 
 # §6.10: dik eğim çıkış/iniş noktalarında STOP tabelası kaçırılsa bile
@@ -478,7 +496,8 @@ class NavigateState(smach.State):
         smach.State.__init__(
             self,
             outcomes=['next_waypoint', 'shoot_waypoint', 'hizlanma_waypoint',
-                      'mission_complete', 'sure_doldu', 'failed'],
+                      'mission_complete', 'sure_doldu', 'failed', 'e_stop',
+                      'rampa_waypoint'],
             input_keys=['waypoints', 'wp_index'],
             output_keys=['wp_index', 'current_wp', 'retry_count']
         )
@@ -531,7 +550,7 @@ class NavigateState(smach.State):
 
         if self.det_store.get_field('e_stop', False):
             self.node.get_logger().error('[NAVIGATE] E-STOP aktif — navigasyon iptal.')
-            return 'failed'
+            return 'e_stop'
 
         self.saat.rapor()
         if self.saat.doldu():
@@ -548,7 +567,7 @@ class NavigateState(smach.State):
             while rclpy.ok() and self.det_store.get_field('manual_mod', False):
                 if self.det_store.get_field('e_stop', False):
                     self.node.get_logger().error('[NAVIGATE] E-STOP — manuel mod bekleme iptal.')
-                    return 'failed'
+                    return 'e_stop'
                 time.sleep(0.2)
             self.node.get_logger().info('[NAVIGATE] Tam otonom moda geri dönüldü.')
 
@@ -569,15 +588,20 @@ class NavigateState(smach.State):
         # taze stage_timeout ile çağırmak toplam süreyi sınırsız bırakıyordu.
         stop_uygulandi = False
         stop_sayaci    = 0
-        # Aşama bütçesi koşuda kalan süreden uzun olamaz (§6.12): 11 aşama ×
-        # 120 s = 22 dk, koşu limitinin bir buçuk katı. Kırpılmazsa araç,
-        # hakem çoktan parkurdan çıkarttığı için puan getirmeyecek bir aşamanın
-        # içinde dakikalarca bekler.
-        asama_butcesi  = self.saat.butce(self.stage_timeout)
-        if asama_butcesi < self.stage_timeout:
+        # Aşamanın kendi süresi varsa o kullanılır; yoksa ortak tavana düşülür.
+        # Tek bir ortak sayı (120 s) her aşamaya aynı süreyi veriyordu: 2,5 m'lik
+        # rampa inişi de, 22 m'lik sol U dönüşü de. Süreler waypoints.yaml'da
+        # CAD'den ölçülen istasyonlar arası mesafeden türetildi (mesafe ÷ zemine
+        # göre ortalama hız); türetimin tamamı her aşamanın yanında yazılı.
+        istenen = float(wp.get('timeout_saniye', self.stage_timeout))
+        # Aşama bütçesi koşuda kalan süreden uzun olamaz (§6.12). Kırpılmazsa
+        # araç, hakem çoktan parkurdan çıkarttığı için puan getirmeyecek bir
+        # aşamanın içinde dakikalarca bekler.
+        asama_butcesi  = self.saat.butce(istenen)
+        if asama_butcesi < istenen:
             self.node.get_logger().warn(
                 f'[NAVIGATE] {label}: aşama bütçesi koşu saatiyle '
-                f'{self.stage_timeout:.0f}s → {asama_butcesi:.0f}s kırpıldı.'
+                f'{istenen:.0f}s → {asama_butcesi:.0f}s kırpıldı.'
             )
         wp_deadline    = time.time() + asama_butcesi
 
@@ -617,7 +641,7 @@ class NavigateState(smach.State):
                     while time.time() < deadline_stop:
                         if self.det_store.get_field('e_stop', False):
                             self.node.get_logger().error('[NAVIGATE] E-STOP — STOP bekleme iptal.')
-                            return 'failed'
+                            return 'e_stop'
                         time.sleep(0.1)
                     self.node.get_logger().info('[NAVIGATE] §6.10 STOP bekleme tamam — devam ediliyor.')
                     if stop_sayaci >= self.MAX_STOP:
@@ -664,7 +688,8 @@ class NavigateState(smach.State):
         # tetiklenmeden varılmışsa, zorunlu 2s bekleme burada mesafe/
         # konum tabanlı olarak (waypoint varışı = tetikleyici) uygulanır.
         # Tek bir görüntü tespitine bağımlılığı ortadan kaldırır.
-        if label in DIK_EGIM_ETIKETLERI and not stop_uygulandi:
+        if (label in DIK_EGIM_ETIKETLERI and not stop_uygulandi
+                and wp.get('type') != 'rampa'):
             self.node.get_logger().warn(
                 f'[NAVIGATE] {label}: STOP tabelası tespit edilmeden hedefe '
                 'varıldı — §6.10 yedek (konum tabanlı) 2s bekleme uygulanıyor.'
@@ -675,7 +700,7 @@ class NavigateState(smach.State):
                     self.node.get_logger().error(
                         '[NAVIGATE] E-STOP — yedek STOP bekleme iptal.'
                     )
-                    return 'failed'
+                    return 'e_stop'
                 time.sleep(0.1)
             self.node.get_logger().info(
                 '[NAVIGATE] §6.10 yedek STOP bekleme tamam — devam ediliyor.'
@@ -690,7 +715,7 @@ class NavigateState(smach.State):
             while time.time() < deadline:
                 if self.det_store.get_field('e_stop', False):
                     self.node.get_logger().error('[NAVIGATE] E-STOP — KAYAR_ENGEL bekleme iptal.')
-                    return 'failed'
+                    return 'e_stop'
                 yon = self.det_store.get_field('kayar_yon', 'bilinmiyor')
                 if yon != 'bilinmiyor':
                     self.node.get_logger().info(
@@ -718,6 +743,9 @@ class NavigateState(smach.State):
         if wp.get('type') == 'hizlanma':
             return 'hizlanma_waypoint'
 
+        if wp.get('type') == 'rampa':
+            return 'rampa_waypoint'
+
         return 'next_waypoint'
 
 
@@ -743,7 +771,7 @@ class ShootApproachState(smach.State):
     def __init__(self, node: Node, det_store: DetectionsStore):
         smach.State.__init__(
             self,
-            outcomes=['in_position', 'failed'],
+            outcomes=['in_position', 'failed', 'e_stop'],
             input_keys=['current_wp']
         )
         self.node      = node
@@ -776,7 +804,7 @@ class ShootApproachState(smach.State):
             if self.det_store.get_field('e_stop', False):
                 self.node.get_logger().error('[SHOOT_APPROACH] E-STOP.')
                 self._targeting_enable_pub.publish(Bool(data=False))
-                return 'failed'
+                return 'e_stop'
 
             with self._targeting_lock:
                 status = self._targeting_status
@@ -826,7 +854,7 @@ class ShootState(smach.State):
 
     def __init__(self, node: Node, det_store: DetectionsStore,
                  saat: 'MisyonSaati'):
-        smach.State.__init__(self, outcomes=['shot_fired', 'failed'])
+        smach.State.__init__(self, outcomes=['shot_fired', 'failed', 'e_stop'])
         self.saat = saat
         self.node              = node
         self.det_store         = det_store
@@ -855,7 +883,7 @@ class ShootState(smach.State):
                     '[SHOOT] E-STOP aktif — ateş edilmiyor.'
                 )
                 self._shoot_pub.publish(Bool(data=False))
-                return 'failed'
+                return 'e_stop'
 
             # Koşu saati yalnız denemeler ARASINDA bakılır: başlamış bir atış
             # yarıda kesilemez, §6.10 lazerin en az 1 s aktif kalmasını ve o
@@ -933,7 +961,11 @@ class HizlanmaState(smach.State):
     """
     §6.11 Hızlanma Parkuru — Nav2 bypass, doğrudan /cmd_vel → mod_yoneticisi.
 
-    Tabela_11 tespit edince NavigateState bu state'e geçer.
+    NavigateState buraya waypoint'in `type: hizlanma` alanıyla geçer, tabela
+    tespitiyle değil: hızlanma parkuru koordinattan biliniyor ve tek bir YOLO
+    karesine bağlanamayacak kadar pahalı (§6.11 ilk altı takıma puan veriyor).
+    Tabela_11 bu state'te yalnız `terrain_adapter`'ın `fast` profilini
+    tetikler; Tabela_11_son ise aşağıdaki erken çıkışı.
     Nav2 path planner devre dışı — düz pistte gereksiz overhead.
     RC override hâlâ çalışır (mod_yoneticisi /cmd_vel'i dinlemeye devam eder).
 
@@ -988,7 +1020,7 @@ class HizlanmaState(smach.State):
 
     def __init__(self, node: Node, det_store: DetectionsStore,
                  saat: 'MisyonSaati'):
-        smach.State.__init__(self, outcomes=['completed', 'failed'])
+        smach.State.__init__(self, outcomes=['completed', 'failed', 'e_stop'])
         self.saat = saat
         self.node      = node
         self.det_store = det_store
@@ -1056,7 +1088,7 @@ class HizlanmaState(smach.State):
         while rclpy.ok():
             if self.det_store.get_field('e_stop', False):
                 self.node.get_logger().error('[HIZLANMA] E-STOP — durduruluyor.')
-                sonuc = 'failed'
+                sonuc = 'e_stop'
                 break
 
             if self.det_store.get_field('manual_mod', False):
@@ -1175,7 +1207,345 @@ class HizlanmaState(smach.State):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# STATE 6 — MISSION_COMPLETE
+# STATE 6 — RAMPA  (§6.10 dik eğim, Nav2 baypas)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class RampaState(smach.State):
+    """
+    §6.10 dik eğimi Nav2'ye sormadan sürer. HizlanmaState ile aynı desen:
+    doğrudan /cmd_vel, planlayıcı devre dışı, güvenlik zinciri (mod_yoneticisi
+    E-STOP sıfırlaması + speed_limit kırpması + ackermann_converter kelepçeleri)
+    aynen mirasta kalır.
+
+    NEDEN BAYPAS
+    ─────────────────────────────────────────────────────────────────────────
+    Rampada planlayıcının verecek kararı yok: koridor 3 m, direksiyon kararı
+    yok, ve rampanın ayak izinde bariyer yok (parkur CAD'inde dört bariyerin
+    dördü de giriş/çıkışta). Buna karşılık Nav2 rampada iki ayrı yanlış
+    üretiyor:
+
+      1. 0,55 m'deki yatay tarama düzlemi %45 eğimli yüzeyi tabanından
+         0,55/0,45 = 1,22 m içeride keser ve orada DUVAR okur. 2B taramada
+         eğimli zeminle dik duvar geometrik olarak ayırt edilemez.
+      2. base_footprint→base_link statik (0 0 0) ve ekf two_d_mode roll/pitch'i
+         her döngüde sıfırlıyor: TF ağacı aracın eğildiğini hiç bilmez, rampa
+         üzerindeyken her tarama dönüşü düz zemine izdüşürülür.
+
+    FAZ SİNYALİ PİTCH, KONUM DEĞİL
+    ─────────────────────────────────────────────────────────────────────────
+    Waypoint koordinatları kayabilir ve odometri sapar; ama araç eğimdeyse IMU
+    bunu mutlak olarak söyler. Karar pure_logic.rampa_faz_gecisi'nde, pitch'in
+    MUTLAK değeriyle — böylece aynı mantık hem tırmanışta hem inişte çalışır.
+    Aşamanın tırmanış mı iniş mi olduğu waypoint etiketinden okunur, çünkü
+    rampanın tepesinde (atış noktası, rampa ayak izinin tam ortası) pitch iki
+    durumda da ~0'dır ve tek başına ayırt etmez.
+
+    DURUŞ
+    ─────────────────────────────────────────────────────────────────────────
+    §6.10 iki saniyelik duruş istiyor. Sayaç, sıfır komutu basıldığı an değil
+    araç GERÇEKTEN durduktan sonra başlar: hakemin kronometresi aracı ölçüyor,
+    bizim niyetimizi değil. Yavaşlama velocity_smoother'ın ivme rampasına tabi
+    olduğu için ikisi arasında ölçülmemiş bir gecikme var.
+
+    Geçişler: 'completed' → NavigateState
+              'failed'    → ErrorRecoveryState
+              'e_stop'    → MissionAbortState
+    """
+
+    CMD_HZ            = 10.0    # Hz
+    PITCH_ESIK_DEG    = IMU_PITCH_RAMP_THRESHOLD
+    DURMA_HIZ_ESIGI   = 0.05    # m/s — bunun altı "durdu" sayılır
+    DURMA_TIMEOUT_S   = 8.0     # s — bu sürede duramazsa yine de devam et
+    YAKLASMA_MAX_M    = 3.0     # m — bu kadar sürüldüğü hâlde eğim yoksa iptal
+    EGIM_MAX_M        = 6.0     # m — CAD: tırmanış koşusu 4,13 m
+    # Donanım arızası korumaları — HizlanmaState'ten. Rampada daha kritik:
+    # kopuk enkoderle mesafe hep 0 okunur, faz hiç bitmez ve araç eğimde
+    # timeout'a kadar gaz vermeye devam eder.
+    ODOM_BAYATLAMA_S  = 1.0     # s
+    ODOM_ILERLEME_S   = 4.0     # s
+    ODOM_ILERLEME_M   = 0.20    # m
+    # Geri kayma bu süre boyunca sürerse tahrik yetmiyor demektir; daha fazla
+    # gaz vermek çözmez. anti_rollback düğümü ackermann_converter üzerinden
+    # zaten karşı komut basıyor — burada onunla yarışılmaz, yalnız iptal edilir.
+    GERI_KAYMA_S      = 1.5     # s
+
+    def __init__(self, node: Node, det_store: DetectionsStore,
+                 saat: 'MisyonSaati',
+                 tirmanis_hiz: float = 0.6, inis_hiz: float = 0.4):
+        smach.State.__init__(self, outcomes=['completed', 'failed', 'e_stop'],
+                             input_keys=['current_wp'])
+        self.node          = node
+        self.det_store     = det_store
+        self.saat          = saat
+        self.tirmanis_hiz  = tirmanis_hiz
+        self.inis_hiz      = inis_hiz
+
+
+
+        self._cmd_pub = node.create_publisher(Twist, CMD_VEL_TOPIC, 10)
+
+        self._lock     = threading.Lock()
+        self._pos      = None
+        self._hiz      = 0.0
+        self._pitch    = 0.0
+        self._son_odom = 0.0
+
+        node.create_subscription(Odometry, ODOM_TOPIC, self._on_odom, 10)
+        # IMU BEST_EFFORT yayınlanıyor (anti_rollback ile aynı profil).
+        # RELIABLE abone olunursa eşleşme kurulmaz ve callback HİÇ çağrılmaz —
+        # hata basılmaz, pitch sonsuza kadar 0 kalır ve faz hiç değişmez.
+        node.create_subscription(
+            Imu, IMU_TOPIC, self._on_imu,
+            QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT))
+
+    # ── Sensör callback'leri ────────────────────────────────────────────────
+
+    def _on_odom(self, msg: Odometry):
+        with self._lock:
+            self._pos = (msg.pose.pose.position.x, msg.pose.pose.position.y)
+            self._hiz = msg.twist.twist.linear.x
+            self._son_odom = time.time()
+
+    def _on_imu(self, msg: Imu):
+        q = msg.orientation
+        _, pitch = quat_to_roll_pitch_deg(q.w, q.x, q.y, q.z)
+        with self._lock:
+            self._pitch = pitch
+
+    def _oku(self):
+        with self._lock:
+            return self._pos, self._hiz, self._pitch, self._son_odom
+
+    def _timeout(self, hedef_hiz: float) -> float:
+        """Aşama üst sınırı — HizlanmaState ile aynı gerekçe.
+
+        Sabit bir sayı hıza göre ya hiç dolmaz ya her koşuda dolar. Bu bir
+        kontrol parametresi değil, donanım arızasına karşı üst sınır: en kötü
+        hâlde ortalama hızın hedefin %40'ı olduğu varsayılır (kalkış
+        sürtünmesi, eğimde tork düşüşü), üstüne duruş payı eklenir. Tırmanış
+        ve iniş farklı hızlarda sürüldüğü için her faz kendi bütçesini alır.
+        """
+        return ((self.YAKLASMA_MAX_M + self.EGIM_MAX_M)
+                / max(0.05, hedef_hiz * 0.40)
+                + self.DURMA_TIMEOUT_S + RAMP_STOP_DURATION)
+
+    @staticmethod
+    def _mesafe(a, b):
+        if a is None or b is None:
+            return 0.0
+        return math.hypot(b[0] - a[0], b[1] - a[1])
+
+    # ── Duruş ───────────────────────────────────────────────────────────────
+
+    def _dur_ve_bekle(self, sure_s: float, etiket: str) -> str:
+        """Sıfır komutu basar, GERÇEKTEN durmayı bekler, sonra sure_s sayar."""
+        twist = Twist()
+        durma_basi = time.time()
+        durdu_mu   = False
+
+        while rclpy.ok():
+            self._cmd_pub.publish(twist)
+            if self.det_store.get_field('e_stop', False):
+                return 'e_stop'
+            _, hiz, _, _ = self._oku()
+            if abs(hiz) < self.DURMA_HIZ_ESIGI:
+                durdu_mu = True
+                break
+            if time.time() - durma_basi > self.DURMA_TIMEOUT_S:
+                self.node.get_logger().error(
+                    f'[RAMPA] {etiket}: {self.DURMA_TIMEOUT_S:.0f}s içinde '
+                    f'durulamadı (hız={hiz:.2f} m/s) — §6.10 duruşu şüpheli.'
+                )
+                break
+            time.sleep(1.0 / self.CMD_HZ)
+
+        if durdu_mu:
+            self.node.get_logger().info(
+                f'[RAMPA] {etiket}: durdu ({time.time() - durma_basi:.1f}s), '
+                f'§6.10 {sure_s:.0f}s bekleme başlıyor.'
+            )
+
+        bekleme_bitis = time.time() + sure_s
+        while time.time() < bekleme_bitis:
+            self._cmd_pub.publish(twist)
+            if self.det_store.get_field('e_stop', False):
+                return 'e_stop'
+            time.sleep(1.0 / self.CMD_HZ)
+        return 'ok'
+
+    # ── Ana akış ────────────────────────────────────────────────────────────
+
+    def execute(self, userdata):
+        if hasattr(self.node, '_fsm_state_pub'):
+            self.node._fsm_state_pub.publish(String(data='RAMPA'))
+
+        wp     = userdata.current_wp or {}
+        etiket = wp.get('label', 'DIK_EGIM')
+        iniyor = 'CIKIS' in etiket           # CIKIS = rampadan iniş aşaması
+        hedef_hiz = self.inis_hiz if iniyor else self.tirmanis_hiz
+        yon = 'iniş' if iniyor else 'tırmanış'
+
+        # Odom başlangıcı — sensör yoksa hiç başlama
+        deadline_init = time.time() + 2.0
+        while time.time() < deadline_init:
+            pos, _, _, _ = self._oku()
+            if pos is not None:
+                break
+            time.sleep(0.05)
+        else:
+            self.node.get_logger().error('[RAMPA] /odom yok — iptal.')
+            return 'failed'
+
+        self.node.get_logger().info(
+            f'[RAMPA] {etiket} ({yon}) başladı — hedef hız {hedef_hiz:.2f} m/s, '
+            f'pitch eşiği {self.PITCH_ESIK_DEG:.0f}°. Nav2 baypas.'
+        )
+
+        twist         = Twist()
+        dt            = 1.0 / self.CMD_HZ
+        baslama       = time.time()
+        timeout_s     = self._timeout(hedef_hiz)
+        deadline      = baslama + timeout_s
+        faz           = 'yaklasma'
+        baslangic_pos = self._oku()[0]
+        faz_basi      = baslangic_pos
+        kayma_basi    = None
+        sonuc         = None
+
+        while rclpy.ok():
+            if self.det_store.get_field('e_stop', False):
+                self.node.get_logger().error('[RAMPA] E-STOP — durduruluyor.')
+                sonuc = 'e_stop'
+                break
+
+            if self.det_store.get_field('manual_mod', False):
+                self.node.get_logger().warn(
+                    '[RAMPA] Manuel mod — RC devraldı, bekleniyor.',
+                    throttle_duration_sec=2.0,
+                )
+                twist.linear.x = 0.0
+                self._cmd_pub.publish(twist)
+                time.sleep(0.1)
+                # Manuel duraklama bütçeden sayılmaz (HizlanmaState ile aynı).
+                deadline += 0.1
+                baslama  += 0.1
+                continue
+
+            if time.time() > deadline:
+                self.node.get_logger().error(
+                    f'[RAMPA] {timeout_s:.0f}s timeout — iptal.'
+                )
+                sonuc = 'failed'
+                break
+
+            if self.saat.doldu():
+                self.node.get_logger().error(
+                    '[RAMPA] §6.12 koşu süresi doldu — durduruluyor.'
+                )
+                sonuc = 'failed'
+                break
+
+            pos, hiz, pitch, son_odom = self._oku()
+
+            yas = time.time() - son_odom
+            if yas > self.ODOM_BAYATLAMA_S:
+                self.node.get_logger().error(
+                    f'[RAMPA] /odom {yas:.1f}s bayat — eğimde körlemesine '
+                    'sürülmez, iptal.'
+                )
+                sonuc = 'failed'
+                break
+
+            gidilen = self._mesafe(faz_basi, pos)
+            # İlerleme koruması TOPLAM yola bakar: gidilen faz değişiminde
+            # sıfırlandığı için onunla ölçmek her faz geçişinde sahte alarm verir.
+            toplam = self._mesafe(baslangic_pos, pos)
+            if (time.time() - baslama > self.ODOM_ILERLEME_S
+                    and toplam < self.ODOM_ILERLEME_M):
+                self.node.get_logger().error(
+                    f'[RAMPA] {self.ODOM_ILERLEME_S:.0f}s gazda ilerleme '
+                    f'{toplam:.2f}m — takılma veya donmuş odometri, iptal.'
+                )
+                sonuc = 'failed'
+                break
+
+            # Geri kayma: yalnız tırmanışta anlamlı (rollback_riskli pozitif
+            # pitch şartı arar). Sürekliyse tahrik yetmiyordur.
+            if rollback_riskli(pitch, hiz, self.PITCH_ESIK_DEG, 0.05):
+                if kayma_basi is None:
+                    kayma_basi = time.time()
+                    self.node.get_logger().warn(
+                        f'[RAMPA] GERİ KAYMA (pitch={pitch:.1f}°, '
+                        f'hız={hiz:.2f} m/s) — anti_rollback devrede olmalı.'
+                    )
+                elif time.time() - kayma_basi > self.GERI_KAYMA_S:
+                    self.node.get_logger().error(
+                        f'[RAMPA] Geri kayma {self.GERI_KAYMA_S:.1f}s sürdü — '
+                        'tahrik yetersiz, gaz kesiliyor. Aracı fren tutmalı.'
+                    )
+                    sonuc = 'failed'
+                    break
+            else:
+                kayma_basi = None
+
+            yeni_faz = rampa_faz_gecisi(
+                faz, abs(pitch), self.PITCH_ESIK_DEG, gidilen,
+                self.YAKLASMA_MAX_M, self.EGIM_MAX_M,
+            )
+            if yeni_faz != faz:
+                self.node.get_logger().info(
+                    f'[RAMPA] faz {faz} → {yeni_faz} '
+                    f'(pitch={pitch:.1f}°, {gidilen:.2f}m)'
+                )
+                faz      = yeni_faz
+                faz_basi = pos
+
+            if faz == 'bitti':
+                break
+            if faz == 'bulunamadi':
+                self.node.get_logger().error(
+                    f'[RAMPA] {self.YAKLASMA_MAX_M:.0f}m sürüldü, eğim '
+                    f'başlamadı (pitch={pitch:.1f}°) — araç rampanın önünde '
+                    'değil ya da IMU pitch okuması yanlış. İptal.'
+                )
+                sonuc = 'failed'
+                break
+            if faz == 'asildi':
+                self.node.get_logger().error(
+                    f'[RAMPA] Eğim {self.EGIM_MAX_M:.0f}m sürdü ve bitmedi — '
+                    'pitch okuması şüpheli. İptal.'
+                )
+                sonuc = 'failed'
+                break
+
+            twist.linear.x  = hedef_hiz
+            twist.angular.z = 0.0        # koridor düz, direksiyon kararı yok
+            self._cmd_pub.publish(twist)
+
+            self.node.get_logger().info(
+                f'[RAMPA] {yon} faz={faz} pitch={pitch:.1f}° '
+                f'{gidilen:.2f}m (toplam {toplam:.2f}m) hız={hiz:.2f}',
+                throttle_duration_sec=0.5,
+            )
+            time.sleep(dt)
+
+        # Hangi yoldan çıkılırsa çıkılsın gaz kesilir.
+        twist.linear.x  = 0.0
+        twist.angular.z = 0.0
+        self._cmd_pub.publish(twist)
+
+        if sonuc is not None:
+            return sonuc
+
+        # §6.10 zorunlu duruş — araç gerçekten durduktan SONRA sayılır.
+        if self._dur_ve_bekle(RAMP_STOP_DURATION, etiket) == 'e_stop':
+            return 'e_stop'
+
+        self.node.get_logger().info(f'[RAMPA] {etiket} tamamlandı.')
+        return 'completed'
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STATE 7 — MISSION_COMPLETE
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class MissionCompleteState(smach.State):
@@ -1215,31 +1585,50 @@ class MissionCompleteState(smach.State):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# STATE 7 — ERROR_RECOVERY
+# STATE 8 — ERROR_RECOVERY
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class ErrorRecoveryState(smach.State):
     """
-    Hata kurtarma. Nav2 başarısız olduğunda buraya düşülür.
-    Aynı waypoint için 3 deneme başarısız olursa görev iptal edilir.
+    Hata kurtarma. Bir aşama başarısız olduğunda buraya düşülür.
+
+    Aşama MAX_RETRIES kez denenir; hâlâ olmuyorsa o aşamadan VAZGEÇİLİR ve
+    sıradaki waypoint'e geçilir. Görev iptal edilmez: tek bir istasyonda
+    takılmak koşunun tamamını götürüyordu — 5 puanlık bir aşama uğruna
+    koniler (50), kayar engel (50), atış (50), hızlanma (25) ve sıralamaya
+    giren koşu süresi (100) kaybediliyordu.
+
+    Vazgeçmek §9 pası DEĞİLDİR: pas, takımın parkura girip aracı aşamanın
+    sonuna elle taşımasıdır ve o aşamanın puanını eksiye yazar. Burada
+    yapılan yalnız "bu hedefe ulaşmayı bırak, sıradakine nişan al" —
+    istasyonlar tek koridorda arka arkaya dizili olduğu için araç engelin
+    içinden geçmeyi fiilen denemeye devam eder.
+
+    Görevi bitiren iki yol buraya HİÇ uğramaz: E-STOP ('e_stop' çıktısı) ve
+    §6.12 süre dolması ('sure_doldu'). İkisi de doğrudan MISSION_ABORT'a
+    gider — E-STOP'un kurtarma denemesi harcaması aracı saniyelerce
+    duraklatıyordu.
 
     Sayaç userdata'da tutulur; NavigateState bir aşamayı tamamladığında
     sıfırlar (bütçe aşama başınadır, görev başına değil).
 
-    Geçişler: 'recovered' → NavigateState
-              'abort'     → MissionAbortState
+    Geçişler: 'recovered'     → NavigateState (aynı waypoint tekrar)
+              'sonraki_asama' → NavigateState (bu aşamadan vazgeçildi)
     """
 
-    MAX_RETRIES = 3
+    # Her deneme koşu saatinden bir aşama bütçesi yiyor; koşu süresi 100
+    # puanla tablodaki en büyük kalem olduğu için deneme sayısı düşük tutuldu.
+    MAX_RETRIES = 2
 
     def __init__(self, node: Node):
         smach.State.__init__(
             self,
-            outcomes=['recovered', 'abort'],
-            input_keys=['wp_index', 'retry_count'],
+            outcomes=['recovered', 'sonraki_asama'],
+            input_keys=['wp_index', 'retry_count', 'waypoints'],
             output_keys=['wp_index', 'retry_count']
         )
         self.node = node
+        self.birakilan = 0          # bu koşuda vazgeçilen aşama sayısı
 
     def execute(self, userdata):
         if hasattr(self.node, '_fsm_state_pub'):
@@ -1250,12 +1639,21 @@ class ErrorRecoveryState(smach.State):
             f'[ERROR_RECOVERY] Deneme {sayac}/{self.MAX_RETRIES}'
         )
 
-        if sayac >= self.MAX_RETRIES:
+        if _kurtarma_karari_pure(sayac, self.MAX_RETRIES) == 'sonraki':
+            idx   = userdata.wp_index
+            wpler = getattr(userdata, 'waypoints', None) or []
+            etiket = (wpler[idx].get('label', f'#{idx}')
+                      if idx < len(wpler) else f'#{idx}')
+            self.birakilan += 1
             self.node.get_logger().error(
-                '[ERROR_RECOVERY] Max deneme aşıldı. Görev iptal ediliyor.'
+                f'[ERROR_RECOVERY] {etiket}: {self.MAX_RETRIES} deneme de '
+                f'başarısız — bu aşamadan vazgeçilip sıradakine geçiliyor '
+                f'(bu koşuda bırakılan aşama: {self.birakilan}). '
+                'Görev SÜRÜYOR; bu bir §9 pası değildir.'
             )
+            userdata.wp_index    = idx + 1
             userdata.retry_count = 0
-            return 'abort'
+            return 'sonraki_asama'
 
         # Başarısız olan waypoint TEKRAR denenir. wp_index navigasyon
         # başarısızlığında henüz artmamıştır; indeksi geri almak bir ÖNCEKİ
@@ -1290,6 +1688,10 @@ def load_waypoints(yaml_path: str):
                 tip = 'shoot'
             elif isim == 'HIZLANMA_PARKURU':
                 tip = 'hizlanma'
+            elif isim in DIK_EGIM_ETIKETLERI:
+                # §6.10 eğimi RampaState sürüyor; Nav2 yalnız rampanın
+                # başına kadar getiriyor.
+                tip = 'rampa'
             else:
                 tip = 'nav'
             waypoints.append({
@@ -1375,7 +1777,6 @@ def main():
 
     def _on_mod(msg: UInt8):
         # 0=MANUAL → FSM navigasyonu bekletir (RC kumanda sürüyor)
-        # 1=SEMI_AUTO → FSM çalışmaya devam eder, mod_yoneticisi RC override yapar
         # 2=FULL_AUTO → tam otonom
         det_store.update_field('manual_mod', msg.data == 0)
 
@@ -1398,19 +1799,33 @@ def main():
     stage_timeout      = float(parametreler.get('asama_timeout_saniye', 120.0))
     baslangic_bekleme  = float(parametreler.get('baslangic_bekleme',    3.0))
     kosu_suresi        = float(parametreler.get('kosu_suresi_saniye', KOSU_SURESI_S))
+    # §6.10 rampa hızları — sahada ölçülecek, waypoints.yaml'dan canlı okunur.
+    rampa_tirmanis     = float(parametreler.get('rampa_tirmanis_hiz', 0.60))
+    rampa_inis         = float(parametreler.get('rampa_inis_hiz',     0.40))
     node.get_logger().info(f'Aşama timeout: {stage_timeout:.0f}s | Başlangıç bekleme: {baslangic_bekleme:.0f}s (waypoints.yaml)')
 
     saat = MisyonSaati(node, kosu_suresi)
     node.get_logger().info(
         f'Koşu limiti: {kosu_suresi / 60.0:.0f} dk (§6.12) | '
-        f'Pas hakkı: {PAS_HAKKI}/koşu (§9)'
+        f'Pas hakkı: {PAS_HAKKI}/koşu (§9) | '
+        f'Rampa (Nav2 baypas): tırmanış {rampa_tirmanis:.2f} / '
+        f'iniş {rampa_inis:.2f} m/s'
     )
-    # Aşama bütçesi koşu limitinden uzunsa tek bir takılan aşama koşuyu yer.
-    if stage_timeout * max(1, len(waypoints)) > kosu_suresi:
+    # Aşama bütçelerinin TOPLAMI koşu limitini aşarsa tek bir takılan aşama
+    # koşunun geri kalanını yiyebilir. Toplam artık aşama başına yazılan
+    # sürelerden hesaplanıyor; ortak tavan yalnız süresi olmayan aşamalar için.
+    butce_toplami = sum(float(w.get('timeout_saniye', stage_timeout))
+                        for w in waypoints) if waypoints else stage_timeout
+    node.get_logger().info(
+        f'Aşama bütçeleri toplamı: {butce_toplami:.0f}s / {kosu_suresi:.0f}s '
+        f'(pay {kosu_suresi - butce_toplami:.0f}s). Atış, hızlanma ve zorunlu '
+        'beklemeler bu toplamın DIŞINDA — ayrı durumlarda geçiyor.'
+    )
+    if butce_toplami > kosu_suresi:
         node.get_logger().warn(
-            f'Aşama bütçesi toplamı ({stage_timeout * len(waypoints):.0f}s) koşu '
-            f'limitini ({kosu_suresi:.0f}s) aşıyor — aşama süreleri koşu '
-            'saatiyle kırpılacak.'
+            f'Aşama bütçesi toplamı ({butce_toplami:.0f}s) koşu limitini '
+            f'({kosu_suresi:.0f}s) aşıyor — aşama süreleri koşu saatiyle '
+            'kırpılacak.'
         )
 
     # ── SMACH FSM Kurulumu ────────────────────────────────────────────
@@ -1441,6 +1856,20 @@ def main():
                 # bitişten ayırt edilemez olurdu.
                 'sure_doldu':       'MISSION_ABORT',
                 'failed':           'ERROR_RECOVERY',
+                # E-STOP kurtarmaya UĞRAMAZ: kurtarma denemesi harcamak
+                # aracı saniyelerce duraklatıyordu.
+                'e_stop':           'MISSION_ABORT',
+                'rampa_waypoint':   'RAMPA',
+            }
+        )
+
+        smach.StateMachine.add(
+            'RAMPA',
+            RampaState(node, det_store, saat, rampa_tirmanis, rampa_inis),
+            transitions={
+                'completed': 'NAVIGATE',
+                'failed':    'ERROR_RECOVERY',
+                'e_stop':    'MISSION_ABORT',
             }
         )
 
@@ -1450,6 +1879,7 @@ def main():
             transitions={
                 'completed': 'NAVIGATE',
                 'failed':    'ERROR_RECOVERY',
+                'e_stop':    'MISSION_ABORT',
             }
         )
 
@@ -1459,6 +1889,7 @@ def main():
             transitions={
                 'in_position': 'SHOOT',
                 'failed':      'ERROR_RECOVERY',
+                'e_stop':      'MISSION_ABORT',
             }
         )
 
@@ -1468,6 +1899,7 @@ def main():
             transitions={
                 'shot_fired': 'NAVIGATE',
                 'failed':     'ERROR_RECOVERY',
+                'e_stop':     'MISSION_ABORT',
             }
         )
 
@@ -1487,8 +1919,9 @@ def main():
             'ERROR_RECOVERY',
             ErrorRecoveryState(node),
             transitions={
-                'recovered': 'NAVIGATE',
-                'abort':     'MISSION_ABORT',
+                'recovered':     'NAVIGATE',
+                # Aşamadan vazgeçildi — görev İPTAL DEĞİL, sıradakine devam.
+                'sonraki_asama': 'NAVIGATE',
             }
         )
 

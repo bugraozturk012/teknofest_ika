@@ -15,6 +15,7 @@ birebir aynıdır.
 """
 import math
 import re
+import yaml
 import sys
 import time as _time
 import os
@@ -636,6 +637,266 @@ def _firmware_fren_sabiti(ad):
 check("FREN_ACMA_MS tanımlı",             (_firmware_fren_sabiti('FREN_ACMA_MS') or 0) > 0, True)
 check("FREN_SIKMA_MS tanımlı",            (_firmware_fren_sabiti('FREN_SIKMA_MS') or 0) > 0, True)
 check("FREN_BEKLEME_MS tanımlı",          (_firmware_fren_sabiti('FREN_BEKLEME_MS') or 0) > 0, True)
+
+
+# ─── waypoints.yaml: FSM'i dallandıran `type` alanı ─────────────────────────
+# misyon_fsm NavigateState'ten yalnız wp.get('type') ile dallanıyor. Alan
+# sessizce düşerse ShootApproach/Shoot ve Hizlanma durumlarına HİÇ girilmez;
+# hiçbir hata basılmaz, yalnız puan gider. Bir kez böyle oldu.
+def _waypoint_tipleri():
+    yol = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       'config', 'waypoints.yaml')
+    with open(yol, encoding='utf-8') as f:
+        return {a['isim']: a.get('type') for a in yaml.safe_load(f)['asamalar']}
+
+
+_TIP = _waypoint_tipleri()
+check("ATIS_BOLGESI type=shoot",          _TIP.get('ATIS_BOLGESI'), 'shoot')
+check("HIZLANMA_PARKURU type=hizlanma",   _TIP.get('HIZLANMA_PARKURU'), 'hizlanma')
+
+# Fiziksel sıra: atış rampanın ORTASINDA. Şartname §6.10 hedefi "minimum 10
+# metre" uzağa koyuyor; rampa çıkışından hedefe 8,18 m var, yani atış orada
+# yapılamaz. Liste sırası FSM'in sürüş sırasıdır.
+def _asama_sirasi():
+    yol = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       'config', 'waypoints.yaml')
+    with open(yol, encoding='utf-8') as f:
+        return [a['isim'] for a in yaml.safe_load(f)['asamalar']]
+
+
+_SIRA = _asama_sirasi()
+check("atış rampa girişinden sonra",      _SIRA.index('ATIS_BOLGESI') > _SIRA.index('DIK_EGIM_GIRIS'), True)
+check("atış rampa çıkışından önce",       _SIRA.index('ATIS_BOLGESI') < _SIRA.index('DIK_EGIM_CIKIS'), True)
+
+
+# ─── Hata kurtarma: tek istasyonda takılmak koşuyu bitirmemeli ──────────────
+from teknofest_ika.otonomi.pure_logic import kurtarma_karari  # noqa: E402
+
+
+def _fsm_kaynak():
+    yol = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       'teknofest_ika', 'otonomi', 'misyon_fsm.py')
+    with open(yol, encoding='utf-8') as f:
+        return f.read()
+
+
+_FSM = _fsm_kaynak()
+
+check("1. denemede tekrar",               kurtarma_karari(1, 2), 'tekrar')
+check("2. denemede vazgeç",               kurtarma_karari(2, 2), 'sonraki')
+check("sayaç aşarsa yine vazgeç",         kurtarma_karari(5, 2), 'sonraki')
+
+# ErrorRecovery artık görevi bitiremez: 'abort' çıktısı kaldırıldı. Kalsaydı
+# 5 puanlık bir aşamada takılmak aşağı akıştaki ~275 puanı da götürürdü.
+check("kurtarmada 'abort' çıktısı yok",   "'abort'" in _FSM, False)
+check("kurtarma sonraki aşamaya geçer",   "'sonraki_asama': 'NAVIGATE'" in _FSM, True)
+
+# E-STOP ile navigasyon başarısızlığı AYNI telden gidiyordu: E-STOP basılınca
+# FSM hemen durmuyor, kurtarma denemesi harcayıp saniyelerce oyalanıyordu.
+check("E-STOP ayrı çıktı",                "'e_stop'" in _FSM, True)
+check("E-STOP doğrudan iptale gider",     "'e_stop':           'MISSION_ABORT'" in _FSM, True)
+check("E-STOP kurtarmaya uğramaz",        "'e_stop':           'ERROR_RECOVERY'" in _FSM, False)
+# Süre dolması da kurtarmaya uğramadan iptale gitmeli (§6.12).
+check("süre dolunca doğrudan iptal",      "'sure_doldu':       'MISSION_ABORT'" in _FSM, True)
+
+# Durum sınıflarının hepsi e_stop'u ilan etmeli; etmezse smach çalışma anında
+# InvalidTransitionError atar ve bu yalnız sahada görülür.
+check("NavigateState e_stop ilan eder",   _FSM.count("'sure_doldu', 'failed', 'e_stop'"), 1)
+check("ShootApproach e_stop ilan eder",   "'in_position', 'failed', 'e_stop'" in _FSM, True)
+check("ShootState e_stop ilan eder",      "'shot_fired', 'failed', 'e_stop'" in _FSM, True)
+check("HizlanmaState e_stop ilan eder",   "'completed', 'failed', 'e_stop'" in _FSM, True)
+
+
+def _smach_uyusmazliklari():
+    """Her durumun ilan ettiği çıktı bir geçişe bağlı mı.
+
+    smach uyuşmazlığı yalnız ÇALIŞMA ANINDA InvalidTransitionError olarak
+    patlar — yani ilk kez sahada, o duruma girildiğinde. Bağlanmamış tek bir
+    çıktı koşunun ortasında FSM'i düşürür.
+    """
+    import ast
+    agac = ast.parse(_FSM)
+    ciktilar = {}
+    for d in ast.walk(agac):
+        if isinstance(d, ast.ClassDef):
+            for c in ast.walk(d):
+                if (isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+                        and c.func.attr == '__init__'):
+                    for kw in c.keywords:
+                        if kw.arg == 'outcomes' and isinstance(kw.value, ast.List):
+                            ciktilar[d.name] = {e.value for e in kw.value.elts}
+    sorun = []
+    durumlar = set()
+    eklemeler = []
+    for n in ast.walk(agac):
+        if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == 'add' and len(n.args) >= 2
+                and isinstance(n.args[0], ast.Constant)):
+            sinif = (n.args[1].func.id if isinstance(n.args[1], ast.Call)
+                     and isinstance(n.args[1].func, ast.Name) else None)
+            gecis = set()
+            hedef = set()
+            for kw in n.keywords:
+                if kw.arg == 'transitions' and isinstance(kw.value, ast.Dict):
+                    gecis = {k.value for k in kw.value.keys}
+                    hedef = {v.value for v in kw.value.values}
+            durumlar.add(n.args[0].value)
+            eklemeler.append((n.args[0].value, sinif, gecis, hedef))
+    bilinen = durumlar | {'GOREV_TAMAMLANDI', 'GOREV_IPTAL'}
+    for ad, sinif, gecis, hedef in eklemeler:
+        for eksik in ciktilar.get(sinif, set()) - gecis:
+            sorun.append(f'{ad}: {eksik} çıktısı bağlanmamış')
+        for fazla in gecis - ciktilar.get(sinif, set()):
+            sorun.append(f'{ad}: {fazla} geçişinin karşılığı yok')
+        for h in hedef - bilinen:
+            sorun.append(f'{ad}: bilinmeyen hedef {h}')
+    return sorun
+
+
+check("smach çıktı/geçiş uyuşmazlığı yok", _smach_uyusmazliklari(), [])
+
+
+# ─── İstasyon başına süre bütçesi ────────────────────────────────────────────
+def _wp_yaml():
+    yol = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       'config', 'waypoints.yaml')
+    with open(yol, encoding='utf-8') as f:
+        return yaml.safe_load(f)
+
+
+_WPY   = _wp_yaml()
+_ASAMA = _WPY['asamalar']
+_BUTCE = [a.get('timeout_saniye') for a in _ASAMA]
+
+# Süresi olmayan aşama sessizce 120 s'lik yedek tavana düşer — tek bir ortak
+# sayı 2,5 m'lik rampa inişine de 22 m'lik U dönüşüne de aynı süreyi veriyordu.
+check("her aşamanın kendi süresi var",    [b for b in _BUTCE if b is None], [])
+check("hiçbir bütçe 25 s'nin altında değil", [b for b in _BUTCE if b < 25], [])
+
+# Atış (SHOOT_APPROACH 15 + SHOOT 3×8 + 3×1), hızlanma (52,6+10), rampa
+# duruşları (2×2) ve kayar engel yön beklemesi (10) aşama bütçesinin DIŞINDA
+# ama koşu saatinden yiyor. §6.12'yi aşmak koşu süresi puanının (100) tamamını
+# götürür — istasyon puanları kalır, süre puanı sıfırlanır.
+# RampaState iki kez koşar (tırmanış + iniş) ve timeout'unu hızdan türetir:
+#   (YAKLASMA_MAX 3 + EGIM_MAX 6) / (hız × 0.40) + DURMA_TIMEOUT 8 + DURUS 2
+_RAMPA_S = sum((3.0 + 6.0) / (h * 0.40) + 8.0 + 2.0
+               for h in (_WPY['parametreler']['rampa_tirmanis_hiz'],
+                         _WPY['parametreler']['rampa_inis_hiz']))
+_ASAMA_DISI = 10 + 42 + 63 + _RAMPA_S
+check("bütçe toplamı limiti aşmıyor",     sum(_BUTCE) <= KOSU_SURESI_S, True)
+check("aşama dışı dahil en kötü hâl sığar",
+      sum(_BUTCE) + _ASAMA_DISI <= KOSU_SURESI_S, True)
+# Pay bir-iki tekrar denemeyi karşılamalı (MAX_RETRIES=2).
+check("en uzun aşama bir kez daha sığar",
+      sum(_BUTCE) + _ASAMA_DISI + max(_BUTCE) <= KOSU_SURESI_S, True)
+
+# Alan okunmazsa bütçeler ölü konfigürasyon olur ve kimse fark etmez.
+check("FSM aşama başına süreyi okuyor",   "wp.get('timeout_saniye'" in _FSM, True)
+check("yedek tavan hâlâ var",             'asama_timeout_saniye' in _WPY['parametreler'], True)
+
+
+# ─── §6.10 rampa: Nav2 baypası ───────────────────────────────────────────────
+from teknofest_ika.otonomi.pure_logic import rampa_faz_gecisi  # noqa: E402
+
+
+def _faz(f, pitch, mesafe):
+    return rampa_faz_gecisi(f, pitch, 15.0, mesafe, 3.0, 6.0)
+
+
+check("düz zeminde yaklaşma sürer",       _faz('yaklasma', 2.0, 0.5), 'yaklasma')
+check("eğim başlayınca faz değişir",      _faz('yaklasma', 20.0, 0.5), 'egimde')
+check("eğim bulunamazsa iptal",           _faz('yaklasma', 2.0, 3.5), 'bulunamadi')
+check("eğimde kalır",                     _faz('egimde', 20.0, 2.0), 'egimde')
+check("eğim biterse tamam",               _faz('egimde', 3.0, 4.0), 'bitti')
+check("eğim bitmezse iptal",              _faz('egimde', 20.0, 7.0), 'asildi')
+# Mutlak pitch: aynı mantık inişte de çalışmalı (pitch negatif gelir).
+check("iniş de aynı mantıkla yürür",      _faz('yaklasma', abs(-20.0), 0.5), 'egimde')
+
+_DIK = [a for a in _ASAMA if 'DIK_EGIM' in a['isim']]
+check("iki dik eğim aşaması var",         len(_DIK), 2)
+check("dik eğim tipi rampa olarak atanır",
+      "elif isim in DIK_EGIM_ETIKETLERI:" in _FSM, True)
+check("NavigateState rampaya yönlendirir", "'rampa_waypoint'" in _FSM, True)
+
+# İki durak üst üste binerse §6.10'un istediği iki duruş dörde çıkar ve
+# koşu saatinden boşuna 4 s gider.
+check("NavigateState rampa duruşunu tekrarlamaz",
+      "and wp.get('type') != 'rampa'" in _FSM, True)
+
+# IMU BEST_EFFORT yayınlanıyor; RELIABLE abone olunursa eşleşme kurulmaz,
+# callback HİÇ çağrılmaz, pitch sonsuza kadar 0 kalır ve faz hiç değişmez.
+# Hata da basılmaz — bu yüzden kaynak seviyesinde kilitleniyor.
+check("rampa IMU aboneliği BEST_EFFORT",
+      "ReliabilityPolicy.BEST_EFFORT" in _FSM, True)
+
+_HIZLAR = (_WPY['parametreler']['rampa_tirmanis_hiz'],
+           _WPY['parametreler']['rampa_inis_hiz'])
+check("rampa hızları tanımlı",            [h for h in _HIZLAR if h is None], [])
+check("iniş tırmanıştan hızlı değil",     _HIZLAR[1] <= _HIZLAR[0], True)
+check("rampa hızları makul aralıkta",     all(0.1 <= h <= 1.5 for h in _HIZLAR), True)
+
+
+# ─── Haritasız hedef üretimi: koridor merkez çizgisi + iç duvar takibi ──────
+from teknofest_ika.otonomi.pure_logic import (  # noqa: E402
+    koridor_merkez_cizgisi, kayan_hedef, ic_duvar_hedefi,
+)
+
+
+def _koridor_taramasi(sol_m, sag_m, n=360, menzil=10.0):
+    """İki paralel duvarlı düz koridorun sentetik taraması (lidar_yaw = 0)."""
+    inc = 2.0 * math.pi / n
+    ranges = []
+    for i in range(n):
+        a = -math.pi + i * inc
+        s, c = math.sin(a), math.cos(a)
+        en = float('inf')
+        for d, isaret in ((sol_m, 1.0), (sag_m, -1.0)):
+            if d is None or isaret * s <= 1e-6:
+                continue
+            r = d / (isaret * s)
+            if 0.0 < r < menzil and abs(r * c) < menzil:
+                en = min(en, r)
+        ranges.append(en if en < float('inf') else float('nan'))
+    return ranges, -math.pi, inc
+
+
+def _merkez(sol_m, sag_m):
+    r, a, i = _koridor_taramasi(sol_m, sag_m)
+    return koridor_merkez_cizgisi(r, a, i, lidar_yaw=0.0)
+
+
+# Ortalanmış araç: merkez çizgisi araç ekseninde kalmalı.
+_ORTA = _merkez(1.5, 1.5)
+check("ortalanmışta merkez ~0",           abs(_ORTA[0][1]) < 0.05, True)
+check("ortalanmışta iki duvar görülür",   _ORTA[0][2], 'iki_duvar')
+# Sola kaymış araç (sol duvar yakın): merkez SAĞDA, yani yanal negatif.
+_KAYIK = _merkez(1.1, 1.9)
+check("sola kaymışta merkez sağda",       _KAYIK[0][1] < -0.3, True)
+# Tek duvar: koridor genişliğinden çıkarım, güven düşer.
+_TEK = _merkez(1.5, None)
+check("tek duvarda güven düşer",          _TEK[0][2], 'tek_duvar')
+# Genişlik tutmuyorsa ölçüm koridora ait değildir — hedef oraya konmamalı.
+# 1,0 + 1,0 = 2,0 m: pencereye giriyor ama §6.1'in 3 m'sini tutmuyor.
+_GENIS = _merkez(1.0, 1.0)
+check("genişlik tutmazsa belirsiz",       _GENIS[0][2], 'belirsiz')
+check("belirsiz kutuya hedef konmaz",     kayan_hedef(_GENIS), None)
+check("düz koridorda hedef üretilir",     kayan_hedef(_ORTA) is not None, True)
+
+# İç duvar takibi: sağdaki duvardan `hedef_mesafe` kadar içeride, düz.
+_R, _A, _I = _koridor_taramasi(None, 1.0)
+_ICH = ic_duvar_hedefi(_R, _A, _I, 0.0, 'sag')
+check("iç duvar hedefi üretilir",         _ICH is not None, True)
+check("iç duvar hedefi koridora kayar",   abs(_ICH[1] - 0.4) < 0.1, True)
+check("düz duvarda hedef yönü ileri",     abs(_ICH[2]) < 0.1, True)
+# Duvar olmayan tarafı istemek hedef üretmemeli.
+check("duvarsız tarafta hedef yok",       ic_duvar_hedefi(_R, _A, _I, 0.0, 'sol'), None)
+check("geçersiz taraf reddedilir",        ic_duvar_hedefi(_R, _A, _I, 0.0, 'orta'), None)
+
+# CAD ölçümünden gelen varsayılanlar: dar viraj kısa hedef ve dar pencere ister.
+import inspect  # noqa: E402
+_IMZA = inspect.signature(ic_duvar_hedefi).parameters
+check("iç duvar hedefi kısa tutulur",     _IMZA['ileri_m'].default <= 2.5, True)
+check("iç duvar penceresi dar tutulur",   _IMZA['maks_yanal'].default <= 2.4, True)
 
 
 # ─── Sonuç ───────────────────────────────────────────────────────────────────

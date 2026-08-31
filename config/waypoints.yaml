@@ -1,3 +1,31 @@
+# parkur_cad — 20260604_Parkur STEP montajından çıkarılan ölçüler.
+#
+#   ⚠️  BU KOORDİNATLAR CAD ÇERÇEVESİNDE. Nav2'nin `map` çerçevesi değil,
+#       SAHADA DOĞRULANMADI. `waypoint:` alanları bilerek 0.0 bırakıldı ki
+#       misyon_fsm.load_waypoints'in "hepsi (0,0)" uyarısı susmasın.
+#
+#   Kullanmak için tek bir katı dönüşüm gerekir: SLAM haritası alındıktan sonra
+#   parkurun bilinen bir noktası rviz'den okunur, aşağıdaki dx/dy/dyaw doldurulur
+#   ve waypoint_cad → waypoint dönüşümü uygulanır:
+#       x_map = dx + cos(dyaw)*x_cad - sin(dyaw)*y_cad
+#       y_map = dy + sin(dyaw)*x_cad + cos(dyaw)*y_cad
+#       yaw_map = dyaw + yaw_cad
+#   Göreli geometri kesin olduğu için yarışma günü 11 nokta değil BİR dönüşüm
+#   ölçülür.
+#
+#   Eksen: x = X_cad, y = -Z_cad (CAD'de Y düşey ve yukarı pozitif). Birim m.
+#   Waypoint = tabelanın 3 m'lik şeridin ortasına dik izdüşümü; yol yönü aynı
+#   duvardaki komşu bariyerden (bariyerin yerel eksenleri uzunlukla hizalı DEĞİL).
+#   Doğrulama: 11/11 waypoint kendi engelinin ayak izinin içinde ya da girişinde,
+#   hepsi duvardan >= robot_radius uzakta.
+parkur_cad:
+  kaynak: "20260604_PRK26-A-001-001-00.STEP"
+  dogrulandi_saha: false
+  donusum:
+    dx: null
+    dy: null
+    dyaw: null
+
 # waypoints.yaml — LYDİA Gerçek Parkur Waypoint Tanımları
 # =========================================================
 #
@@ -6,9 +34,13 @@
 #     ros2 launch teknofest_ika gercek_harita.launch.py
 #     rviz2 → 2D Nav Goal ile her aşamanın hedefini belirle ve buraya yaz.
 #
-# yolo_sinifi : YOLO modelinin tespit ettiği tabela sınıfı (Tabela_X)
-#               yolo_adapter_node bu değeri /ika/detections JSON'una ve
-#               /yolo/class_id UInt8'e çevirir.
+# yolo_sinifi : Aşamanın parkurda hangi tabelayla işaretlendiği. YALNIZ BELGE —
+#               bu alanı okuyan kod YOKTUR. Tabela sınıfı çalışma anında
+#               kameradan geliyor: yolo_adapter_node modelin çıktısını
+#               /ika/detections JSON'una ve /yolo/class_id UInt8'e çevirir,
+#               terrain_adapter oradan arazi profilini (hız + inflation) seçer.
+#               Buradaki değeri değiştirmek araç davranışını DEĞİŞTİRMEZ;
+#               aşamayı hangi duruma yollayacağına `type` alanı karar verir.
 #
 # pas_gecilir : Şartname §9 pas hakkı. VARSAYILAN false, öyle kalmalı.
 #               true → aşama timeout'a girerse FSM bir sonraki hedefe geçer.
@@ -49,15 +81,19 @@
 #   trafik_huni  (class_id=14) → trafik konisi
 
 asamalar:
-
   - isim: SULU_YOL
     yolo_sinifi: Tabela_1
     waypoint:
       x: 0.0
       y: 0.0
       yaw: 0.0
+    waypoint_cad:        # CAD çerçevesi — donusum uygulanmadan kullanma
+      x: -0.120
+      y: -0.000
+      yaw: -3.1416
     pas_gecilir: false
     pas_puan: 10        # §9 su geçişi ve yağmur
+    timeout_saniye: 50     # 10.0 m ÷ 0.20 m/s — başlangıç→1 varsayılan 10 m · su geçişi §6.4
     aciklama: "Sulu yol — μ≈0.3, yavaş geç, frenleme mesafesi artar"
 
   - isim: TASLI_YOL
@@ -66,8 +102,13 @@ asamalar:
       x: 0.0
       y: 0.0
       yaw: 0.0
+    waypoint_cad:        # CAD çerçevesi — donusum uygulanmadan kullanma
+      x: -7.619
+      y: -0.000
+      yaw: -3.1416
     pas_gecilir: false
     pas_puan: 5        # §9 çakıllı / taşlı yol
+    timeout_saniye: 40     # 7.2 m ÷ 0.20 m/s — çakıllı/taşlı yol §6.3
     aciklama: "Taşlı yol — lateral temas düzensiz, hız kısılır"
 
   - isim: YAN_EGIM
@@ -76,9 +117,17 @@ asamalar:
       x: 0.0
       y: 0.0
       yaw: 0.0
+    waypoint_cad:        # CAD çerçevesi — donusum uygulanmadan kullanma
+      x: -12.876
+      y: -0.000
+      yaw: -3.1416
     pas_gecilir: false
     pas_puan: 5        # §9 yan eğim
-    aciklama: "Yan eğim — roll açısı izlenir, imu_guvenlik devrede"
+    timeout_saniye: 25     # 5.0 m ÷ 0.20 m/s — yan eğim §6.5 · taban 25 s
+    aciklama: "Yan eğim %20 (§6.5, 11,31°) — roll eşikleri topics.py'de
+      (uyarı 13°, dur 15°, E-STOP 20°) ama bunları uygulayan imu_guvenlik
+      düğümü VARSAYILAN KAPALI (IMU_GUVENLIK_AKTIF=0): eşiği IMU'nun montaj
+      yönüne güveniyor ve o yön doğrulanmadı. Açılmadan roll izlenmiyor."
 
   - isim: DIK_ENGEL
     yolo_sinifi: Tabela_4
@@ -86,8 +135,13 @@ asamalar:
       x: 0.0
       y: 0.0
       yaw: 0.0
+    waypoint_cad:        # CAD çerçevesi — donusum uygulanmadan kullanma
+      x: -18.047
+      y: 10.000
+      yaw: 0.0000
     pas_gecilir: false
     pas_puan: 5        # §9 dik engel
+    timeout_saniye: 90     # 22.0 m ÷ 0.25 m/s — sol U dönüşü + 15 cm blok §6.6 — en uzun segment
     aciklama: "Dik engel — Nav2 lokal costmap engeli kaçınır"
 
   - isim: KONİLİ_YOL
@@ -96,8 +150,13 @@ asamalar:
       x: 0.0
       y: 0.0
       yaw: 0.0
+    waypoint_cad:        # CAD çerçevesi — donusum uygulanmadan kullanma
+      x: -12.717
+      y: 10.000
+      yaw: 0.0000
     pas_gecilir: false
     pas_puan: 50        # §9 trafik konileri — otonom koşuda PAS GEÇİLEMEZ
+    timeout_saniye: 25     # 5.0 m ÷ 0.30 m/s — düz şerit · taban 25 s
     aciklama: "Konili yol slalom — dar geçiş, cone_fusion_node aktif"
 
   - isim: KAYAR_ENGEL
@@ -106,8 +165,13 @@ asamalar:
       x: 0.0
       y: 0.0
       yaw: 0.0
+    waypoint_cad:        # CAD çerçevesi — donusum uygulanmadan kullanma
+      x: -2.752
+      y: 10.000
+      yaw: -0.0000
     pas_gecilir: false
     pas_puan: 50        # §9 kayar engel (temassız geçilirse)
+    timeout_saniye: 65     # 9.8 m ÷ 0.15 m/s — 8 koni slalomu §6.7 — en yavaş segment
     aciklama: "Kayar engel — pozisyon değişkendir, kayar_yon beklenir"
 
   - isim: ENGEBELİ_ARAZİ
@@ -116,8 +180,13 @@ asamalar:
       x: 0.0
       y: 0.0
       yaw: 0.0
+    waypoint_cad:        # CAD çerçevesi — donusum uygulanmadan kullanma
+      x: 0.250
+      y: 19.954
+      yaw: 3.1163
     pas_gecilir: false
     pas_puan: 5        # §9 engebeli arazi
+    timeout_saniye: 65     # 15.7 m ÷ 0.25 m/s — sağ U dönüşü
     aciklama: "Engebeli arazi — titreşim tolere, hız minimum"
 
   - isim: DIK_EGIM_GIRIS
@@ -126,12 +195,40 @@ asamalar:
       x: 0.0   # ⚠️ PLACEHOLDER — rampa giriş noktası (düz zemin, rampadan önce)
       y: 0.0
       yaw: 0.0
+    waypoint_cad:        # CAD çerçevesi — donusum uygulanmadan kullanma
+      x: -12.849
+      y: 20.000
+      yaw: -3.1416
     pas_gecilir: false
     pas_puan: 15        # §9 dik eğimler parkuru — giriş+çıkış TEK aşama, puan bir kez
+    timeout_saniye: 65     # 13.0 m ÷ 0.20 m/s — engebeli arazi §6.9
     aciklama: >
       §6.10 Dik eğim girişi. Rampa öncesi düz zemin. Rampa dibindeki STOP işareti
       NavigateState tarafından tespit edilir (Tabela_stop/class_id=13):
       araç 2s durur, 3s cooldown, rampa çıkışına devam.
+
+  - isim: ATIS_BOLGESI
+    yolo_sinifi: Tabela_9
+    # misyon_fsm NavigateState'ten hangi duruma geçeceğini YALNIZ bu alandan
+    # seçer (misyon_fsm.py: wp.get('type')). Alan yoksa istasyon sıradan bir
+    # navigasyon hedefi olur ve ShootApproach/Shoot durumlarına hiç girilmez.
+    # Taret kapalıyken (TARET_AKTIF=0) atış başarısız olur ama görev DÜŞMEZ:
+    # ERROR_RECOVERY bir deneme harcar, sonraki istasyon tamamlanınca sayaç
+    # sıfırlanır. Bedeli koşu süresinden ~30-60 s.
+    type: shoot
+    waypoint:
+      x: 0.0
+      y: 0.0
+      yaw: 0.0
+    waypoint_cad:        # CAD çerçevesi — donusum uygulanmadan kullanma
+      x: -15.575
+      y: 20.000
+      yaw: -3.1416
+    pas_gecilir: false
+    pas_puan: 50        # §9 atış (iç daire); §9 pas örneği doğrudan bu aşamayı -50 diye verir
+    timeout_saniye: 25     # 2.5 m ÷ 0.20 m/s — %45 rampa çıkışı §6.10 · taban 25 s
+    aciklama: "Atış bölgesi — araç durur, nişan alır, lazer ateşlenir (max 3 deneme)"
+
 
   - isim: DIK_EGIM_CIKIS
     yolo_sinifi: Tabela_10
@@ -139,32 +236,39 @@ asamalar:
       x: 0.0   # ⚠️ PLACEHOLDER — rampa çıkış noktası (iniş sonrası düz zemin)
       y: 0.0
       yaw: 0.0
+    waypoint_cad:        # CAD çerçevesi — donusum uygulanmadan kullanma
+      x: -18.319
+      y: 20.000
+      yaw: 3.1416
     pas_gecilir: false
     pas_puan: 0        # §9 puanı DIK_EGIM_GIRIS üzerinde, iki kez sayılmaz
+    timeout_saniye: 25     # 2.5 m ÷ 0.20 m/s — %45 rampa inişi §6.10 · taban 25 s
     aciklama: >
       §6.10 Dik eğim çıkışı. Rampa üzerinde çıkarken ve inerken STOP işaretleri
       NavigateState tarafından ayrı ayrı işlenir. Cooldown=3s rampa geçiş süresinden
       kısa olduğu için her STOP doğru tetiklenir. anti_rollback aktif.
 
-  - isim: ATIS_BOLGESI
-    yolo_sinifi: Tabela_9
-    waypoint:
-      x: 0.0
-      y: 0.0
-      yaw: 0.0
-    pas_gecilir: false
-    pas_puan: 50        # §9 atış (iç daire); §9 pas örneği doğrudan bu aşamayı -50 diye verir
-    aciklama: "Atış bölgesi — araç durur, nişan alır, lazer ateşlenir (max 3 deneme)"
-
-
   - isim: HIZLANMA_PARKURU
     yolo_sinifi: Tabela_11
+    # Alan olmadan §6.11 parkuru sıradan bir Nav2 hedefi olarak arazi
+    # profilinin hızıyla (0.65 m/s) sürülür; HizlanmaState Nav2'yi bypass edip
+    # tam gaz veren tek yol. Tarete bağlı değil, /odom yoksa kendini iptal eder.
+    type: hizlanma
     waypoint:
       x: 0.0    # ⚠️ PLACEHOLDER — SLAM haritasından doldur (pistin başlangıç noktası)
       y: 0.0
       yaw: 0.0  # aracın ilerleme yönüne hizala
+    # ⚠️ Tabela_11 iki yarış şeridini ayıran ORTA bariyer sırasında; §6.11'e göre
+    # takımlar yan yana yarışıyor ve şeridi hakem heyeti atıyor. Tabelanın iki
+    # yanındaki şerit ortaları y = 30.000 ve y = 33.360; hangisi bize düşerse
+    # o yazılacak. Aşağıdaki değer keyfî seçilmiş DEĞİL, sadece iki adaydan biri.
+    waypoint_cad:        # CAD çerçevesi — donusum uygulanmadan kullanma
+      x: -25.556
+      y: 33.360
+      yaw: 0.0000
     pas_gecilir: false
     pas_puan: 25        # §9 hızlanma — PAS GEÇİLEMEZ
+    timeout_saniye: 65     # 19.2 m ÷ 0.30 m/s — düz şerit
     aciklama: >
       §6.11 Hızlanma parkuru girişi. Nav2 bu noktaya götürür, sonra
       HizlanmaState devralır: Nav2 bypass, doğrudan /cmd_vel 3.0 m/s,
@@ -175,12 +279,33 @@ parametreler:
   ardisik_frame_sayisi: 3         # terrain_adapter.py → kaç ardışık frame'de tabela geçerli sayılır
   hedef_tolerans_metre: 0.30      # nav2_params.yaml xy_goal_tolerance ile eşleştirildi [m]
   hedef_tolerans_yaw: 0.20        # nav2_params.yaml yaw_goal_tolerance ile eşleştirildi [rad]
-  asama_timeout_saniye: 120.0     # misyon_fsm.py → Nav2 bu sürede hedefe varamazsa goal iptal [s]
+  asama_timeout_saniye: 120.0     # YEDEK tavan — yalnız timeout_saniye'si olmayan aşama için [s]
   baslangic_bekleme: 3.0          # Otonom moda geçişte bekleme süresi [s]
   kosu_suresi_saniye: 900.0       # §6.12 — atış dahil tüm koşu 15 dakika [s]
-  # Aşama timeout'u × aşama sayısı (120 × 11 = 1320 s) koşu limitinden uzun.
-  # Bu bir hata değil: aşama süreleri misyon_fsm'de koşu saatiyle kırpılıyor,
-  # 120 s tek bir aşamanın üst sınırı, toplam bütçe değil. asama_timeout'u
-  # yükseltirken bunun toplam süreyi artırmadığı, yalnız tek bir takılan
-  # aşamanın koşunun daha büyük bir kısmını yiyebileceği anlamına geldiği
-  # unutulmamalı.
+  # §6.10 rampa — RampaState Nav2'yi baypas edip doğrudan /cmd_vel basar.
+  # ⚠️ İKİSİ DE ÖLÇÜLMEDİ. Tırmanış: patinaj yapmayacak kadar yüksek, tepede
+  # havalanmayacak kadar düşük olmalı. İniş: yerçekimi hızlandırdığı için
+  # tırmanıştan düşük. Rampada denenip buradan ayarlanır — dosya install
+  # alanına symlink olduğu için derleme gerekmez, düğümü yeniden başlatmak yeter.
+  rampa_tirmanis_hiz: 0.60        # [m/s] — %45 eğimde tırmanış
+  rampa_inis_hiz: 0.40            # [m/s] — %45 eğimde iniş
+  # Her aşamanın kendi `timeout_saniye`'si var; buradaki 120 s yalnız o alan
+  # yoksa devreye girer. Tek bir ortak sayı 2,5 m'lik rampa inişine de 22 m'lik
+  # sol U dönüşüne de aynı süreyi veriyordu.
+  #
+  # Süreler UYDURULMADI: istasyonlar arası mesafe parkur CAD'inden, aracın
+  # 1,85 × 1,16 m dikdörtgeni eğriliği sınırlı ve geri vitessiz yollar boyunca
+  # süpürülerek ölçüldü (scripts/parkur_cad/donus.py ile aynı planlayıcı),
+  # sonra zemine göre bir ortalama hıza bölündü. Türetim her aşamanın yanında.
+  # Toplam 540 s; §6.12'nin 900 s'sine 360 s pay kalıyor.
+  #
+  # ⚠️ Ortalama hızlar ÖLÇÜM DEĞİL, mühendislik seçimi — Nav2 bu araçta hiç
+  # koşmadı (enkoder takılı değil, odometri yok). Nav2 nominali 0,65 m/s
+  # (nav2_params.yaml); buradaki 0,15–0,30 kalkış/duruş, zemin ve yeniden
+  # planlama payını içeriyor. İlk gerçek koşudan sonra ölçümle değiştirilmeli.
+  #
+  # Atış, hızlanma ve zorunlu beklemeler bu bütçelerin DIŞINDA: ayrı smach
+  # durumlarında kendi timeout'larıyla geçiyor (SHOOT_APPROACH 15 s, SHOOT
+  # 3×8 s, HizlanmaState 52,6+10 s), rampa duruşu ise deadline'ı uzatıyor
+  # (`wp_deadline += RAMP_STOP_DURATION`). Koşu saatinden yiyorlar ama aşama
+  # bütçesinden değil — en kötü hâl toplamı ≈ 659 s.

@@ -381,6 +381,13 @@ sleep 3
 #   3) config/waypoints.yaml'daki koordinatlar doldurulmuş olmalı; hepsi 0.0
 #      iken misyon_fsm her istasyonu aynı noktaya gönderir.
 if [ "$NAV2_AKTIF" = "1" ]; then
+    # Atış aşaması (waypoints.yaml type: shoot) targeting_node'a bağlı. Taret
+    # kapalıyken misyon_fsm o istasyona girer, 15 s timeout'a düşer, üç deneme
+    # yapar ve puan alamadan devam eder — sessizce, koşu süresinden yiyerek.
+    if [ "$TARET_AKTIF" != "1" ]; then
+        echo "UYARI: NAV2_AKTIF=1 ama TARET_AKTIF=0 — atış aşaması (§6.10)" \
+             "boşa yanacak, koşu süresinden ~30-60 s gider."
+    fi
     if [ "$ENKODER_AKTIF" != "1" ]; then
         echo "UYARI: NAV2_AKTIF=1 ama ENKODER_AKTIF=0 — Nav2 sabit odometriyle" \
              "aracı hareketsiz sanar. Nav2 başlatılmadı."
