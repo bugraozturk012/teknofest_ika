@@ -471,7 +471,13 @@ fi
 # tespit akışını zaman aşımıyla izleyip /sensor/fault basar. Yığındaki sessiz
 # kopuklukları ilk fark edecek düğüm budur — mesajları deserialize etmediği
 # için maliyeti düşük.
-ros2 run teknofest_ika watchdog          > "$LOG/watchdog.log" 2>&1 &
+# nav2_aktif: EKF ve yolo_adapter yalnız Nav2 yolunda ayağa kalkıyor; kapalıyken
+# izlenirlerse watchdog kalıcı sahte arıza raporlar.
+# ham_tarama_topic: bu betikte sürücü doğrudan /scan basıyor (launch yolunda
+# scan_relay /scan_lidar basar). Yanlış ad = kalıcı "LiDAR veri gelmedi".
+ros2 run teknofest_ika watchdog --ros-args \
+    -p nav2_aktif:="$([ "$NAV2_AKTIF" = "1" ] && echo true || echo false)" \
+    -p ham_tarama_topic:=/scan          > "$LOG/watchdog.log" 2>&1 &
 sleep 2
 if [ "$IMU_GUVENLIK_AKTIF" = "1" ]; then
     ros2 run teknofest_ika imu_guvenlik  > "$LOG/imu_guvenlik.log" 2>&1 &

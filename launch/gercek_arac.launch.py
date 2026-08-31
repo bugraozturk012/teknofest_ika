@@ -411,10 +411,15 @@ def generate_launch_description():
     )
 
     # ── Watchdog (Kritik topic sağlık izleme) ─────────────────────────────────
+    # Bu launch dosyasında sürücü /scan_raw'a remap edilip scan_relay
+    # /scan_lidar basıyor; Nav2 ve EKF de burada her zaman ayağa kalkıyor.
+    # (Boot betiği ikisini de farklı kuruyor, orada parametreler farklı.)
     watchdog = Node(
         package='teknofest_ika', executable='watchdog',
         name='watchdog', output='screen',
-        parameters=[{'use_sim_time': False}]
+        parameters=[{'use_sim_time': False,
+                     'nav2_aktif': True,
+                     'ham_tarama_topic': '/scan_lidar'}]
     )
 
     # ── YOLO Adapter — Detection2DArray → /ika/detections JSON köprüsü ───────

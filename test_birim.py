@@ -1118,6 +1118,58 @@ check("mux bayat komutu sıfırlar",        'nav2_gecmis > NAV2_CMD_BAYATLAMA_S'
 check("bayatlık sınırı ackermann ile aynı", NAV2_CMD_BAYATLAMA_S, 0.5)
 
 
+# ─── Watchdog: kapalı alt sistem "arıza" sayılmamalı ────────────────────────
+# Sabit listede /scan_lidar, EKF ve yolo_adapter vardı; boot betiğinde
+# üçünün de yayıncısı yok (ham tarama /scan'e gidiyor, diğer ikisi Nav2
+# bloğunda). Sonuç her açılışta üç KALICI sahte arıza — sahte alarm,
+# kontrolün kendisini değersizleştirdiği için gerçek arızayı kaçırmakla
+# aynı sonucu verir.
+# watchdog.py doğrudan import EDİLEMEZ (vision_msgs gibi ROS paketlerine
+# bağlı), sözlükler kaynaktan AST ile okunuyor.
+def _watchdog_sozlugu(ad):
+    import ast as _ast
+    agac = _ast.parse(_kaynak('teknofest_ika/otonomi/watchdog.py'))
+    for d in agac.body:
+        if (isinstance(d, _ast.Assign) and d.targets
+                and getattr(d.targets[0], 'id', '') == ad):
+            return [getattr(k, 'id', getattr(k, 'value', None)) for k in d.value.keys]
+    return None
+
+
+_TEMEL = _watchdog_sozlugu('TEMEL_TOPICLER')
+_NAV2  = _watchdog_sozlugu('NAV2_TOPICLERI')
+
+check("EKF koşullu izleniyor",            'EKF_ODOM_TOPIC' in _NAV2 and 'EKF_ODOM_TOPIC' not in _TEMEL, True)
+check("yolo_adapter koşullu izleniyor",   'DETECTIONS_TOPIC' in _NAV2 and 'DETECTIONS_TOPIC' not in _TEMEL, True)
+check("ham tarama sabit değil",           'SCAN_LIDAR_TOPIC' not in _TEMEL, True)
+check("E-STOP her zaman izleniyor",       'E_STOP_TOPIC' in _TEMEL, True)
+check("ham tarama parametreli",           "declare_parameter('ham_tarama_topic'" in _kaynak('teknofest_ika/otonomi/watchdog.py'), True)
+# Boot betiği sahada koşan yol: watchdog'a doğru ham tarama adını ve Nav2
+# durumunu geçirmeli, yoksa düzeltme betikte geçersiz kalır.
+_BOOT = _kaynak('scripts/lydia_startup.sh')
+check("boot betiği ham taramayı geçirir", 'ham_tarama_topic:=/scan' in _BOOT, True)
+check("boot betiği nav2 durumunu geçirir", 'nav2_aktif:=' in _BOOT, True)
+
+
+# ─── RPP eğrilik kısması ölü kural olmamalı ─────────────────────────────────
+# Kısma eşiği aracın çizebildiği en dar yaydan (R_min) BÜYÜK olmalı; küçükse
+# koşul hiç sağlanmaz ve kural sessizce hiçbir şey yapmaz.
+def _nav2_params():
+    yol = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       'config', 'nav2_params.yaml')
+    with open(yol, encoding='utf-8') as f:
+        return yaml.safe_load(f)
+
+
+_FP = _nav2_params()['controller_server']['ros__parameters']['FollowPath']
+_R_MIN = 1.40 / math.tan(0.5236)          # L / tan(δ_max) — ackermann_converter ile aynı
+check("kısma eşiği R_min üstünde",        _FP['regulated_linear_scaling_min_radius'] > _R_MIN, True)
+# Kısma sonrası hız kalkış sürtünmesi tabanının altına düşmemeli, yoksa araç
+# viraj ortasında yerinden kalkamaz.
+check("kısılan hız tabanın üstünde",
+      round(0.65 * (_R_MIN / _FP['regulated_linear_scaling_min_radius']), 2) >= _FP['regulated_linear_scaling_min_speed'], True)
+
+
 # ─── Sonuç ───────────────────────────────────────────────────────────────────
 print(f"\n{'='*45}")
 print(f"  TOPLAM: {PASS+FAIL} test | {PASS} GEÇTI | {FAIL} BAŞARISIZ")

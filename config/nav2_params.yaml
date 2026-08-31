@@ -132,10 +132,17 @@ controller_server:
       min_approach_linear_velocity: 0.45
       approach_velocity_scaling_dist: 2.5
 
-      # Eğrilik bazlı hız sınırlama
-      # Ackermann aracın maksimum dönüş yarıçapı: ~0.95 m
+      # Eğrilik bazlı hız sınırlama.
+      # Eşik 1.0 m idi ve ÖLÜ KURALDI: aracın çizebildiği en dar yay
+      # R_min = L/tan(δ_max) = 1.40/tan(30°) = 2.42 m, yani hiçbir yay 1.0 m'nin
+      # altına inemez ve kısma hiç tetiklenmezdi. (Yanındaki "maksimum dönüş
+      # yarıçapı ~0.95 m" notu da yanlıştı — 0.95 m bu araçta ulaşılamaz.)
+      # Eşik R_min'in ÜSTÜNDE olmalı ki kısma direksiyon doymadan önce başlasın:
+      # 3.0 m'de R=2.42'lik tam kilit yayı 0.65 × (2.42/3.0) ≈ 0.52 m/s'ye
+      # düşer — kalkış sürtünmesi tabanının (0.45) üstünde kalır.
+      # Sahada ilk koşudan sonra ölçümle ayarlanmalı.
       use_regulated_linear_velocity_scaling: true
-      regulated_linear_scaling_min_radius: 1.0   # [m] — bu yarıçapın altında yavaşla
+      regulated_linear_scaling_min_radius: 3.0   # [m] — bu yarıçapın altında yavaşla
       regulated_linear_scaling_min_speed: 0.45   # [m/s] — kalkış sürtünmesi tabanı
 
       # Engel durma — taşlı yolda sert dur yerine yavaşla
