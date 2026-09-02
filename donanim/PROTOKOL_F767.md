@@ -17,23 +17,16 @@ dayanır.
 
 | | |
 |---|---|
-| Bağlantı | F767ZI USART6 ↔ **Jetson J12 UART1** (TX, RX, GND) |
+| Bağlantı | Kart ↔ Jetson, **UART** (üç tel: TX, RX, GND) |
 | Jetson portu | **`/dev/ttyTHS1`** — sabit ad, udev gerekmez, USB yemez |
 | Hız | **115200** baud, 8N1 |
 
-**Kablolama:**
+Kablolama donanım tarafındadır ve kurulu gelir; yazılım tarafının bilmesi
+gereken tek şey port adı ve hızdır.
 
-| F767ZI | | Jetson J12 |
-|---|---|---|
-| `PG14` = D1 = **CN10-14** (USART6_TX) | → | **pin 10** (UART1_RX) |
-| `PG9` = D0 = **CN10-16** (USART6_RX) | ← | **pin 8** (UART1_TX) |
-| `GND` = **CN12-9** | ↔ | **pin 6** |
-
-⚠ Jetson'ın 3,3 V / 5 V pinlerine (J12-1/2/4) bağlanmaz — kart 12 V'tan
-beslenir, gereken tek şey ortak topraktır.
-⚠ `/dev/ttyTHS1` fabrika çıkışında seri konsola ayrılmış olabilir:
+⚠ `/dev/ttyTHS1` fabrika çıkışında seri konsola ayrılmış olabilir; port
+açılmıyorsa ilk bakılacak yer budur:
 `sudo systemctl stop nvgetty && sudo systemctl disable nvgetty`
-⚠ Kod atma **ayrı yoldan**: kartın `CN1` USB'si. UART hep bağlı kalır.
 
 ---
 
