@@ -57,10 +57,12 @@ F767_ARALIK = range(0x30, 0x40)   # bu aralık F767'ye ayrılmıştır
 # Kip anahtarı KUMANDADADIR (SwC/CH9), Jetson'da değil.
 # Sıralama: güvenlik > kumanda > Jetson.
 MOD_MANUEL = 0   # her şey kumandada
-MOD_YARI   = 1   # yalnız direksiyon Jetson'da; gaz ve fren insanda
+MOD_BOS    = 1   # 🔴 HER ŞEY KİLİTLİ — yumuşak E-STOP: gaz rölanti, fren
+                 #    basar, direksiyon donar, Jetson komutu yok sayılır.
+                 #    Manuel ile otonom arasında zorunlu DUR kademesi.
 MOD_OTONOM = 2   # gaz + fren + direksiyon Jetson'da
 
-MOD_AD = {MOD_MANUEL: "MANUEL", MOD_YARI: "YARI OTONOM", MOD_OTONOM: "TAM OTONOM"}
+MOD_AD = {MOD_MANUEL: "MANUEL", MOD_BOS: "BOS/DUR", MOD_OTONOM: "TAM OTONOM"}
 
 # ─── Link durumu (PKT_F7_MOD v1) ──────────────────────────────────────────
 JDR_LINK  = 0x01   # kart Jetson'ı canlı görüyor

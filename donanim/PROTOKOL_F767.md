@@ -120,7 +120,8 @@ Köprü bu kurallara uymak zorundadır; kart bunları uygular.
 3. **`PKT_DUR` direksiyon açısını sıfırlamaz.** Hareket hâlindeki araçta
    tekerlekleri ortaya kırmak durdurmak değil, yön değiştirmektir. Açı korunur.
 4. **Kip anahtarı kumandadadır (SwC/CH9), Jetson'da değil.**
-   `0 manuel · 1 yarı (yalnız direksiyon Jetson'da) · 2 tam otonom`.
+   `0 manuel · 1 boş/DUR (her şey kilitli, yumuşak E-STOP) · 2 tam otonom`.
+   Orta kademe manuel ile otonom arasında zorunlu bir DUR basamağıdır.
 5. **Sıralama: güvenlik > kumanda > Jetson.** Kesme, sinyal kaybı ve E-STOP
    Jetson komutunun üstündedir ve her zaman kazanır.
 6. **Fren:** otonom kipte kumanda her zaman **üstüne basabilir** — kartta
