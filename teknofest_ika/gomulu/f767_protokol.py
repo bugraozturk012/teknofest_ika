@@ -2,6 +2,10 @@
 """
 f767_protokol.py — F767ZI sürüş + sensör kartının arayüz tanımları.
 
+© 2026 dwifk0 — ahmetefenezli@gmail.com. Tüm hakları saklıdır.
+LYDIA/MAGNESIA takımının Teknofest çalışmaları kapsamında, bu depo içinde
+kullanılmak üzere paylaşılmıştır. Koşullar: donanim/TELIF.md
+
 Bu dosya **yalnız arayüzdür**: paket kodları, alan birimleri ve bayrak
 maskeleri. Çözme/gönderme mantığı `seri_kopru.py`de, kartın kendi mantığı ve
 kalibrasyonu ise ayrı bir depoda tutulur ve yayınlanmaz — köprü tarafında o

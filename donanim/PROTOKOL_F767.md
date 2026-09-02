@@ -1,5 +1,9 @@
 # F767ZI ↔ Jetson — arayüz sözleşmesi
 
+> **© 2026 dwifk0 — ahmetefenezli@gmail.com. Tüm hakları saklıdır.**
+> LYDIA/MAGNESIA takımının Teknofest çalışmaları kapsamında, bu depo içinde
+> kullanılmak üzere paylaşılmıştır. Koşullar: [`TELIF.md`](TELIF.md)
+
 **Sürüm:** 1.0 · **Tarih:** 2026-09-02
 **Kapsam:** Nucleo-F767ZI sürüş + sensör kartı ile Jetson arasındaki seri
 protokol. Köprü tarafı (`teknofest_ika/gomulu/seri_kopru.py`) bu belgeye
