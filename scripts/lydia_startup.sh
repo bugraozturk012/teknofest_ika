@@ -114,6 +114,28 @@ trap temizle TERM INT
 # loglar ve harita da yazılamaz.
 : "${KAYIT_AKTIF:=0}"
 
+# SERI_PORT: sürüş kartının KOMUT portu (8 baytlık ikili çerçeve, seri_kopru).
+# 🔴 3 Eylül 2026 — Mega tasarımdan çıktı, yerine F767ZI geldi, AMA kartın
+# Jetson komut hattı USART6 (PG9/PG14): fiziksel UART, USB'den ÇIKMIYOR.
+# ST-LINK USB'si yalnız teşhis satırı basar, komut kabul etmez. Yani kablo
+# (USB-TTL → PG9/PG14) çekilene kadar bu cihaz YOK ve seri_kopru bağlanamaz;
+# E-STOP loglaması bunun sonucudur, arıza değildir.
+# Kablo çekilince: SERI_PORT=/dev/f767_komut (yeni udev kuralı) ver.
+: "${SERI_PORT:=/dev/mega}"
+
+# F767 TELEMETRİ: ST-LINK USB'sinden akan ASCII teşhis satırını JSON'a çevirip
+# panoya besler. ⚠ Komut yolu DEĞİL — tek yönlü, yalnız dinler.
+: "${F767_TELEMETRI_AKTIF:=1}"
+: "${F767_TELEMETRI_PORT:=/dev/f767}"
+: "${F767_TELEMETRI_HTTP:=8092}"
+
+# BMS: JK Smart BMS'i BLE'den okur, panoya batarya verisi besler.
+# ⚠ BLE aynı anda TEK istemci kabul eder — bu koşarken telefondaki JK
+# uygulaması bağlanamaz. BMS_MAC boşsa servis başlatılmaz.
+: "${BMS_AKTIF:=1}"
+: "${BMS_MAC:=28:D4:1E:12:C1:70}"   # 3 Eyl 2026'da canlı doğrulandı
+: "${BMS_HTTP:=8091}"
+
 if [ "$ENKODER_AKTIF" != "1" ]; then
     _TF_SAHIBI=statik
 elif [ "$NAV2_AKTIF" = "1" ]; then
@@ -161,6 +183,15 @@ for _p in web_dashboard.py yolo_detection_node preprocessing_node \
     pkill -f "$_p" 2>/dev/null
 done
 
+# 🔴 3 Eylül 2026: pano ve onu besleyen iki HTTP servisi bu listede YOKTU.
+# Sonucu: `systemctl restart` sonrası eski süreçler 8080/8091/8092'yi tutmaya
+# devam ediyor, yeni kopyalar "Address already in use" ile ölüyor ve pano
+# ÖNCEKİ oturumun verisiyle çalışmaya devam ediyordu — yani restart'ın hiçbir
+# etkisi görünmüyordu. Kalıbı dar tut: düz "http.server" başka bir işi vurabilir.
+for _p in "f767_telemetri.py" "jk_servis.py" "http.server 8080"; do
+    pkill -f "$_p" 2>/dev/null
+done
+
 # LiDAR ayrı ele alınıyor: sürücü kapanırken seri portu geç bırakıyor, hemen
 # yeniden açılırsa "cannot bind to serial port" verip düşüyor.
 pkill -f ydlidar_ros2_driver_node 2>/dev/null
@@ -170,6 +201,11 @@ sleep 8
 # ── Sensörler ────────────────────────────────────────────────────────────────
 # LiDAR: fixed_resolution=false şart. true iken sürücü 430 noktaya sabitlemeye
 # çalışıyor, gerçek tarama 400-642 nokta geldiği için /scan hiç yayınlanmıyordu.
+# 🔴 3 Eylül 2026: cihaz yokken bu döngü 3×22 sn boşa harcıyordu (LiDAR
+# sökülü). Kontrol symlink üzerinden: udev kuralı 99-ika.rules'ta.
+if [ ! -e /dev/lidar ]; then
+    echo "UYARI: LiDAR (/dev/lidar) bulunamadı — 66 sn'lik açılış denemesi ATLANDI"
+else
 for _deneme in 1 2 3; do
     ros2 launch ydlidar_ros2_driver ydlidar_launch.py \
         params_file:=/home/lydia/lydia_ortam/tmini_pro.yaml \
@@ -186,6 +222,7 @@ for _deneme in 1 2 3; do
     pkill -f static_tf_pub_laser 2>/dev/null
     sleep 8
 done
+fi
 
 # ydlidar_launch.py kendi base_link→laser_frame dönüşümünü de basıyor:
 # "0 0 0.02", montaj dönüşü yok. Betiğin aşağıda bastığı ölçülmüş dönüşümle
@@ -198,8 +235,12 @@ pkill -f static_tf_pub_laser 2>/dev/null
 
 # Derinlik kamerası (OS30A) — /apc/depth/image_raw renklendirilmiş derinlik,
 # /apc/left/image_color stereo sol göz renkli görüntü.
-ros2 launch ydlidar_os30a apc_camera_launch.py > "$LOG/apc.log" 2>&1 &
-sleep 14
+if [ ! -e /dev/kamera_stereo ]; then
+    echo "UYARI: derinlik kamerası (/dev/kamera_stereo) bulunamadı — açılışı ATLANDI"
+else
+    ros2 launch ydlidar_os30a apc_camera_launch.py > "$LOG/apc.log" 2>&1 &
+    sleep 14
+fi
 
 # Kameralar udev symlink'i üzerinden açılır; USB düğüm numaraları (video4/6…)
 # takılma sırasına göre kayıyor, symlink cihaz kimliğine bağlı olduğu için
@@ -246,8 +287,13 @@ if [ "$_TF_SAHIBI" = "seri_kopru" ]; then
 else
     _SERI_TF=false
 fi
+if [ ! -e "$SERI_PORT" ]; then
+    echo "UYARI: sürüş kartı komut portu ($SERI_PORT) YOK — seri_kopru bağlanamayacak."
+    echo "       Sebep: F767'nin komut hattı USART6/PG9-PG14, USB'den çıkmıyor (kablo bekliyor)."
+    echo "       Düğüm yine de başlatılıyor: E-STOP ilan etmesi doğru davranıştır."
+fi
 ros2 run teknofest_ika seri_kopru --ros-args \
-    -p port:=/dev/mega -p baud:=115200 \
+    -p port:="$SERI_PORT" -p baud:=115200 \
     -p publish_tf:="$_SERI_TF" \
     -p enkoder_kanali:="$ENKODER_KANALI" \
     -p ham_enkoder:="$HAM_ENKODER" > "$LOG/seri_kopru.log" 2>&1 &
@@ -490,9 +536,42 @@ fi
 ros2 run foxglove_bridge foxglove_bridge > "$LOG/foxglove.log" 2>&1 &
 sleep 2
 # Nişan paneli işlenmiş görüntüyü alsın (çevirme preprocessing'de yapılıyor).
-python3 "$WS/scripts/web_dashboard.py" --ros-args \
-    -r /camera/taret/image_raw:=/camera/taret/image_processed \
-    > "$LOG/web_dashboard.log" 2>&1 &
+# 🔴 3 Eylul 2026: web_dashboard.py yerine STATIK IKA PANOSU kondu.
+# Gerekce: web_dashboard'in hicbir verisi gelmiyordu — telemetride arac
+# alanlarinin tamami null (seri_kopru /dev/mega ariyor, o cihaz artik yok) ve
+# butun /kare/ uclari 503 donuyordu. Yani ROS panosu bos bir kabuktu.
+# Geri donmek icin: asagidaki satiri yorumla, alttaki uc satiri ac.
+#python3 "$WS/scripts/web_dashboard.py" --ros-args \
+#    -r /camera/taret/image_raw:=/camera/taret/image_processed \
+#    > "$LOG/web_dashboard.log" 2>&1 &
+python3 -m http.server 8080 --bind 0.0.0.0 --directory /home/lydia/pano \
+    > "$LOG/ika_pano.log" 2>&1 &
+sleep 1
+
+# Panoyu besleyen iki veri servisi. 🔴 3 Eylül 2026'ya kadar ikisi de ELLE
+# başlatılıyordu: araç yeniden başladığında pano boş bir kabuk oluyordu ve
+# bunu kimse fark etmiyordu. Artık açılışın parçası.
+#
+# ⚠ İkisi de ROS düğümü DEĞİL, düz HTTP servisi — aşağıdaki `_BEKLENEN`
+# düğüm doğrulaması bunları görmez; kontrol port dinlemesiyle yapılıyor.
+if [ "$F767_TELEMETRI_AKTIF" = "1" ]; then
+    if [ -e "$F767_TELEMETRI_PORT" ]; then
+        python3 -u /home/lydia/f767_telemetri.py \
+            --port "$F767_TELEMETRI_PORT" --http "$F767_TELEMETRI_HTTP" \
+            > "$LOG/f767_telemetri.log" 2>&1 &
+        sleep 2
+    else
+        echo "UYARI: F767 ($F767_TELEMETRI_PORT) bulunamadı — telemetri servisi başlatılmadı"
+    fi
+fi
+
+# BMS: BLE tarama açılışta yavaş olabiliyor, bu yüzden en sona bırakıldı ve
+# başlaması beklenmiyor. Koparsa servis kendi içinde yeniden bağlanıyor.
+if [ "$BMS_AKTIF" = "1" ] && [ -n "$BMS_MAC" ]; then
+    python3 -u /home/lydia/bms_ble/jk_servis.py \
+        --mac "$BMS_MAC" --port "$BMS_HTTP" \
+        > "$LOG/bms_jk.log" 2>&1 &
+fi
 
 # ── Açılış doğrulaması ───────────────────────────────────────────────────────
 # Betik buraya kadar yirmiden fazla süreç başlatıp hiçbirinin ayağa kalkıp
@@ -510,7 +589,7 @@ python3 "$WS/scripts/web_dashboard.py" --ros-args \
 # değersizleştirdiği için gerçek arızayı kaçırmakla aynı sonucu veriyor.
 _BEKLENEN="seri_kopru mod_yoneticisi ackermann_converter e_stop_node
            anti_rollback preprocessing_node yolo_detection_node map_image_node
-           watchdog web_dashboard"
+           watchdog"
 if [ "$NAV2_AKTIF" = "1" ]; then
     _BEKLENEN="$_BEKLENEN ekf_filter_node controller_server yolo_adapter_node
                terrain_adapter cone_fusion_node kayar_engel_kalman
@@ -534,6 +613,28 @@ if [ -n "$_EKSIK" ]; then
     echo "       Sebebi kendi log dosyasında: ls -t $LOG | head"
 else
     echo "Açılış doğrulaması: beklenen tüm düğümler ayakta."
+fi
+
+# Pano ve onu besleyen servisler ROS düğümü değil, düz HTTP servisi: yukarıdaki
+# `ros2 node list` kontrolü bunları göremez. Karşılığı port dinlemesidir.
+# ⚠ Port dinliyor olmak VERİ AKTIĞI anlamına gelmez — telemetride bunun cevabı
+# /telemetri çıktısındaki "bagli" ve "yas" alanlarıdır.
+_PORTLAR="8080:pano"
+[ "$F767_TELEMETRI_AKTIF" = "1" ] && [ -e "$F767_TELEMETRI_PORT" ] &&
+    _PORTLAR="$_PORTLAR $F767_TELEMETRI_HTTP:f767_telemetri"
+[ "$BMS_AKTIF" = "1" ] && [ -n "$BMS_MAC" ] &&
+    _PORTLAR="$_PORTLAR $BMS_HTTP:bms_jk"
+
+_DINLEYEN=$(ss -tln 2>/dev/null)
+_PEKSIK=""
+for _pa in $_PORTLAR; do
+    _p=${_pa%%:*}; _a=${_pa##*:}
+    echo "$_DINLEYEN" | grep -q ":$_p " || _PEKSIK="$_PEKSIK $_a($_p)"
+done
+if [ -n "$_PEKSIK" ]; then
+    echo "UYARI: dinlemeyen web servisleri:$_PEKSIK"
+else
+    echo "Web servisleri dinliyor:$(echo " $_PORTLAR" | tr " " "\n" | sed "s/^\([0-9]*\):\(.*\)$/ \2:\1/" | tr -d "\n")"
 fi
 
 echo "LYDİA açılış yığını başlatıldı — loglar: $LOG"
