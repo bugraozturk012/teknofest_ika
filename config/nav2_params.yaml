@@ -1,9 +1,9 @@
 ### nav2_params.yaml — LYDİA Nav2 Konfigürasyonu
 #
 # Araç: Ackermann kinematikli İKA
-#   Dingil arası       : 1.40 m   (2026-07-27 araçtan ölçüldü)
+#   Dingil arası       : 1.40 m   🔴 ÖLÇÜLMEDİ — yer tutucu
 #   İz genişliği       : 0.90 m   (arka aks, EK-7 B)
-#   Max hız            : 3.0 m/s  (VESC sınırı)
+#   Max hız            : 1.50 m/s (sürüş kartı tavanı, KART_HIZ_TAVAN)
 #   Max direksiyon açısı: 30°
 #   Min dönüş yarıçapı : L / tan(delta_max) = 1.40 / tan(30°) ≈ 2.42 m
 #
@@ -114,7 +114,11 @@ controller_server:
       stateful: true
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.30       # [m] — waypoints.yaml hedef_tolerans_metre ile eşleştirildi
-      yaw_goal_tolerance: 0.15      # [rad] ≈ 8.6°
+      # waypoints.yaml'daki hedef_tolerans_yaw ile aynı olmalı: FSM aşamayı
+      # bitmiş sayarken Nav2 hâlâ hedefe dönmeye çalışırsa sınırda belirsiz
+      # davranış çıkıyor. Ackermann araç yerinde dönemediği için sıkı yaw
+      # toleransı pahalıya mal oluyor, ortak değer gevşek olanda.
+      yaw_goal_tolerance: 0.20      # [rad] ≈ 11.5°
 
     # ── Regulated Pure Pursuit Controller ────────────────────────────────
     # Ackermann araçlar için uygun: lookahead ile eğrilik sınırlaması
@@ -298,7 +302,14 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_footprint
-      robot_radius: 0.50
+      # Gövde 1,90 × 1,16 m (araçtan ölçüldü). Köşeler base_footprint'e
+      # göre; o da dingil ortasında (ön teker +0,70, arka −0,70) ve
+      # taşmaların önden/arkadan dağılımı ölçülmediği için kutu simetrik.
+      # Daireyle temsil edilemez: çevrel yarıçap 1,09 m ve o daire §6.1'in
+      # 3 m şeridinde yalnız 0,82 m serbest bant bırakır — koridor baştan
+      # sona kapanır. Dikdörtgen gerçek yanal boşluğu 0,87 m/yan yapar.
+      footprint: "[[0.950, 0.580], [0.950, -0.580], [-0.950, -0.580], [-0.950, 0.580]]"
+      footprint_padding: 0.05     # [m] güvenlik payı — gövde ölçüsünden AYRI
 
       resolution: 0.05            # [m/piksel] — 5 cm çözünürlük
       rolling_window: true
@@ -362,7 +373,8 @@ global_costmap:
           topic: /apc/points/data_raw
           min_obstacle_height: 0.05
           max_obstacle_height: 1.50
-          clearing: true
+          clearing: false     # gürültülü derinlik kaynağına silme yetkisi verilmez:
+                              # LiDAR'ın gördüğü geçerli engeli sildirebilir
           marking: true
           data_type: "PointCloud2"
           raytrace_max_range: 6.0
@@ -386,7 +398,10 @@ local_costmap:
       publish_frequency: 2.0
       global_frame: odom
       robot_base_frame: base_footprint
-      robot_radius: 0.50          # global_costmap ile tutarlı
+      # global_costmap ile birebir aynı gövde — ikisi ayrışırsa planlayıcının
+      # geçilebilir bulduğu yolu kontrolcünün costmap'i engelli görür.
+      footprint: "[[0.950, 0.580], [0.950, -0.580], [-0.950, -0.580], [-0.950, 0.580]]"
+      footprint_padding: 0.05     # [m] güvenlik payı — gövde ölçüsünden AYRI
       rolling_window: true
       width: 8                    # [m] — lokal harita genişliği
       height: 8                   # [m] — lokal harita yüksekliği
@@ -434,7 +449,8 @@ local_costmap:
           topic: /apc/points/data_raw
           min_obstacle_height: 0.05
           max_obstacle_height: 1.50
-          clearing: true
+          clearing: false     # gürültülü derinlik kaynağına silme yetkisi verilmez:
+                              # LiDAR'ın gördüğü geçerli engeli sildirebilir
           marking: true
           data_type: "PointCloud2"
           raytrace_max_range: 5.0

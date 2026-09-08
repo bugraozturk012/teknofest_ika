@@ -10,7 +10,7 @@ Eski PyQt dashboard'ın (ika_dashboard.py) yerini alır. Fark mimaridedir:
   YENİ:  Bu sunucu JETSON'DA çalışır, ROS topic'lerine LOKAL abone olur
          (Jetson-içi DDS her zaman sağlam), görüntüleri JPEG'e çevirip
          HTTP ile servis eder. İzleyici herhangi bir tarayıcıdan bakar:
-             http://192.168.55.1:8080
+             http://192.168.55.1:8083   (PANO_PORT ile değişir)
 
   Taşıma katmanları (hepsi düz HTTP/TCP, DDS'ten bağımsız):
     /stream/<ad>  → MJPEG (kamera akışları, JPEG kalite düşük + 480p)
@@ -52,13 +52,14 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
-from std_msgs.msg import (Bool, UInt8, String, Float32,
-                          Float32MultiArray, UInt16MultiArray)
+from std_msgs.msg import (Bool, UInt8, UInt16, String, Float32, Int32,
+                          Float32MultiArray, Int16MultiArray, UInt16MultiArray)
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import BatteryState, Imu, Image, CompressedImage, LaserScan
 from cv_bridge import CvBridge
 
+from teknofest_ika.otonomi.pure_logic import ayar_deger
 from teknofest_ika.otonomi.topics import (
     E_STOP_TOPIC, E_STOP_FORCE_GCS_TOPIC, MOD_AKTIF_TOPIC, FSM_STATE_TOPIC,
     BATTERY_TOPIC, IMU_TOPIC, EKF_ODOM_TOPIC, MISYON_WP_INDEX_TOPIC,
@@ -68,6 +69,14 @@ from teknofest_ika.otonomi.topics import (
     RC_INPUT_TOPIC, MUX_CMD_VEL_TOPIC, ODOM_TOPIC, ENKODER_HAM_TOPIC,
     YOLO_RAW_TOPIC, MISYON_KALAN_SURE_TOPIC, KAYIT_DURUMU_TOPIC,
     SENSOR_FAULT_TOPIC, E_STOP_GPIO_FAULT_TOPIC, ENGEBELI_SAPMA_TOPIC,
+    KART_KIP_TOPIC, KART_HATA_TOPIC, KART_DURUM_TOPIC, KART_LINK_TOPIC,
+    KART_SURUM_TOPIC, KART_HAT_TOPIC, KART_SURUS_TOPIC, KART_CALISMA_TOPIC,
+    KART_AYAR_TOPIC,
+    KART_KABUL_TOPIC,
+    HATA_BNO_YOK, HATA_BNO_KALIB, HATA_ENK_SESSIZ, HATA_GOST_SESSIZ,
+    HATA_ESTOP_UYUSMAZ, HATA_RC_YOK, HATA_FREN_STALL, HATA_GAZ_YOK,
+    DRM_KESME, DRM_TARET, DRM_GERI, DRM_GECIS, DRM_ISIK, DRM_LAZER,
+    JDR_LINK, KART_KIP_MANUEL, KART_KIP_BOS, KART_KIP_OTONOM,
 )
 
 # vision_msgs kurulu değilse tespit sayacı sessizce kapanır; panonun tamamı
@@ -78,7 +87,12 @@ except ImportError:
     Detection2DArray = None
 
 # ── Ayarlar ───────────────────────────────────────────────────────────────────
-PORT        = 8080
+# 8080 elektrik ekibinin statik panosunda: açılış betiği onu
+# `python3 -m http.server 8080 --directory /home/lydia/pano` ile başlatıyor ve
+# iki sunucu aynı portu açamaz. İkisi ayrı işe bakıyor — onlarınki kartın ASCII
+# teşhis akışını, bizimki ROS tarafını — o yüzden biri kapatılmıyor, portlar
+# ayrılıyor. Ortam değişkeniyle geçilebilir: PANO_PORT.
+PORT        = int(os.environ.get('PANO_PORT', 8083))
 JPEG_KALITE = 35     # düşük = küçük dosya, kablosuz için uygun
 MAKS_GENIS  = 480    # kameralar bu genişliğe küçültülür (en-boy korunur)
 AKIS_FPS    = 12     # MJPEG akış tavanı (izleme için yeterli)
@@ -104,12 +118,46 @@ GREEN, RED, AMBER, CYAN = '#4caf50', '#ef5350', '#ffa726', '#26c6da'
 # ── /battery/status alanlarının anlamı ────────────────────────────────────────
 # 0x13 paketi depoda "motor akımı [mA] + batarya [cV]" olarak çözülür, ama
 # ARAÇTA KOŞAN firmware (depodakiyle aynı sürüm değil) aynı iki alanı başka
-# şey için kullanıyor:
-#     bat.current × 10 = gaz voltajı   [V]
-#     bat.voltage × 10 = direksiyon açısı [°]
-# Bunun sonucu: bu araçta batarya gerilimi ve motor akımı ÖLÇÜLMÜYOR, ölçüm
-# alanları dolu. Depodaki firmware bir gün yüklenirse bunu False yap.
-ARAC_FIRMWARE_0X13 = True
+# şey için kullanıyordu. Sürüş kartında o sıkışma yok: her ölçüm kendi
+# paketinde geliyor, gaz voltajı /kart/surus'ta ve direksiyon açısı
+# /kart/kabul'da. Batarya gerilimi ise seri hattan hiç gelmiyor — araçta iki
+# BMS var ve okuma yolu BLE.
+
+# Kart bayraklarının okunabilir karşılıkları. Ham sayı panoda hiçbir şey
+# anlatmıyor; arıza anında bakılan ilk yer burası oluyor.
+# Bit değerleri topics.py'den geliyor; burada yalnız okunabilir karşılıkları
+# tutuluyor. Sayıyı iki yerde tutmak, sözleşme değiştiğinde panonun sessizce
+# yanlış ad göstermesi demek olurdu.
+_HATA_ADI = [
+    (HATA_BNO_YOK,       'IMU yok'),
+    (HATA_BNO_KALIB,     'IMU kalib'),
+    (HATA_ENK_SESSIZ,    'enkoder sessiz'),
+    (HATA_GOST_SESSIZ,   'gösterge'),
+    (HATA_ESTOP_UYUSMAZ, 'E-STOP uyuşmaz'),
+    (HATA_RC_YOK,        'RC kablo'),
+    (HATA_FREN_STALL,    'fren takıldı'),
+    (HATA_GAZ_YOK,       'GAZ YOK'),
+]
+# DRM_SSR bilerek listede yok: karşılığı olan donanım söküldü.
+_DRM_ADI = [
+    (DRM_KESME, 'KESME'), (DRM_TARET, 'taret'), (DRM_GERI, 'geri'),
+    (DRM_GECIS, 'yön geçişi'), (DRM_ISIK, 'ışık'), (DRM_LAZER, 'lazer'),
+]
+# Kip 1 boş bir değer değil, kumandadan (SwC orta kademe) verilen yumuşak
+# E-STOP: kart gazı keser, freni tam basar, direksiyonu son konumunda dondurur
+# ve tareti merkeze döndürür. Saklanan Jetson komutu da silinir, yani kipten
+# çıkışta taze bir sürüş komutu gelmeden araç kımıldamaz; o sırada 0x39'un
+# JDR_DUR biti kalkık durur. Kilitli aracı '—' ile göstermek operatörü
+# olmayan bir arızayı aramaya yollar.
+_KIP_ADI = {KART_KIP_MANUEL: 'manuel',
+            KART_KIP_BOS: 'BOŞ/DUR (kilitli, tam fren)',
+            KART_KIP_OTONOM: 'OTONOM'}
+
+
+def _bayrak_adlari(deger: int, tablo) -> str:
+    adlar = [ad for bit, ad in tablo if deger & bit]
+    return ' · '.join(adlar) if adlar else 'temiz'
+
 
 # ── Sinyal kataloğu — hangi sayının gerçekten kaynağı var ─────────────────────
 # İstemci bunu /sinyaller'den bir kez okur ve panoyu buna göre kurar.
@@ -118,23 +166,42 @@ ARAC_FIRMWARE_0X13 = True
 # sinyalin kaynağı burada doldurulur — tek düzenlenecek yer burasıdır.
 SINYAL_KATALOG = [
     # anahtar,        ad,               grup,       birim,    kaynak
-    ('gaz_v',         'gaz_v',          'Sürüş',    'V',      '/battery/status current×10'),
+    ('gaz_v',         'gaz_v',          'Sürüş',    'V',      '/kart/surus[0] (0x37)'),
     ('gaz_kom',       'gaz_kom',        'Sürüş',    'V',      None),
     ('hiz',           'hiz',            'Sürüş',    'm/s',    '/odometry/filtered (EKF)'),
     ('hiz_komut',     'hiz_komut',      'Sürüş',    'm/s',    '/mux/cmd_vel linear.x'),
-    ('steer_aci',     'steer_aci',      'Sürüş',    '°',      '/battery/status voltage×10'),
+    ('steer_aci',     'steer_aci',      'Sürüş',    '°',      '/kart/kabul[1] (0x38)'),
     ('steer_akim',    'steer_akim',     'Sürüş',    'A',      None),
-    ('fren_pwm',      'fren_pwm',       'Sürüş',    'µs',     None),
+    ('fren_binde',    'fren_binde',     'Sürüş',    '‰',      '/kart/surus[1] (0x37)'),
 
     ('rc_gaz',        'rc_gaz',         'Kumanda',  'µs',     '/rc_input[0]'),
     ('rc_direksiyon', 'rc_direksiyon',  'Kumanda',  'µs',     '/rc_input[1]'),
     ('rc_mod',        'rc_mod',         'Kumanda',  'µs',     '/rc_input[2]'),
-    ('rc_aux',        'rc_aux',         'Kumanda',  'µs',     '/rc_input[3]'),
-    ('rc_fren',       'rc_fren',        'Kumanda',  'µs',     None),
+    ('rc_ch9',        'rc_ch9',         'Kumanda',  'µs',     '/rc_input[6] ham CH9'),
+
+    # Sürüş kartının kendi bildirdikleri. Köprü portu tuttuğunda kartın ASCII
+    # teşhis akışı susuyor; bu satırlar o pencerenin yerini alıyor.
+    ('kart_kip',      'kart_kip',       'Kart',     '',       '/kart/kip (0x39)'),
+    ('kart_hata',     'kart_hata',      'Kart',     '',       '/kart/hata (0x35)'),
+    ('kart_durum',    'kart_durum',     'Kart',     '',       '/kart/durum (0x36)'),
+    ('kart_link',     'kart_link',      'Kart',     '',       '/kart/link (0x39)'),
+    ('kart_surum',    'kart_surum',     'Kart',     '',       '/kart/surum (0x3B)'),
+    # Kart ayarları flash'ta DEĞİL RAM'de: reset olunca sıfırlanır ve hız alanı
+    # sessizce 0 basar. Bu beş satır "kart şu an neye göre çalışıyor"un tek
+    # cevabı. Kart turnike yayını yapıyor, tam tur beş saniye.
+    ('ayar_cevre',     'ayar_cevre',     'Kart',     'mm',     '/kart/ayar[1] (0x3E)'),
+    ('ayar_disli',     'ayar_disli',     'Kart',     '',       '/kart/ayar[2] (0x3E)'),
+    ('ayar_direksiyon','ayar_direksiyon','Kart',     '',       '/kart/ayar[3] (0x3E)'),
+    ('ayar_darbe',     'ayar_darbe',     'Kart',     '/tur',   '/kart/ayar[4] (0x3E)'),
+    ('ayar_isaret',    'ayar_isaret',    'Kart',     '',       '/kart/ayar[5] (0x3E)'),
+    ('kart_paket',    'kart_paket',     'Kart',     'adet',   '/kart/hat[0] (0x3C)'),
+    ('kart_bozuk',    'kart_bozuk',     'Kart',     'adet',   '/kart/hat[1] (0x3C)'),
+    ('kart_calisma',  'kart_calisma',   'Kart',     's',      '/kart/calisma_suresi (0x35)'),
+    ('kart_hiz',      'kart_hiz',       'Kart',     'm/s',    '/kart/kabul[0] (0x38)'),
 
     ('v48',           'v48',            'Sensör',   'V',      None),
     ('v12',           'v12',            'Sensör',   'V',      None),
-    ('encp',          'encp',           'Sensör',   'sayım',  '/enkoder/ham[0]'),
+    ('encp',          'encp',           'Sensör',   'sayım',  '/enkoder/ham (0x30)'),
     ('enc_mesafe',    'enc_mesafe',     'Sensör',   'm',      '/odom pose.x'),
     ('yatis',         'yatis',          'Sensör',   '°',      '/imu/data'),
     ('yunuslama',     'yunuslama',      'Sensör',   '°',      '/imu/data'),
@@ -155,17 +222,6 @@ SINYAL_KATALOG = [
 
 # Kaynağı olmayan sinyaller — telemetri bunları her zaman null döndürür.
 KAYNAKSIZ = frozenset(k for k, _a, _g, _b, kaynak in SINYAL_KATALOG if kaynak is None)
-
-if not ARAC_FIRMWARE_0X13:
-    # Depo firmware'i: aynı iki alan gerçek batarya/akım taşır.
-    SINYAL_KATALOG = [
-        (k, a, g, b,
-         '/battery/status voltage' if k == 'v48' else
-         '/battery/status current' if k == 'steer_akim' else
-         None if k in ('gaz_v', 'steer_aci') else kaynak)
-        for k, a, g, b, kaynak in SINYAL_KATALOG
-    ]
-    KAYNAKSIZ = frozenset(k for k, _a, _g, _b, kk in SINYAL_KATALOG if kk is None)
 
 MOD_ISIMLER = {0: 'MANUAL', 2: 'FULL AUTO'}
 MOD_RENK    = {'MANUAL': AMBER, 'FULL AUTO': GREEN}
@@ -268,7 +324,17 @@ class WebDashboardNode(Node):
         self.create_subscription(Float32MultiArray, RC_INPUT_TOPIC, self._rc, be)
         self.create_subscription(Twist, MUX_CMD_VEL_TOPIC, self._komut, 10)
         self.create_subscription(Odometry, ODOM_TOPIC, self._enk_odom, be)
-        self.create_subscription(UInt16MultiArray, ENKODER_HAM_TOPIC, self._enk_ham, be)
+        self.create_subscription(Int32, ENKODER_HAM_TOPIC, self._enk_ham, be)
+        self.create_subscription(UInt8,  KART_KIP_TOPIC,     self._kart_kip,   be)
+        self.create_subscription(UInt16, KART_HATA_TOPIC,    self._kart_hata,  be)
+        self.create_subscription(UInt16, KART_DURUM_TOPIC,   self._kart_durum, be)
+        self.create_subscription(UInt16, KART_LINK_TOPIC,    self._kart_link,  be)
+        self.create_subscription(UInt16, KART_CALISMA_TOPIC, self._kart_calisma, be)
+        self.create_subscription(UInt16MultiArray, KART_SURUM_TOPIC, self._kart_surum, be)
+        self.create_subscription(UInt16MultiArray, KART_HAT_TOPIC,   self._kart_hat,   be)
+        self.create_subscription(Int16MultiArray,  KART_SURUS_TOPIC, self._kart_surus, be)
+        self.create_subscription(Int16MultiArray,  KART_KABUL_TOPIC, self._kart_kabul, be)
+        self.create_subscription(Int16MultiArray,  KART_AYAR_TOPIC,  self._kart_ayar,  be)
         # Ham tespitler /detections/yolo'da (Detection2DArray). /ika/detections
         # yolo_adapter'ın String JSON özeti — farklı tip, farklı topic.
         if Detection2DArray is not None:
@@ -383,14 +449,8 @@ class WebDashboardNode(Node):
         ortak.sensor['batarya'] = m.percentage * 100 if m.percentage >= 0 else -1.0
         ortak.sensor['voltaj'] = m.voltage
         ortak.sensor['akim'] = m.current
-        # Araç firmware'i bu iki alanı batarya için değil gaz voltajı ve
-        # direksiyon açısı için kullanıyor — bkz. ARAC_FIRMWARE_0X13.
-        if ARAC_FIRMWARE_0X13:
-            ortak.ham_yaz('gaz_v', round(m.current * 10.0, 2))
-            ortak.ham_yaz('steer_aci', round(m.voltage * 10.0, 1))
-        else:
-            ortak.ham_yaz('v48', round(m.voltage, 2))
-            ortak.ham_yaz('steer_akim', round(m.current, 2))
+        ortak.ham_yaz('v48', round(m.voltage, 2))
+        ortak.ham_yaz('steer_akim', round(m.current, 2))
         self._dokun()
 
     def _imu(self, m):
@@ -414,12 +474,16 @@ class WebDashboardNode(Node):
     def _rc(self, m):
         """RC dizisi kanal SIRASINA göre değil ANLAMINA göre gelir.
 
-        Mega [gaz, direksiyon, mod, aux] gönderir; dizi indeksi kumandadaki
-        kanal numarasıyla örtüşmez (mod_yoneticisi._rc_cb ile aynı yorum).
-        Bu yüzden burada ch2/ch3/ch4 değil anlam adları kullanılıyor.
+        Sürüş kartı ham kanalların yalnız ikisini gönderiyor (CH1 direksiyon,
+        CH9 mod anahtarı); gaz türetilmiş orandan, mod ise kartın çözdüğü
+        kipten geliyor. Dizi indeksi kumandadaki kanal numarasıyla örtüşmez.
+
+        Mod alanı ile ham CH9 birlikte gösteriliyor: anahtarı çevirip sistemin
+        geçmediği durumda ikisinin ayrışması tek teşhis noktası.
         """
         d = m.data
-        for i, ad in enumerate(('rc_gaz', 'rc_direksiyon', 'rc_mod', 'rc_aux')):
+        for i, ad in ((0, 'rc_gaz'), (1, 'rc_direksiyon'),
+                      (2, 'rc_mod'), (6, 'rc_ch9')):
             if len(d) > i:
                 ortak.ham_yaz(ad, round(float(d[i]), 1))
         self._dokun()
@@ -435,8 +499,74 @@ class WebDashboardNode(Node):
         self._dokun()
 
     def _enk_ham(self, m):
-        if len(m.data) > 0:
-            ortak.ham_yaz('encp', int(m.data[0]))
+        # Sürüş kartının ham enkoder sayımı (int32). Ölçekten bağımsız: tekerlek
+        # çevresi ölçülmediği için /odom hızı 0 gelse bile bu sayı hareketle
+        # birlikte değişir, yani "araç kımıldadı mı" sorusunun cevabı burada.
+        ortak.ham_yaz('encp', int(m.data))
+        self._dokun()
+
+    # ── Sürüş kartı ────────────────────────────────────────────────────────
+    def _kart_kip(self, m):
+        ortak.ham_yaz('kart_kip', _KIP_ADI.get(int(m.data), str(m.data)))
+        self._dokun()
+
+    def _kart_hata(self, m):
+        ortak.ham_yaz('kart_hata', _bayrak_adlari(int(m.data), _HATA_ADI))
+        self._dokun()
+
+    def _kart_durum(self, m):
+        ortak.ham_yaz('kart_durum', _bayrak_adlari(int(m.data), _DRM_ADI))
+        self._dokun()
+
+    def _kart_link(self, m):
+        # Link biti düşükse kart Jetson'ı canlı görmüyordur ve komutlarımızı
+        # yok sayıyordur — "gönderiyorum ama dinlemiyor"un tek görünür yeri.
+        ortak.ham_yaz('kart_link', 'canlı' if int(m.data) & JDR_LINK else 'YOK')
+        self._dokun()
+
+    def _kart_calisma(self, m):
+        ortak.ham_yaz('kart_calisma', int(m.data))
+        self._dokun()
+
+    def _kart_surum(self, m):
+        if len(m.data) >= 2:
+            ortak.ham_yaz('kart_surum', f'p{int(m.data[0])}/y{int(m.data[1])}')
+        self._dokun()
+
+    def _kart_hat(self, m):
+        # Sayaçlar 32 bitin alt 16 biti; mutlak değer değil artış okunur.
+        if len(m.data) >= 2:
+            ortak.ham_yaz('kart_paket', int(m.data[0]))
+            ortak.ham_yaz('kart_bozuk', int(m.data[1]))
+        self._dokun()
+
+    _AYAR_ALAN = {1: 'ayar_cevre', 2: 'ayar_disli', 3: 'ayar_direksiyon',
+                  4: 'ayar_darbe', 5: 'ayar_isaret'}
+
+    def _kart_ayar(self, m):
+        """
+        Kartın turnike yayını: saniyede bir ayar, tam tur beş saniye. Ölçek
+        pure_logic'te tek yerde duruyor; panoda ikinci bir çarpan tutmak
+        sayının burada on kat yanlış görünmesine yol açardı.
+        """
+        if len(m.data) >= 2:
+            alan = self._AYAR_ALAN.get(int(m.data[0]))
+            if alan:
+                ortak.ham_yaz(alan, ayar_deger(int(m.data[0]), int(m.data[1])))
+        self._dokun()
+
+    def _kart_surus(self, m):
+        if len(m.data) >= 2:
+            ortak.ham_yaz('gaz_v', round(int(m.data[0]) / 1000.0, 2))
+            ortak.ham_yaz('fren_binde', int(m.data[1]))
+        self._dokun()
+
+    def _kart_kabul(self, m):
+        # Kartın anladığı komut — gönderdiğimizle farkı ölçek ve işaret
+        # hatasını tek bakışta gösteriyor.
+        if len(m.data) >= 2:
+            ortak.ham_yaz('kart_hiz', round(int(m.data[0]) / 1000.0, 2))
+            ortak.ham_yaz('steer_aci', round(int(m.data[1]) / 100.0, 1))
         self._dokun()
 
     def _tespit(self, m):
@@ -1047,7 +1177,18 @@ tr.kaynaksiz td.kDeg{color:var(--y3)}
           <div class=wjSat><span>Gaz</span><span data-sat=rc_gaz>—</span></div>
           <div class=wjSat><span>Direksiyon</span><span data-sat=rc_direksiyon>—</span></div>
           <div class=wjSat><span>Mod</span><span data-sat=rc_mod>—</span></div>
-          <div class=wjSat><span>AUX</span><span data-sat=rc_aux>—</span></div>
+          <div class=wjSat><span>Ham CH9</span><span data-sat=rc_ch9>—</span></div>
+        </div></div>
+      <div class=wj><div class=wjUst><h3>Sürüş kartı</h3><span class=ek>0x30 bloğu</span></div>
+        <div class=wjGov>
+          <div class=wjSat><span>Kip</span><span data-sat=kart_kip>—</span></div>
+          <div class=wjSat><span>Link</span><span data-sat=kart_link>—</span></div>
+          <div class=wjSat><span>Arıza</span><span data-sat=kart_hata>—</span></div>
+          <div class=wjSat><span>Durum</span><span data-sat=kart_durum>—</span></div>
+          <div class=wjSat><span>Anladığı hız</span><span data-sat=kart_hiz>—</span></div>
+          <div class=wjSat><span>Paket / bozuk</span><span data-sat=kart_paket>—</span></div>
+          <div class=wjSat><span>Sürüm</span><span data-sat=kart_surum>—</span></div>
+          <div class=wjSat><span>Çalışma</span><span data-sat=kart_calisma>—</span></div>
         </div></div>
       <div class=wj><div class=wjUst><h3>Gövde</h3><span class=ek>/imu/data</span></div>
         <div class=wjGov>

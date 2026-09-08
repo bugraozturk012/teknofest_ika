@@ -31,6 +31,7 @@ from std_msgs.msg import Bool
 from teknofest_ika.otonomi.topics import (
     IMU_TOPIC, ODOM_TOPIC, ANTI_ROLLBACK_CMD_TOPIC, ANTI_ROLLBACK_AKTIF_TOPIC,
     E_STOP_TOPIC, IMU_PITCH_RAMP_THRESHOLD, MUX_CMD_VEL_TOPIC,
+    YOKUS_KALKIS_AKTIF_TOPIC,
     NAV2_CMD_BAYATLAMA_S,
 )
 from teknofest_ika.otonomi.pure_logic import (
@@ -62,6 +63,7 @@ class AntiRollback(Node):
         self._komut_t  = 0.0   # wall-clock — son /mux/cmd_vel'in geliş anı
         self._aktif    = False
         self._e_stop   = False
+        self._yokus    = False   # §6.10 yokuş kalkışı sürüyor mu
 
         qos_be  = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
         qos_rel = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
@@ -69,6 +71,8 @@ class AntiRollback(Node):
         self.create_subscription(Imu,      IMU_TOPIC,    self._imu_cb,   qos_be)
         self.create_subscription(Odometry, ODOM_TOPIC,   self._odom_cb,  qos_be)
         self.create_subscription(Bool,     E_STOP_TOPIC, self._estop_cb, 10)
+        self.create_subscription(Bool, YOKUS_KALKIS_AKTIF_TOPIC,
+                                 self._yokus_cb, 10)
         self.create_subscription(Twist,    MUX_CMD_VEL_TOPIC, self._komut_cb, qos_rel)
 
         # Twist komutu → ackermann_converter override eder (tek yazıcı garantisi)
@@ -86,6 +90,9 @@ class AntiRollback(Node):
     def _estop_cb(self, msg: Bool):
         self._e_stop = msg.data
 
+    def _yokus_cb(self, msg: Bool):
+        self._yokus = msg.data
+
     def _imu_cb(self, msg: Imu):
         q = msg.orientation
         _, self._pitch = quat_to_roll_pitch_deg(q.w, q.x, q.y, q.z)
@@ -99,6 +106,18 @@ class AntiRollback(Node):
 
     def _kontrol(self):
         if self._e_stop:
+            return
+
+        # §6.10 yokuş kalkışı sürerken çekilme: RampaState aracı eğimde
+        # BİLEREK frenle tutuyor ve fren basılıyken gaz veriyor. Burada
+        # müdahale edilirse iki katman aynı anda hız komutu basar ve zorunlu
+        # duruş bozulur — hakemin gördüğü şey "tam durdu" olmaktan çıkar.
+        # Gerçek kayma yine korumasız kalmıyor: RampaState'in kendi
+        # rollback_riskli sayacı 1,5 s sürerse aşamayı iptal ediyor.
+        if self._yokus:
+            if self._aktif:
+                self._aktif = False
+                self._durum_pub.publish(Bool(data=False))
             return
 
         # pure_logic.rollback_mudahale_gerekli — test_birim.py bu fonksiyonu

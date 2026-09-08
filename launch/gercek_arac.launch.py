@@ -132,16 +132,16 @@ def generate_launch_description():
     )
 
     # ── E-STOP Node ───────────────────────────────────────────────────────────
-    # gpio_pin: Jetson BOARD pin numarası (varsayılan 7 → GPIO9)
-    # gpio_mod: False yapılırsa GPIO kullanılmaz, sadece /e_stop/force çalışır
+    # Fiziksel buton Jetson'ın GPIO'suna değil sürüş kartına bağlı; durumu
+    # 0x34 ile geliyor. gpio_mod kapalı — boştaki bir pini okumak 48 V'un
+    # gürültüsü altında rastgele E-STOP üretir.
     e_stop = Node(
         package='teknofest_ika',
         executable='e_stop_node',
         name='e_stop_node',
         output='screen',
         parameters=[{
-            'gpio_pin':   7,
-            'gpio_mod':   True,
+            'gpio_mod':   False,
             'publish_hz': 20.0,
         }]
     )
@@ -153,12 +153,13 @@ def generate_launch_description():
         name='seri_kopru',
         output='screen',
         parameters=[{'use_sim_time': False,
-                     'port': '/dev/mega',
-                     'baud': 115200,
+                     # Sürüş kartı Nucleo-F767ZI; scripts/lydia_startup.sh
+                     # aynı iki değeri kendi başına geçiyor, ikisi birlikte
+                     # güncellenmeli.
+                     'port': '/dev/f767',
+                     'baud': 921600,
                      # odom → base_footprint TF'i aşağıdaki EKF yayınlar
-                     'publish_tf': False,
-                     # tek enkoder Mega'nın A0'ında; A1 boşta gürültü okur
-                     'enkoder_kanali': 'sol'}]
+                     'publish_tf': False}]
     )
 
     # ── EKF (odom + IMU füzyon) ───────────────────────────────────────────────
@@ -228,7 +229,9 @@ def generate_launch_description():
         package='teknofest_ika', executable='ackermann_converter',
         name='ackermann_converter', output='screen',
         parameters=[{'use_sim_time': False, 'wheelbase': 1.40,
-                     'max_steering_angle': 0.5236, 'max_speed': 3.0}]
+                     # max_speed burada verilmiyor: düğümün varsayılanı
+                     # KART_HIZ_TAVAN'a bağlı ve kart zaten orada kırpıyor.
+                     'max_steering_angle': 0.5236}]
     )
     veri_paketi = Node(
         package='teknofest_ika', executable='veri_paketi',
@@ -265,8 +268,9 @@ def generate_launch_description():
     taret_rc_koprusu = Node(
         package='teknofest_ika', executable='taret_rc_koprusu',
         name='taret_rc_koprusu', output='screen',
-        parameters=[{'use_sim_time': False,
-                     'port': '/dev/ttyCH341USB0', 'baud': 115200}]
+        # port ve baud düğümün varsayılanından gelir (topics.py SERIAL_TARET,
+        # SERIAL_BAUD_TARET); burada tekrarlanırsa iki yer ayrışır.
+        parameters=[{'use_sim_time': False}]
     )
     # NOT: Koni tespiti costmap'e yalnız cone_fusion_node üzerinden girer
     # (aşağıda 'cone_fusion'), LiDAR+YOLO füzyonuyla /costmap/cone_cloud'a.
@@ -355,7 +359,7 @@ def generate_launch_description():
             'use_sim_time':      False,
             'camera_fov_deg':    60.0,
             'image_width':       1280,
-            'cone_safety_radius_m': 0.4,
+            'cone_radius_m':     0.354,   # §6.7 azami taban 50 cm → çevrel yarıçap
             'cone_min_confidence':  0.45,
             'target_label':      '14',   # 14 = trafik_huni (alfabetik model sırası)
         }],
@@ -374,17 +378,14 @@ def generate_launch_description():
             'fire_lock_duration_sec': 0.5,
             'fire_cooldown_sec':     2.0,
             'publish_debug':         True,
-            # Nişan kamerası HSV kalibrasyonu (2026-07-19, kapalı alan):
-            # halka bu kamerada H=165-169, turuncu bant sahte tespit üretiyor
-            # ve aralık dışında; V>=70 karanlık sahteleri kesiyor. Yarışma
-            # günü gün ışığında yeniden kalibre edilmeli (yöntem:
-            # launch/taret_otonom.launch.py docstring'i).
-            'hsv_lower':             [0, 40, 70],
-            'hsv_upper':             [4, 255, 255],
-            'hsv_lower2':            [150, 40, 70],
-            'hsv_upper2':            [179, 255, 255],
-            'hough_max_radius':      250,
-            'image_timeout_sec':     1.0,
+            # HSV kalibrasyonu ve Hough yarıçapı artık düğümün varsayılanı
+            # (topics.py NISAN_HSV_*). Burada tekrarlanmıyor: değerler yalnız
+            # launch'ta durduğu sürece, açılış betiği launch'u kullanmadığı
+            # için kalibrasyon araca hiç ulaşmıyordu.
+            #
+            # image_timeout_sec de düğümün varsayılanından gelir: 0,5 s üç
+            # kameranın aynı USB2 hattını paylaştığı ölçülen ~7-9 Hz akışa
+            # göre seçildi, buradaki 1,0 gerekçesizdi.
         }]
     )
 

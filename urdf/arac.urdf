@@ -33,17 +33,25 @@
   </joint>
 
   <link name="base_link">
+    <!--
+      Gövde 1,90 x 1,16 x 0,76 m (araçtan ölçüldü). Yükseklik ZEMİNDEN
+      ölçülü, base_link ise zeminden 0,28 m yukarıda: kutunun merkezi bu
+      yüzden 0,76/2 - 0,28 = 0,10 m'ye oturuyor, tabanı tam zemine değiyor.
+
+      Nav2 costmap'i bu kutuyu değil footprint parametresini kullanıyor
+      (nav2_params.yaml); buradaki geometri TF ağacı ve görselleştirme için.
+    -->
     <visual>
-      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <origin xyz="0 0 0.10" rpy="0 0 0"/>
       <geometry>
-        <box size="1.0 0.5 0.3"/>
+        <box size="1.90 1.16 0.76"/>
       </geometry>
       <material name="blue"/>
     </visual>
     <collision>
-      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <origin xyz="0 0 0.10" rpy="0 0 0"/>
       <geometry>
-        <box size="1.0 0.5 0.3"/>
+        <box size="1.90 1.16 0.76"/>
       </geometry>
     </collision>
     <inertial>

@@ -29,7 +29,12 @@ class ConeFusionNode(Node):
 
         self.declare_parameter("camera_fov_deg", 60.0)
         self.declare_parameter("image_width", 640)
-        self.declare_parameter("cone_safety_radius_m", 0.4)
+        # §6.7 konisi 40±10 cm kare tabanlı; en büyük yasal taban 50 cm ve
+        # onun çevrel yarıçapı 0,354 m. Bu sayı koninin FİZİKSEL boyutu,
+        # güvenlik payı değil — pay costmap tarafında footprint +
+        # footprint_padding ile veriliyor. Buraya pay eklenirse aynı pay iki
+        # kez sayılır ve §6.7'nin dar geçişinde planlayıcı yol bulamaz.
+        self.declare_parameter("cone_radius_m", 0.354)
         self.declare_parameter("cone_min_confidence", 0.45)
         self.declare_parameter("lidar_window", 8)
         # yolo_detection_node class_id'yi integer string olarak yayınlar: str(13) = "13"
@@ -39,7 +44,7 @@ class ConeFusionNode(Node):
 
         self.fov_deg = self.get_parameter("camera_fov_deg").value
         self.image_width = self.get_parameter("image_width").value
-        self.safety_radius = self.get_parameter("cone_safety_radius_m").value
+        self.cone_radius = self.get_parameter("cone_radius_m").value
         self.min_conf = self.get_parameter("cone_min_confidence").value
         self.lidar_window = self.get_parameter("lidar_window").value
         self.target_label = self.get_parameter("target_label").value
@@ -145,7 +150,7 @@ class ConeFusionNode(Node):
     def _generate_safety_sphere(self, center, z_levels=3):
         """Generate a dome of points around the cone center for Nav2 lethal marking."""
         points = []
-        r = self.safety_radius
+        r = self.cone_radius
         cx, cy, cz = center
         # Hemisphere above ground
         for phi in np.linspace(0, math.pi / 2, z_levels):

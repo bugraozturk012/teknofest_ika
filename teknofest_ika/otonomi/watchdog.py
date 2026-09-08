@@ -67,8 +67,6 @@ VARSAYILAN_HAM_TARAMA = SCAN_TOPIC
 TEMEL_TOPICLER = {
     SCAN_FILTERED_TOPIC:     ('LiDARFiltre',    3.0),
     ODOM_TOPIC:              ('Enkoder',        1.0),
-    IMU_TOPIC:               ('IMU',            1.0),
-    BATTERY_TOPIC:           ('Batarya',        5.0),
     CAMERA_PROCESSED_TOPIC:  ('KameraOnIsleme', 2.0),
     YOLO_RAW_TOPIC:          ('YOLO',           3.0),
     # Güvenlik alt sisteminin kendi canlılığı da izlenir (Şartname §6.13/§7.8
@@ -81,6 +79,21 @@ TEMEL_TOPICLER = {
     # Parkurun büyük bölümünde koni yok → sürekli yanlış alarm üretir.
     # /targeting/error DA ÇIKARILDI:
     # targeting_node sadece misyon_fsm SHOOT_APPROACH state'inde aktif.
+}
+
+# Batarya gerilimi seri hattan gelmiyor: araçta iki BMS var ve ikisi de
+# gerilimi hücre bazında kendi ölçüyor, okuma yolu BLE. Sürüş kartının
+# protokolünde batarya alanı bilerek açılmadı. BLE okuyucusu yazılana kadar
+# /battery/status'un yayıncısı yok; listede tutmak kalıcı sahte alarm demek.
+BATARYA_TOPICLERI = {
+    BATTERY_TOPIC:           ('Batarya',        5.0),
+}
+
+# Sürüş kartı IMU paketlerini (0x32/0x33) yalnız BNO055 bulunduğunda basıyor;
+# çip takılı değilken hiç akmaz ve susması arıza değildir. Modül monte edilip
+# yönü doğrulanana kadar izlemek kalıcı sahte alarm demek.
+IMU_TOPICLERI = {
+    IMU_TOPIC:               ('IMU',            1.0),
 }
 
 # Yalnız NAV2_AKTIF=1 iken yayıncısı ayağa kalkanlar. Nav2 kapalıyken
@@ -119,8 +132,12 @@ class Watchdog(Node):
         # bir alt sistemi "arızalı" diye raporluyordu.
         self.declare_parameter('nav2_aktif', False)
         self.declare_parameter('ham_tarama_topic', VARSAYILAN_HAM_TARAMA)
-        nav2_aktif  = bool(self.get_parameter('nav2_aktif').value)
-        ham_tarama  = str(self.get_parameter('ham_tarama_topic').value)
+        self.declare_parameter('batarya_izle', False)
+        self.declare_parameter('imu_izle', False)
+        nav2_aktif   = bool(self.get_parameter('nav2_aktif').value)
+        ham_tarama   = str(self.get_parameter('ham_tarama_topic').value)
+        batarya_izle = bool(self.get_parameter('batarya_izle').value)
+        imu_izle     = bool(self.get_parameter('imu_izle').value)
 
         self._topicler = dict(TEMEL_TOPICLER)
         if ham_tarama:
@@ -128,6 +145,10 @@ class Watchdog(Node):
             _TOPIC_MSG_TYPE[ham_tarama] = LaserScan
         if nav2_aktif:
             self._topicler.update(NAV2_TOPICLERI)
+        if batarya_izle:
+            self._topicler.update(BATARYA_TOPICLERI)
+        if imu_izle:
+            self._topicler.update(IMU_TOPICLERI)
 
         self._lock = threading.Lock()
         self._last_seen = {}
@@ -147,7 +168,8 @@ class Watchdog(Node):
 
         self.get_logger().info(
             f'Watchdog hazir | {len(self._topicler)} topic izleniyor '
-            f'(nav2_aktif={nav2_aktif}, ham_tarama={ham_tarama}) | '
+            f'(nav2_aktif={nav2_aktif}, batarya_izle={batarya_izle}, '
+            f'imu_izle={imu_izle}, ham_tarama={ham_tarama}) | '
             f'raw=True (deserialize edilmiyor)'
         )
 

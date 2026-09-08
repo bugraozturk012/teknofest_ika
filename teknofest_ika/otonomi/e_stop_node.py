@@ -1,42 +1,39 @@
 #!/usr/bin/env python3
 """
-e_stop_node.py — Schneider XB5AS84W3B5 E-STOP Buton Node'u
+e_stop_node.py — E-STOP kaynak toplayıcı
 ============================================================
-Fiziksel acil durdurma butonunu izler, /e_stop (Bool) yayınlar.
+Sistemin E-STOP otoritesi. Birden çok kaynağı OR'layıp /e_stop (Bool) yayınlar;
+tüm kaynaklar temiz demeden E-STOP düşmez.
 
-BAĞLANTI (NC — fail-safe konfigürasyon):
-  Schneider NC kontağı → Jetson GPIO pin (BOARD numarası, varsayılan: 7)
-  Buton basılmadığında: NC kapalı → pin HIGH (3.3V pull-up)
-  Buton basılınca    : NC açılır → pin LOW  → e_stop = True
+FİZİKSEL ZİNCİR — üç katman, yalnız sonuncusu yazılımda:
+  1. Mantar butonun mekanik kontağı 48 V'u DOĞRUDAN kesiyor. Firmware'den de
+     Jetson'dan da bağımsız; gerçek kesme burada.
+  2. NC blok sürüş kartının pinine gidiyor, kart gazı kesiyor.
+  3. Kart durumu 0x34 ile bildiriyor → seri_kopru → /e_stop/force/serial.
 
-  Fail-safe mantığı: kablo kopsa bile pin LOW → araç durur.
+Jetson'ın GPIO pinlerine E-STOP hattı BAĞLI DEĞİL ve bağlanmayacak. gpio_mod
+bu yüzden varsayılan olarak kapalı: boştaki bir giriş pini, 48 V BLDC'nin
+anahtarlama gürültüsü altında zayıf bir dahili pull-up ile antene dönüşür ve
+kenar yakalaması rastgele tetiklenir. Sonucu, sebebi log'da görünmeyen gelip
+geçici bir E-STOP olurdu — teşhisi en zor arıza sınıfı. Hat bir gün gerçekten
+Jetson'a çekilirse parametre açılır.
 
-LATCHING DAVRANIŞ:
-  Schneider XB5AS84W3B5 mandallamalı butondur.
-  Basılınca kilitlenir → /e_stop True (sürekli)
-  Çevirince açılır    → /e_stop False
+KAYNAKLAR (/e_stop/force/*):
+  imu    : imu_guvenlik — devrilme tespiti (sürekli yayın)
+  serial : seri_kopru — kartın 0x34'ü, fiziksel buton
+  gcs    : ika_dashboard — GCS komutu
+  rc     : mod_yoneticisi — kumandadan kesme (SwA)
+
+Her kaynak ayrı takip edilir: imu_guvenlik'in sürekli False yayını fiziksel
+butonun True'sunu temizleyemez.
 
 YAZILIMSAL OVERRIDE (test için):
-  ros2 topic pub /e_stop/force std_msgs/msg/Bool "data: true" --once
-  ros2 topic pub /e_stop/force std_msgs/msg/Bool "data: false" --once
+  ros2 topic pub /e_stop/force/gcs std_msgs/msg/Bool "data: true" --once
 
 PARAMETRE:
-  gpio_pin   : Jetson BOARD pin numarası (varsayılan: 7)
-  gpio_mod   : False → GPIO kullanma, sadece yazılımsal override (varsayılan: True)
-  publish_hz : Yayın frekansı Hz (varsayılan: 20)
-
-NOT: Jetson.GPIO paketi kurulu değilse gpio_mod otomatik devre dışı kalır.
-     sudo pip3 install Jetson.GPIO
-
-E-STOP KAYNAK MİMARİSİ (OR mantığı):
-  /e_stop/force'a birden fazla node yayın yapar:
-    - imu_guvenlik  : devrilme tespiti (10 Hz sürekli)
-    - seri_kopru    : fiziksel buton (olay bazlı)
-    - ika_dashboard : GCS komutu, WiFi/ROS2 üzerinden (olay bazlı)
-
-  Her kaynak ayrı takip edilir. Herhangi biri True → /e_stop True.
-  Tümü aynı anda False göndermeden E-STOP temizlenmez.
-  Bu sayede imu_guvenlik'in sürekli False yayını fiziksel butonu temizleyemez.
+  gpio_pin   : Jetson BOARD pin numarası (varsayılan 7, yalnız gpio_mod açıkken)
+  gpio_mod   : GPIO okunsun mu (varsayılan False)
+  publish_hz : Yayın frekansı Hz (varsayılan 20)
 """
 
 import threading
@@ -70,7 +67,7 @@ class EStopNode(Node):
         super().__init__('e_stop_node')
 
         self.declare_parameter('gpio_pin',   7)
-        self.declare_parameter('gpio_mod',   True)
+        self.declare_parameter('gpio_mod',   False)
         self.declare_parameter('publish_hz', 20.0)
 
         self._gpio_pin = self.get_parameter('gpio_pin').value
@@ -132,6 +129,9 @@ class EStopNode(Node):
             return
         try:
             GPIO.setmode(GPIO.BOARD)
+            # Pinin hangi polaritede okunacağı hattın nasıl çekildiğine bağlı;
+            # bu yol yalnız gpio_mod açıkça açıldığında kullanılır ve o gün
+            # kablolamaya göre doğrulanmalıdır.
             GPIO.setup(self._gpio_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
             GPIO.add_event_detect(
                 self._gpio_pin, GPIO.BOTH,

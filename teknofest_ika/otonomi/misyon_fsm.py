@@ -89,7 +89,7 @@ from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
-from std_msgs.msg import Bool, Float32, String, UInt8
+from std_msgs.msg import Bool, Float32, String, UInt8, UInt16
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan, Imu
@@ -105,7 +105,12 @@ from teknofest_ika.otonomi.topics import (
     SHOOT_CMD_TOPIC, SHOOT_RESULT_TOPIC, LASER_FIRE_DURATION,
     MISSION_STATUS_TOPIC, MISYON_WP_INDEX_TOPIC,
     CMD_VEL_TOPIC, ODOM_TOPIC, EKF_ODOM_TOPIC, RAMP_STOP_DURATION,
+    YOKUS_KALKIS_AKTIF_TOPIC, YOKUS_KALKIS_FREN_TOPIC,
+    YOKUS_TUTMA_FREN_BINDE, YOKUS_TORK_SURESI_S,
+    YOKUS_FREN_BIRAKMA_BINDE_PER_S,
+    YOKUS_KALKIS_HIZ_TIRMANIS, YOKUS_KALKIS_HIZ_INIS,
     MISYON_KALAN_SURE_TOPIC, KOSU_SURESI_S, PAS_HAKKI, PAS_GECILEMEZ,
+    KART_HIZ_TAVAN, KART_HATA_TOPIC, HATA_GAZ_YOK,
     SCAN_FILTERED_TOPIC, ENGEBELI_SAPMA_TOPIC, KORIDOR_GENISLIGI_M,
     IMU_TOPIC, IMU_PITCH_RAMP_THRESHOLD,
     KORIDOR_SAPMA_UYARI_M, KORIDOR_TOPLAM_TOLERANS, KORIDOR_PENCERE_RAD,
@@ -118,6 +123,7 @@ from teknofest_ika.otonomi.pure_logic import (
     kosu_butcesi, pas_verilebilir as _pas_verilebilir_pure,
     kurtarma_karari as _kurtarma_karari_pure,
     quat_to_roll_pitch_deg, rollback_riskli, rampa_faz_gecisi,
+    rampa_ara_durus_gerekli, yokus_kalkis_freni,
     koridor_merkez_cizgisi, kayan_hedef, ic_duvar_hedefi,
     hedefleme_modu_sec, kayan_hedef_karari,
     quat_yaw, arac_hedefini_odoma_tasi,
@@ -743,6 +749,21 @@ class KayanHedefSurucusu:
         return 'failed'
 
 
+def durdurma_gerekli(det_store) -> bool:
+    """
+    Koşunun sürdürülemeyeceği durumlar: E-STOP, ya da sürüş kartının gaz
+    arızası.
+
+    Gaz arızası ayrı tutulmuyor çünkü sonucu aynı: kartın kilidi mandallı ve
+    onu yalnız operatörün kumandadaki kesme anahtarı çözüyor. Jetson ne kadar
+    taze komut gönderirse göndersin araç kalkmaz — durumu "geçici hata" diye
+    işlemek, köprünün sonsuza kadar komut basıp neden hareket etmediğini
+    aramasına yol açar.
+    """
+    return (det_store.get_field('e_stop', False)
+            or det_store.get_field('gaz_arizasi', False))
+
+
 class NavigateState(smach.State):
     """
     Waypoint listesini sırayla işler.
@@ -840,7 +861,7 @@ class NavigateState(smach.State):
         if hasattr(self.node, '_fsm_state_pub'):
             self.node._fsm_state_pub.publish(String(data='NAVIGATE'))
 
-        if self.det_store.get_field('e_stop', False):
+        if durdurma_gerekli(self.det_store):
             self.node.get_logger().error('[NAVIGATE] E-STOP aktif — navigasyon iptal.')
             return 'e_stop'
 
@@ -857,7 +878,7 @@ class NavigateState(smach.State):
         if self.det_store.get_field('manual_mod', False):
             self.node.get_logger().warn('[NAVIGATE] Manuel mod aktif — navigasyon bekleniyor.')
             while rclpy.ok() and self.det_store.get_field('manual_mod', False):
-                if self.det_store.get_field('e_stop', False):
+                if durdurma_gerekli(self.det_store):
                     self.node.get_logger().error('[NAVIGATE] E-STOP — manuel mod bekleme iptal.')
                     return 'e_stop'
                 time.sleep(0.2)
@@ -923,7 +944,7 @@ class NavigateState(smach.State):
                         wp.get('viraj'),
                         deadline=time.time() + kalan,
                         dur_kontrol=dur_kontrol,
-                        e_stop_fn=lambda: self.det_store.get_field('e_stop', False),
+                        e_stop_fn=lambda: durdurma_gerekli(self.det_store),
                     )
                 else:
                     result = self.nav.go_to(
@@ -952,7 +973,7 @@ class NavigateState(smach.State):
                     wp_deadline += RAMP_STOP_DURATION
                     deadline_stop = time.time() + RAMP_STOP_DURATION
                     while time.time() < deadline_stop:
-                        if self.det_store.get_field('e_stop', False):
+                        if durdurma_gerekli(self.det_store):
                             self.node.get_logger().error('[NAVIGATE] E-STOP — STOP bekleme iptal.')
                             return 'e_stop'
                         time.sleep(0.1)
@@ -1009,7 +1030,7 @@ class NavigateState(smach.State):
             )
             deadline_stop = time.time() + RAMP_STOP_DURATION
             while time.time() < deadline_stop:
-                if self.det_store.get_field('e_stop', False):
+                if durdurma_gerekli(self.det_store):
                     self.node.get_logger().error(
                         '[NAVIGATE] E-STOP — yedek STOP bekleme iptal.'
                     )
@@ -1026,7 +1047,7 @@ class NavigateState(smach.State):
             )
             deadline = time.time() + 10.0
             while time.time() < deadline:
-                if self.det_store.get_field('e_stop', False):
+                if durdurma_gerekli(self.det_store):
                     self.node.get_logger().error('[NAVIGATE] E-STOP — KAYAR_ENGEL bekleme iptal.')
                     return 'e_stop'
                 yon = self.det_store.get_field('kayar_yon', 'bilinmiyor')
@@ -1114,7 +1135,7 @@ class ShootApproachState(smach.State):
 
         deadline = time.time() + self.TIMEOUT_S
         while time.time() < deadline:
-            if self.det_store.get_field('e_stop', False):
+            if durdurma_gerekli(self.det_store):
                 self.node.get_logger().error('[SHOOT_APPROACH] E-STOP.')
                 self._targeting_enable_pub.publish(Bool(data=False))
                 return 'e_stop'
@@ -1191,7 +1212,7 @@ class ShootState(smach.State):
             # Her denemenin BAŞINDA kontrol edilir. Kontrol yalnız döngü
             # sonunda olsaydı E-STOP aktifken bu state'e girilmesi lazeri
             # ateşlerdi.
-            if self.det_store.get_field('e_stop', False):
+            if durdurma_gerekli(self.det_store):
                 self.node.get_logger().error(
                     '[SHOOT] E-STOP aktif — ateş edilmiyor.'
                 )
@@ -1213,14 +1234,18 @@ class ShootState(smach.State):
             )
             self._confirmed_event.clear()
 
-            # Ateş komutu — seri_kopru PKT_LAZER=1 → MEGA → NANO → Lazer
+            # Ateş komutu — seri_kopru 0x03 ile lazeri sürüş kartına iletir.
             # NOT: seri_kopru bu True yayınını aldığı an _lazer_aktif=True
-            # yapar ve TÜM hareket komutlarını PKT_DUR'a çevirir (movement
-            # lock). Bu kilit, aşağıda False yayınlanana kadar açık kalır.
+            # yapar ve hareket komutlarını 0x01 hız 0'a çevirir; fren tarafını
+            # ackermann_converter tam basılı tutar. Kilit, aşağıda False
+            # yayınlanana kadar açık kalır. Durdurma PKT_J_DUR ile YAPILAMAZ:
+            # kart o paketi acil durum sayıp lazer isteğini düşürür, yani ateş
+            # komutu kendi ateşini iptal ederdi.
             self._shoot_pub.publish(Bool(data=True))
             ates_baslangic = time.time()
 
-            # Onay bekle (seri_kopru PKT_LAZER=0 echo'sunda publish eder)
+            # Onay bekle: seri_kopru, kartın 0x36'daki DRM_LAZER bitinin
+            # yükselen kenarında SHOOT_RESULT_TOPIC'e True basar.
             # threading.Event.wait — spin thread'den gelen set() atomik olarak yakalanır
             onaylandi = self._confirmed_event.wait(timeout=self.TIMEOUT_S)
 
@@ -1305,7 +1330,10 @@ class HizlanmaState(smach.State):
     # Ölçüm (2026-07-28): gaz voltajı = 0.90 + hız[m/s]; tam gaz 2.84 V ≈
     # 1.94 m/s. Eski 3.0 değeri seri_kopru.MAX_HIZ_MS donanım kelepçesiydi,
     # aracın ulaşabildiği bir hız değil — 3.90 V ister, DAC/sürücü doyar.
-    MAX_HIZ          = 1.90   # m/s — ölçülen tam gazın hemen altı
+    # Sürüş kartı otonom dalda hızı 1,50 m/s'ye kırpıyor. Aracın tam gazı daha
+    # yüksek ölçüldü ama otonomdan o hız istenemiyor; profili ulaşılamayan bir
+    # tavana göre kurmak yavaşlama noktasını yanlış hesaplatır.
+    MAX_HIZ          = KART_HIZ_TAVAN
     # Şartname §6.11 iki ayrı mesafe tanımlıyor: 30 m puanlanan hızlanma
     # bölümü, ardından 10 m emniyetli durma payı. Fren payın içinde yapılır;
     # ölçülen bölümde yavaşlamak yalnız ilk altı takıma puan veren bir
@@ -1399,7 +1427,7 @@ class HizlanmaState(smach.State):
         sonuc    = 'completed'
 
         while rclpy.ok():
-            if self.det_store.get_field('e_stop', False):
+            if durdurma_gerekli(self.det_store):
                 self.node.get_logger().error('[HIZLANMA] E-STOP — durduruluyor.')
                 sonuc = 'e_stop'
                 break
@@ -1596,6 +1624,12 @@ class RampaState(smach.State):
 
 
         self._cmd_pub = node.create_publisher(Twist, CMD_VEL_TOPIC, 10)
+        # §6.10 yokuş kalkışı — ackermann_converter'a "freni sen hesaplama,
+        # benim dediğimi bas" override'ı. anti_rollback ile aynı desen.
+        self._yokus_aktif_pub = node.create_publisher(
+            Bool, YOKUS_KALKIS_AKTIF_TOPIC, 10)
+        self._yokus_fren_pub = node.create_publisher(
+            UInt16, YOKUS_KALKIS_FREN_TOPIC, 10)
 
         self._lock     = threading.Lock()
         self._pos      = None
@@ -1658,7 +1692,7 @@ class RampaState(smach.State):
 
         while rclpy.ok():
             self._cmd_pub.publish(twist)
-            if self.det_store.get_field('e_stop', False):
+            if durdurma_gerekli(self.det_store):
                 return 'e_stop'
             _, hiz, _, _ = self._oku()
             if abs(hiz) < self.DURMA_HIZ_ESIGI:
@@ -1681,9 +1715,60 @@ class RampaState(smach.State):
         bekleme_bitis = time.time() + sure_s
         while time.time() < bekleme_bitis:
             self._cmd_pub.publish(twist)
-            if self.det_store.get_field('e_stop', False):
+            if durdurma_gerekli(self.det_store):
                 return 'e_stop'
             time.sleep(1.0 / self.CMD_HZ)
+        return 'ok'
+
+    def _yokus_kalkis(self, kalkis_hiz: float, etiket: str) -> str:
+        """
+        §6.10 duruşundan kalkış: fren SIKILIYKEN gaz ver, tork otursun, sonra
+        freni rampayla bırak. Dönüş: 'ok' | 'e_stop'.
+
+        Eğimde duran araçta motorun tutma torku yok. Fren önce bırakılırsa araç
+        geri kaçar, rotor ters yöne döner ve sürücü ters dönen rotora tork
+        basmayı reddeder — araç eğimde kalır. Sıra bu yüzden gaz→fren, tersi
+        değil. Fren değerini ackermann_converter'a override ile bildiriyoruz;
+        normalde fren komut edilen hızın türevinden hesaplanıyor ve hız
+        sıfırdan büyükken serbest bırakılıyor, yani ikisi tanım gereği
+        birbirini dışlıyor.
+
+        Gaz duruş SAYILDIKTAN SONRA geliyor: §6.10 aracın tamamen durmasını
+        istiyor ve sayım penceresinde tork uygulanırsa araç sürünebilir.
+        """
+        twist = Twist()
+        twist.linear.x  = kalkis_hiz
+        twist.angular.z = 0.0
+
+        basla = time.time()
+        try:
+            while rclpy.ok():
+                if durdurma_gerekli(self.det_store):
+                    return 'e_stop'
+                gecen = time.time() - basla
+                fren, bitti = yokus_kalkis_freni(
+                    gecen, YOKUS_TUTMA_FREN_BINDE, YOKUS_TORK_SURESI_S,
+                    YOKUS_FREN_BIRAKMA_BINDE_PER_S)
+                # Bayrak NABIZ: her döngüde yeniden basılıyor. Tek sefer basıp
+                # güvenmek, bu düğüm ölürse ackermann_converter'ı sonsuza kadar
+                # override'da bırakırdı. Karşılığında orada YOKUS_BAYATLAMA_S
+                # bayatlık koruması var; ikisi birlikte anlamlı.
+                self._yokus_aktif_pub.publish(Bool(data=True))
+                self._yokus_fren_pub.publish(UInt16(data=fren))
+                self._cmd_pub.publish(twist)
+                if bitti:
+                    break
+                time.sleep(1.0 / self.CMD_HZ)
+        finally:
+            # Bayrak HER durumda düşmeli: açık kalırsa ackermann_converter
+            # freni sonsuza kadar override'dan basar ve otomatik fren ölür.
+            self._yokus_aktif_pub.publish(Bool(data=False))
+            self._yokus_fren_pub.publish(UInt16(data=0))
+
+        self.node.get_logger().info(
+            f'[RAMPA] {etiket}: yokuş kalkışı tamam '
+            f'(gaz {kalkis_hiz:.2f} m/s, tork {YOKUS_TORK_SURESI_S:.1f}s).'
+        )
         return 'ok'
 
     # ── Ana akış ────────────────────────────────────────────────────────────
@@ -1724,9 +1809,17 @@ class RampaState(smach.State):
         faz_basi      = baslangic_pos
         kayma_basi    = None
         sonuc         = None
+        # §6.10 duruşu eğimin ORTASINDA, rampa dibinde değil. CAD: rampa
+        # 8,60 × 1,85 m, %45 eğimde yamaç boyu 4,51 m → orta 2,25 m. Faz
+        # 'egimde'ye pitch 15°'yi geçince giriliyor, o an araç merkezi yamaçta
+        # ~0,20 m ilerlemiş oluyor; aradaki fark varsayılana işlenmiş durumda.
+        # 0 verilirse ara duruş kapanır.
+        durus_mesafe    = float(wp.get('durus_mesafe_m', 0.0) or 0.0)
+        ara_durus_yapildi = False
+        kalkis_hiz = YOKUS_KALKIS_HIZ_INIS if iniyor else YOKUS_KALKIS_HIZ_TIRMANIS
 
         while rclpy.ok():
-            if self.det_store.get_field('e_stop', False):
+            if durdurma_gerekli(self.det_store):
                 self.node.get_logger().error('[RAMPA] E-STOP — durduruluyor.')
                 sonuc = 'e_stop'
                 break
@@ -1800,6 +1893,28 @@ class RampaState(smach.State):
                     break
             else:
                 kayma_basi = None
+
+            # §6.10 — eğim üzerindeki zorunlu duruş. Faz geçişinden ÖNCE
+            # bakılıyor: duruş sırasında araç ilerlemediği için faz da
+            # ilerlemiyor, sıra ters olsa duruş bir sonraki döngüye kayardı.
+            if rampa_ara_durus_gerekli(faz, gidilen, durus_mesafe,
+                                       ara_durus_yapildi):
+                self.node.get_logger().info(
+                    f'[RAMPA] {etiket}: eğim ortası ({gidilen:.2f}m) — '
+                    f'§6.10 {RAMP_STOP_DURATION:.0f}s duruş.'
+                )
+                if self._dur_ve_bekle(RAMP_STOP_DURATION, etiket) == 'e_stop':
+                    sonuc = 'e_stop'
+                    break
+                if self._yokus_kalkis(kalkis_hiz, etiket) == 'e_stop':
+                    sonuc = 'e_stop'
+                    break
+                ara_durus_yapildi = True
+                # Duruş ve kalkış aşama saatinden sayılmasın.
+                gecen = RAMP_STOP_DURATION + YOKUS_TORK_SURESI_S
+                deadline += gecen
+                baslama  += gecen
+                continue
 
             yeni_faz = rampa_faz_gecisi(
                 faz, abs(pitch), self.PITCH_ESIK_DEG, gidilen,
@@ -2022,6 +2137,9 @@ def load_waypoints(yaml_path: str):
                 # 'harita' yolunda ikisi de okunmaz.
                 'mesafe_m':    a.get('mesafe_m', 0.0),
                 'viraj':       a.get('viraj'),
+                # §6.10 eğim ORTASINDAKİ zorunlu duruşun, faz 'egimde'ye
+                # girdikten sonra kat edilecek yolu. 0 = duruş yok.
+                'durus_mesafe_m': a.get('durus_mesafe_m', 0.0),
             })
 
         parametreler = data.get('parametreler', {})
@@ -2099,6 +2217,18 @@ def main():
         det_store.update_field('manual_mod', msg.data == 0)
 
     node.create_subscription(UInt8, MOD_AKTIF_TOPIC, _on_mod, 10)
+
+    def _on_kart_hata(msg: UInt16):
+        ariza = bool(msg.data & HATA_GAZ_YOK)
+        onceki = det_store.get_field('gaz_arizasi', False)
+        det_store.update_field('gaz_arizasi', ariza)
+        if ariza and not onceki:
+            node.get_logger().error(
+                '!!! KART GAZ ARIZASI — koşu sürdürülemez. Kilit mandallı ve '
+                'yalnız kumandadaki kesme anahtarı (SwA → KES) çözer; '
+                'Jetson kurtaramaz. !!!')
+
+    node.create_subscription(UInt16, KART_HATA_TOPIC, _on_kart_hata, 10)
 
     # ── Nav2 Client ───────────────────────────────────────────────────
     nav = Nav2Client(node)

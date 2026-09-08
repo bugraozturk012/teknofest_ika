@@ -25,13 +25,15 @@ Modlar (-p test:=<mod>):
               -p gercek_deg:=90.0
 
   hiz     Aracı MANUEL sür; gaz voltajı ile ölçülen hızı eşleştirip
-          v = a·gaz + b doğrusunu uydurur. Gaz voltajı telemetriden
-          okunur (/battery/status.current × 10).
+          v = a·gaz + b doğrusunu uydurur. Gaz voltajı kartın bildirdiği
+          çıkıştan okunur (/kart/surus, 0x37).
 
-  ham     AS5600'ün ham ADC'sine bakar: hangi analog pin gerçekten bağlı,
-          tur başına kaç tick düşüyor, okuma ne kadar gürültülü. Enkoder
-          değişse de tekrarlanır. seri_kopru -p ham_enkoder:=true ister.
-              -p tur_sayisi:=10   elle çevrilecek tekerlek turu
+  ham     Ham kuadratür sayımına bakar: duruşta oynuyor mu, hareketle
+          tutarlı artıyor mu, yönü doğru mu. Ardından mezürle ölçülmüş bir
+          mesafeden ÖLÇEK KATSAYISINI çıkarır — enkoder motor miline bağlı
+          olduğu için dişli oranı ve tekerlek çevresi bu tek sayının içinde
+          birlikte gelir, ayrı ölçülmeleri gerekmez.
+          seri_kopru -p ham_enkoder:=true ister.
 
 Çalıştırma:
     ~/lydia_ortam/ortam.sh python3 scripts/sensor_dogrula.py \
@@ -49,24 +51,20 @@ import rclpy
 from rclpy.node import Node
 
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import BatteryState, Imu
-from std_msgs.msg import UInt16MultiArray
+from sensor_msgs.msg import Imu
+from std_msgs.msg import Int32, Int16MultiArray
 
-from teknofest_ika.otonomi.pure_logic import encoder_delta
 
 ODOM_TOPIC    = '/odom'
 IMU_TOPIC     = '/imu/data'
-BATTERY_TOPIC = '/battery/status'
 HAM_TOPIC     = '/enkoder/ham'
+SURUS_TOPIC   = '/kart/surus'
 
-# Mega telemetriyi batarya alanına bindiriyor: gaz hattının voltajı current
-# alanında, onda bir ölçekli taşınır.
-GAZ_V_OLCEK = 10.0
-
-# AS5600 10-bit ADC. Modül 5 V ile beslendiğinde analog çıkış ADC tavanına
-# ulaşır ve tur başına bu kadar tick okunur; 3.3 V regülatörlü modüllerde
-# tepe değer kırpılır ve sayı ~675'e düşer.
-TICKS_PER_REV = 1024
+# E6B2-CWZ6C artımlı kuadratür enkoder: 600 P/R, dört kenar sayıldığı için
+# tur başına 2400 sayım. Tezgâhta doğrulandı. Enkoder tekerleğe değil
+# traksiyon motorunun miline 1:1 kaplinle bağlı, yani bu sayı MOTOR turudur;
+# tekerleğe çevirmek dişli oranını gerektirir ve o oran henüz ölçülmedi.
+SAYIM_PER_TUR = 2400
 
 
 def _yaw(q) -> float:
@@ -78,11 +76,6 @@ def _yaw(q) -> float:
 def _sarmala(a: float) -> float:
     """Açıyı (-π, π] aralığına indirger."""
     return math.atan2(math.sin(a), math.cos(a))
-
-
-def _tick_delta(yeni: int, eski: int) -> int:
-    """İki ADC okuması arasındaki tick farkı, 0↔1023 sarmasına karşı korumalı."""
-    return encoder_delta(yeni, eski, TICKS_PER_REV)
 
 
 class FrekansSayaci:
@@ -118,20 +111,18 @@ class SensorDogrula(Node):
         self.declare_parameter('gercek_m',        10.0)
         self.declare_parameter('mevcut_yaricap',  0.200)
         self.declare_parameter('gercek_deg',      90.0)
-        self.declare_parameter('tur_sayisi',      10)
 
         self.test           = str(self.get_parameter('test').value)
         self.gercek_m       = float(self.get_parameter('gercek_m').value)
         self.mevcut_yaricap = float(self.get_parameter('mevcut_yaricap').value)
         self.gercek_deg     = float(self.get_parameter('gercek_deg').value)
-        self.tur_sayisi     = int(self.get_parameter('tur_sayisi').value)
 
         self._kilit = threading.Lock()
 
         # Anlık durum
         self.odom_hz  = FrekansSayaci()
         self.imu_hz   = FrekansSayaci()
-        self.bat_hz   = FrekansSayaci()
+        self.surus_hz = FrekansSayaci()
         self.vx       = 0.0
         self.vyaw     = 0.0
         self.pose     = None          # (x, y)
@@ -152,25 +143,19 @@ class SensorDogrula(Node):
         self.vyaw_max = 0.0
         self.oyaw_max = 0.0
 
-        # Ham enkoder — [sol, sag] kanalları ayrı izlenir
+        # Ham enkoder — kartın int32 kuadratür sayacı. Taşmayı kart çözüyor,
+        # burada sarma düzeltmesi gerekmiyor.
         self.ham_hz    = FrekansSayaci()
-        self.ham       = [None, None]     # anlık ADC
-        self.ham_once  = [None, None]     # sarma hesabı için önceki okuma
-        self.ham_net   = [0, 0]           # işaretli toplam (yön korunur)
-        self.ham_mutlak= [0, 0]           # |delta| toplamı (titreşim dahil)
-        self.ham_ornek = [[], []]         # gürültü penceresi
-        # Ölçüm boyunca görülen ADC uçları. Tur başına tick'i kümülatif
-        # deltadan hesaplamak besleme sorununu GİZLER: 0↔1023 sarma düzeltmesi
-        # kırpılmış tavanı (ör. 674→0 sıçraması) eksik turmuş gibi görüp
-        # farkı kapatır ve sonuç her hâlükârda ~1024 çıkar. Kırpma ancak ham
-        # okumanın tepe değerine bakılarak görülür.
-        self.ham_min   = [None, None]
-        self.ham_max   = [None, None]
+        self.ham       = None             # anlık sayım
+        self.ham_once  = None             # önceki okuma
+        self.ham_net   = 0                # işaretli toplam (yön korunur)
+        self.ham_mutlak= 0                # |delta| toplamı (titreşim dahil)
+        self.ham_ornek = []               # gürültü penceresi
 
         self.create_subscription(Odometry, ODOM_TOPIC, self._odom, 10)
         self.create_subscription(Imu, IMU_TOPIC, self._imu, 10)
-        self.create_subscription(BatteryState, BATTERY_TOPIC, self._bat, 10)
-        self.create_subscription(UInt16MultiArray, HAM_TOPIC, self._ham, 10)
+        self.create_subscription(Int32, HAM_TOPIC, self._ham, 10)
+        self.create_subscription(Int16MultiArray, SURUS_TOPIC, self._surus, 10)
 
     # ── Abonelikler ─────────────────────────────────────────────────────────
     def _odom(self, msg: Odometry):
@@ -206,33 +191,28 @@ class SensorDogrula(Node):
                     self.yaw_top += _sarmala(y - self.yaw_once)
                 self.yaw_once = y
 
-    def _ham(self, msg: UInt16MultiArray):
+    def _ham(self, msg: Int32):
+        deger = int(msg.data)
+        with self._kilit:
+            self.ham_hz.tik()
+            if self.ham_once is not None and self.kayit:
+                d = deger - self.ham_once
+                self.ham_net    += d
+                self.ham_mutlak += abs(d)
+            self.ham_once = deger
+            self.ham      = deger
+            self.ham_ornek.append(deger)
+            if len(self.ham_ornek) > 200:
+                self.ham_ornek.pop(0)
+
+    def _surus(self, msg: Int16MultiArray):
         if len(msg.data) < 2:
             return
         with self._kilit:
-            self.ham_hz.tik()
-            for i in range(2):
-                deger = int(msg.data[i])
-                if self.ham_once[i] is not None:
-                    d = _tick_delta(deger, self.ham_once[i])
-                    if self.kayit:
-                        self.ham_net[i]    += d
-                        self.ham_mutlak[i] += abs(d)
-                if self.kayit:
-                    self.ham_min[i] = (deger if self.ham_min[i] is None
-                                       else min(self.ham_min[i], deger))
-                    self.ham_max[i] = (deger if self.ham_max[i] is None
-                                       else max(self.ham_max[i], deger))
-                self.ham_once[i] = deger
-                self.ham[i]      = deger
-                self.ham_ornek[i].append(deger)
-                if len(self.ham_ornek[i]) > 200:
-                    self.ham_ornek[i].pop(0)
+            self.surus_hz.tik()
+            # Kart ürettiği gaz çıkışını mV olarak bildiriyor.
+            self.gaz_v = float(msg.data[0]) / 1000.0
 
-    def _bat(self, msg: BatteryState):
-        with self._kilit:
-            self.bat_hz.tik()
-            self.gaz_v = msg.current * GAZ_V_OLCEK
 
     # ── Ölçüm kontrolü ──────────────────────────────────────────────────────
     def basla(self):
@@ -244,10 +224,8 @@ class SensorDogrula(Node):
             self.yaw_once = self.imu_yaw
             self.yaw_bas  = self.imu_yaw
             self.ciftler  = []
-            self.ham_net    = [0, 0]
-            self.ham_mutlak = [0, 0]
-            self.ham_min    = [None, None]
-            self.ham_max    = [None, None]
+            self.ham_net    = 0
+            self.ham_mutlak = 0
 
     def bitir(self):
         with self._kilit:
@@ -262,12 +240,12 @@ class SensorDogrula(Node):
 # ── Modlar ──────────────────────────────────────────────────────────────────
 def mod_ozet(d: SensorDogrula):
     print('\n  Topic akışı izleniyor — çıkmak için Ctrl-C\n')
-    print('  {:<14}{:>9}{:>9}{:>9}'.format('', 'ODOM', 'IMU', 'BATARYA'))
+    print('  {:<14}{:>9}{:>9}{:>9}'.format('', 'ODOM', 'IMU', 'SÜRÜŞ'))
     try:
         while rclpy.ok():
             time.sleep(1.0)
             with d._kilit:
-                oh, ih, bh = d.odom_hz.hz, d.imu_hz.hz, d.bat_hz.hz
+                oh, ih, bh = d.odom_hz.hz, d.imu_hz.hz, d.surus_hz.hz
                 vx, vyaw   = d.vx, d.vyaw
                 iy         = d.imu_yaw
                 rl, pt     = d.roll, d.pitch
@@ -310,7 +288,7 @@ def mod_mesafe(d: SensorDogrula):
 
     if olculen < 1e-3:
         print('\n  Ölçüm sıfır — enkoderden veri gelmiyor.')
-        print('  Kontrol: ros2 topic hz /odom, kablolama, PKT_ENC akışı.')
+        print('  Kontrol: ros2 topic hz /odom, kablolama, 0x31 hız akışı.')
         return
 
     oran = d.gercek_m / olculen
@@ -398,7 +376,19 @@ def mod_hiz(d: SensorDogrula):
 
 
 def mod_ham(d: SensorDogrula):
-    print('\n  HAM ENKODER')
+    """
+    Ham kuadratür sayımını doğrular ve ölçek katsayısını çıkarır.
+
+    Kart, tekerlek çevresi ve dişli oranı girilmediği sürece hız alanını
+    bilerek 0 basıyor; ham sayım o sırada da akıyor ve ölçekten bağımsız.
+    Bu mod önce sayımın gerçekten enkoderden geldiğini (duruşta oynamıyor,
+    hareketle tutarlı artıyor) sonra da mesafeye çevrim katsayısını ölçer.
+
+    Enkoder motor miline bağlı, yani sayım motor turunu gösteriyor. Katsayı
+    yine de tek ölçümle çıkıyor: gerçek mesafeyi sayıma bölmek dişli oranını
+    ve tekerlek çevresini birlikte içeren sayıyı doğrudan veriyor.
+    """
+    print('\n  HAM ENKODER SAYIMI VE ÖLÇEK')
     print('  seri_kopru -p ham_enkoder:=true ile başlatılmış olmalı.\n')
 
     for _ in range(50):
@@ -408,105 +398,118 @@ def mod_ham(d: SensorDogrula):
         time.sleep(0.1)
     else:
         print('  {} sessiz.'.format(HAM_TOPIC))
-        print('  seri_kopru ham_enkoder parametresi açık mı?\n')
+        print('  Sırayla bak: seri_kopru ham_enkoder parametresi açık mı,')
+        print('  köprü portu açabildi mi, kart 0x30 gönderiyor mu.\n')
         return
 
-    # 1) Araç dururken gürültü — bağlı olmayan pin burada ele verir.
-    print('  Araca DOKUNMA — 3 sn gürültü ölçülüyor…')
+    # 1) Araç dururken sayım oynuyorsa kaynak gürültüdür: kuadratür sayacı
+    #    duran bir milde tek adım bile ilerlememeli.
+    print('  Araca DOKUNMA — 3 sn duruşta sayım izleniyor…')
     with d._kilit:
-        d.ham_ornek = [[], []]
+        d.ham_ornek = []
     time.sleep(3.0)
     with d._kilit:
-        ornek = [list(o) for o in d.ham_ornek]
+        ornek = list(d.ham_ornek)
         hz    = d.ham_hz.hz
 
-    print('\n  paket akışı: {:.1f} Hz\n'.format(hz))
-    print('  {:<8}{:>8}{:>8}{:>8}{:>10}'.format(
-        'kanal', 'ort', 'min', 'max', 'std'))
-    duruk = [0.0, 0.0]
-    for i, ad in enumerate(('sol/A0', 'sag/A1')):
-        if not ornek[i]:
-            print('  {:<8}{:>8}'.format(ad, 'veri yok'))
-            continue
-        a = np.array(ornek[i], dtype=float)
-        duruk[i] = float(a.std())
-        print('  {:<8}{:>8.1f}{:>8.0f}{:>8.0f}{:>10.2f}'.format(
-            ad, a.mean(), a.min(), a.max(), duruk[i]))
+    print('\n  yayın frekansı : {:.1f} Hz'.format(hz))
+    if len(ornek) >= 2:
+        oynama = max(ornek) - min(ornek)
+        print('  duruşta oynama : {} sayım'.format(oynama))
+        if oynama > 4:
+            print('\n  Araç dururken sayım oynuyor. Kuadratür sayacında bu')
+            print('  beklenmez: kablo gürültüsü, ekransız uzun hat ya da')
+            print('  kaplinin boşta titremesi olabilir. Sayımın bu kadarı')
+            print('  doğrudan mesafeye karışır.')
+    else:
+        print('  duruşta oynama : ölçülemedi (yeterli örnek yok)')
 
-    print('\n  Dururken std birkaç LSB\'yi aşıyorsa o kanal ya boştadır ya da')
-    print('  kablosu gürültü topluyordur; boş pin genelde geniş salınım gösterir.')
-
-    # 2) Tekerleği elle çevirerek tur başına tick — ölçek buradan çıkar.
-    print('\n  Şimdi tahrik tekerleğini elle tam {} tur çevir.'.format(d.tur_sayisi))
-    print('  Yavaş ve tek yönde çevir; ileri yön pozitif sayılmalı.')
-    _olcum_al(d, 'Tekerlek başlangıç işaretinde')
-
-    with d._kilit:
-        net    = list(d.ham_net)
-        mutlak = list(d.ham_mutlak)
-        hmin   = list(d.ham_min)
-        hmax   = list(d.ham_max)
-
-    turlar = max(1, d.tur_sayisi)
-    print('\n  {:<8}{:>11}{:>10}{:>11}{:>10}'.format(
-        'kanal', 'net tick', '|tick|', 'ADC aralık', 'tutarlı'))
-    tick_tur = [0.0, 0.0]
-    for i, ad in enumerate(('sol/A0', 'sag/A1')):
-        tick_tur[i] = abs(net[i]) / turlar
-        # Gerçek dönüş net sayımı biriktirir; gürültü ileri geri gider ve
-        # |tick| şişerken net ~0 kalır. Oran kanalı ayırt eder.
-        tutarli = abs(net[i]) / mutlak[i] if mutlak[i] else 0.0
-        aralik = ('{}–{}'.format(hmin[i], hmax[i])
-                  if hmin[i] is not None else '—')
-        print('  {:<8}{:>11d}{:>10d}{:>11}{:>10.2f}'.format(
-            ad, net[i], mutlak[i], aralik, tutarli))
-
-    # Hareketle ilişkili kanal hangisiyse enkoder oraya bağlıdır.
-    bagli = 0 if abs(net[0]) >= abs(net[1]) else 1
-    ad    = ('sol', 'sag')[bagli]
-    if abs(net[bagli]) < TICKS_PER_REV * turlar * 0.1:
-        print('\n  Hiçbir kanal turla orantılı saymadı — enkoder okunmuyor.')
-        print('  Kontrol: AS5600 OUT pini Mega A0/A1\'e mi gidiyor, mıknatıs')
-        print('  sensöre paralel ve merkezde mi, besleme var mı.')
+    # 2) Mezürle ölçülmüş bir mesafe — ölçek, yön ve tutarlılık burada çıkar.
+    #
+    # Enkoder motor miline bağlı olduğu için sayımı mesafeye çevirmek hem
+    # dişli oranını hem tekerlek çevresini ister. İkisini ayrı ayrı ölçmeye
+    # gerek yok: gerçek mesafeyi sayıma bölmek ikisini birden içeren tek
+    # katsayıyı doğrudan veriyor. Dişli oranı sayının içinde kalıyor.
+    print('\n  Aracı düz bir çizgide, mezürle ölçülmüş bir mesafe kadar İLERİ it.')
+    print('  10 m yeterli; uzun mesafe ölçüm hatasını küçültür.')
+    try:
+        mesafe = float(input('  Kaç metre iteceksin? ').strip() or '0')
+    except (ValueError, EOFError):
+        mesafe = 0.0
+    if mesafe <= 0:
+        print('  Mesafe girilmedi — ölçek kalibrasyonu atlandı.\n')
         return
 
-    print('\n  Bağlı görünen kanal: {}  →  seri_kopru -p enkoder_kanali:={}'
-          .format(ad.upper(), ad))
-    if net[bagli] < 0:
-        print('  Net sayım NEGATİF: ileri hareket geri okunuyor. Mıknatıs')
-        print('  yönü ya da işaret ters — /odom mesafesi eksiye gider.')
+    print('  Ölçüm başlıyor. Aracı it, bitince Enter…')
+    d.basla()
+    try:
+        input()
+    except EOFError:
+        time.sleep(5.0)
+    d.bitir()
 
-    # Besleme teşhisi ADC tepe değerinden okunur, tick/tur'dan DEĞİL.
-    tepe = hmax[bagli]
-    print('\n  ADC tepe : {}   (5 V beslemede ~{} beklenir)'
-          .format(tepe, TICKS_PER_REV - 1))
-    if tepe < TICKS_PER_REV * 0.80:
-        oran = (TICKS_PER_REV - 1) / max(1, tepe)
-        print('\n  Tepe değer düşük — AS5600 büyük olasılıkla 3.3 V ile')
-        print('  besleniyor ya da çıkışı bölünmüş. 5 V\'a al ve tekrar ölç.')
-        if tepe < TICKS_PER_REV // 2:
-            print('  DİKKAT: tepe yarım turun (512) altında. Bu durumda sarma')
-            print('  düzeltmesi hiç devreye girmez ve net sayım sıfıra çöker —')
-            print('  araç ilerlerken /odom mesafeyi hiç saymaz.')
-        else:
-            print('  Tepe 512\'nin üstünde olduğu için sarma düzeltmesi farkı')
-            print('  kapatıyor ve mesafe şimdilik doğru çıkıyor (ölçüm {:.0f}'
-                  .format(tick_tur[bagli]))
-            print('  tick/tur); ama pay ~{:.0f}%\'e inmiş, titreşimde çöker.'
-                  .format((oran - 1.0) * 100.0))
+    with d._kilit:
+        net    = d.ham_net
+        mutlak = d.ham_mutlak
+
+    if mutlak == 0:
+        print('\n  Sayım hiç değişmedi. Enkoder mile bağlı değil, kaplin')
+        print('  boşta dönüyor ya da kart sayacı okumuyor.\n')
+        return
+
+    print('\n  net sayım      : {:+d}'.format(net))
+    print('  mutlak sayım   : {}'.format(mutlak))
+
+    if abs(net) < 100:
+        print('\n  Sayım mesafeye göre çok küçük ({} sayım / {:.2f} m).'
+              .format(abs(net), mesafe))
+        print('  Kaplin kayıyor ya da sayacın bir kanalı okunmuyor olabilir;')
+        print('  katsayı bu ölçümden çıkarılmaz.\n')
+        return
+
+    sayim_per_m = abs(net) / mesafe
+    mm_per_sayim = mesafe * 1000.0 / abs(net)
+    print('\n  ÖLÇEK KATSAYISI')
+    print('  metre başına sayım : {:.1f}'.format(sayim_per_m))
+    print('  sayım başına mesafe: {:.4f} mm'.format(mm_per_sayim))
+    print('\n  Bu tek sayı dişli oranını ve tekerlek çevresini birlikte içerir;')
+    print('  ikisini ayrı ölçmeye gerek yok. Karta girecek değer budur.')
+
+    # Ayrık iki sabit isteniyorsa dişli oranı çevreden çıkar; çevre bilinmiyorsa
+    # bu adım atlanır, ölçek katsayısı tek başına yeterlidir.
+    try:
+        cevre = float(input('\n  Tekerlek çevresi biliniyorsa [m], yoksa boş geç: ')
+                      .strip() or '0')
+    except (ValueError, EOFError):
+        cevre = 0.0
+    if cevre > 0:
+        tekerlek_turu = mesafe / cevre
+        motor_turu    = abs(net) / SAYIM_PER_TUR
+        print('  dişli oranı (motor turu / tekerlek turu): {:.3f}'
+              .format(motor_turu / tekerlek_turu))
+        print('  ENK_TEKER_CEVRE_MM = {:.0f}'.format(cevre * 1000.0))
+
+    # 3) Yön. İleri itilirken sayım azalıyorsa işaret ters demektir; düzeltme
+    #    kartta tek satırdır (ENK_TERS) ve elektrik tarafında yapılır.
+    if net < 0:
+        print('\n  İLERİ hareket sayımı AZALTIYOR — işaret ters.')
+        print('  Düzeltme kartta: ENK_TERS. Elektrik ekibine bildir;')
+        print('  düzeltilmezse /odom mesafeyi eksiye sayar ve geri kayma')
+        print('  tespiti tam tersini okur.')
     else:
-        print('  Besleme beklenen aralıkta — TICKS_PER_REV değişmesin.')
+        print('\n  Yön doğru: ileri hareket sayımı artırıyor.')
 
-    print('\n  ölçülen tick/tur: {:.1f}'.format(tick_tur[bagli]))
-
-    tutarli = abs(net[bagli]) / mutlak[bagli] if mutlak[bagli] else 0.0
+    tutarli = abs(net) / mutlak if mutlak else 0.0
+    print('  tutarlılık     : {:.2f}'.format(tutarli))
     if tutarli < 0.95:
-        kayip = mutlak[bagli] - abs(net[bagli])
-        print('\n  Yön değiştiren sayım fazla ({} tick ileri-geri, tutarlılık'
+        kayip = mutlak - abs(net)
+        print('\n  Yön değiştiren sayım fazla ({} sayım ileri-geri).'
               .format(kayip))
-        print('  {:.2f}). Mekanik boşluk, zincir kaçırması ya da mıknatıs'
-              .format(tutarli))
-        print('  merkezden kaçmış olabilir; sayım gürültüsü mesafeye karışır.')
+        print('  Mekanik boşluk, zincir kaçırması ya da kaplin gevşekliği')
+        print('  olabilir; bu sayım gürültüsü doğrudan mesafeye karışır.')
+
+    print()
+
 
 
 def main():

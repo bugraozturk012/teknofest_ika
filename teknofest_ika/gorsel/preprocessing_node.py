@@ -57,7 +57,7 @@ class PreprocessingNode(Node):
         self.declare_parameter("lidar_angle_min_deg", -135.0)
         self.declare_parameter("lidar_angle_max_deg", 135.0)
         self.declare_parameter("lidar_montaj_yaw_rad", LIDAR_MONTAJ_YAW_RAD)
-        self.declare_parameter("lidar_ma_window", 5)
+        self.declare_parameter("lidar_ma_window", 3)
         self.declare_parameter("depth_ror_nb_points", 6)
         self.declare_parameter("depth_ror_radius", 0.05)
         # Derinlik nokta bulutu filtresi. Çıktısı (/depth/points/filtered)
@@ -243,23 +243,34 @@ class PreprocessingNode(Node):
         invalid = ~valid
         filtered[invalid] = float('inf')
 
-        # 3) Moving average on valid ranges (vectorized nan-aware)
+        # 3) Komşu ışınlar arasında MEDYAN — tek ışınlık gürültüyü siler,
+        #    kenarı korur. Ortalama burada yanlış araçtı: koni ve direk gibi
+        #    ince engeller iki üç ışın kaplıyor ve arka planla ortalanınca
+        #    kayboluyorlar; dahası yakın engelle uzak arka plan arasındaki
+        #    sınırda gerçekte var olmayan ara mesafeler üretiliyordu.
+        #    /scan/filtered'ı Nav2 costmap'i, cone_fusion ve kayar_engel
+        #    birlikte okuyor, yani o uydurma mesafeler üçüne birden gidiyordu.
+        #
+        #    Pencere genişliği medyanın koruyabildiği en dar engeli belirler:
+        #    3'lük pencere iki ışınlık bir engeli gerçek mesafesinde tutar,
+        #    5'lik pencere onu arka plana gömer. Bedeli tek ışınlık engellerin
+        #    de silinmesi — ama tek ışın zaten gürültüden ayırt edilemiyor.
         if self.lidar_ma_window > 1:
             temp = filtered.copy()
             temp[invalid] = np.nan
             w = self.lidar_ma_window
-            # Pad edges with nearest valid values for symmetric window
             padded = np.pad(temp, (w // 2, w // 2), mode='edge')
-            # Use convolution with uniform weights, ignoring NaNs
-            kernel = np.ones(w, dtype=np.float32) / w
-            # convolve valid values
-            conv_valid = np.convolve(np.nan_to_num(padded, nan=0.0), kernel, mode='valid')
-            # convolve mask (count of valid points in each window)
-            conv_mask = np.convolve(np.isfinite(padded).astype(np.float32), kernel, mode='valid')
-            # avoid division by zero
-            smoothed = np.where(conv_mask > 0, conv_valid / conv_mask, np.nan)
-            # Put back inf where original was invalid/out-of-range
-            filtered = np.where(np.isfinite(smoothed), smoothed, float('inf')).astype(np.float32)
+            # Pencereler kaydırılmış dilimlerden yığılıyor. sliding_window_view
+            # daha derli toplu olurdu ama numpy 1.20 istiyor ve araçtaki sürüm
+            # bilinmiyor; burada patlayan bir düğüm /scan/filtered'ı susturur,
+            # yani Nav2 ve SLAM taramayı birden kaybeder.
+            pencereler = np.stack([padded[i:i + len(temp)] for i in range(w)])
+            with np.errstate(invalid='ignore'):
+                # Tümü geçersiz olan pencerede nanmedian uyarı basar; sonucu
+                # zaten nan ve aşağıda inf'e çevriliyor.
+                smoothed = np.nanmedian(pencereler, axis=0)
+            filtered = np.where(np.isfinite(smoothed), smoothed,
+                                float('inf')).astype(np.float32)
 
         out = LaserScan()
         out.header = msg.header

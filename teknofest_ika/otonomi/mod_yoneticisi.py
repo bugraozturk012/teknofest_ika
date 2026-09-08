@@ -3,19 +3,17 @@
 mod_yoneticisi.py — Manuel / Tam Otonom Mod Yöneticisi
 ======================================================================
 MOD TANIMI:
-  MANUAL    (0): RC kumanda doğrudan VESC'i sürer. Nav2 pasif.
+  MANUAL    (0): Sürüş kartı aracı doğrudan kumandadan sürer. Nav2 pasif.
   FULL_AUTO (2): Tam otonom — misyon_fsm + Nav2 kontrolü.
 
-RC GEÇİŞ LOJİĞİ (Flysky FS-i6X, CH6 VRB potu):
-  ch5 <  RC_MOD_ESIK_US → MANUAL
-  ch5 >= RC_MOD_ESIK_US → FULL_AUTO
+KİP KAYNAĞI:
+  Kip anahtarını (SwC/CH9) sürüş kartı okuyor ve kararı kart veriyor; Jetson'ın
+  oyu yok. Karar /kart/kip'ten geliyor, ham kanal eşiklenmiyor — anahtar üç
+  konumlu ve kullanılmayan orta konum eski eşiğin üstüne düşüyordu, yani ham
+  değeri bölen taraf o konumu otonom okurdu.
 
-Eşik firmware'in kullandığı sayının aynısıdır (config.h RC_MOD_ESIK). Mega bu
-eşiğin altında RC'yi doğrudan sürer ve Jetson'ın sürüş paketlerini yok sayar,
-üstünde Jetson'ı dinler. İki taraf aynı kanalı farklı yerden bölerse potun
-arada kaldığı bantta ROS ile Mega aynı anda farklı modda olur; kanal üç
-konumlu bir anahtar değil sürekli bir pot olduğu için o bant kazayla
-girilebilecek bir yerdir. Karar bu yüzden ikili ve tek eşiklidir.
+  Kart susarsa mod manuele döner: son bilinen kipte kalmak, gerçekte manuel
+  sürülen bir araca otonom komut basmaya dönüşebilir.
 
 YAZILIMSAL GEÇİŞ:
   ros2 topic pub /mod/komut std_msgs/msg/UInt8 "data: 2" --once
@@ -30,7 +28,9 @@ gercek_arac.launch.py'de ackermann_converter şu remapping ile başlatılır:
   remappings=[('/cmd_vel', '/mux/cmd_vel')]
 
 GİRİŞLER:
-  /rc_input    (Float32MultiArray): [ch1_throttle_us, ch2_steering_us, ch5_switch_us]
+  /kart/kip    (UInt8)  — kartın çözdüğü sürüş kipi, mod otoritesi
+  /kart/durum  (UInt16) — DRM_* bayrakları; kesme anahtarı E-STOP kaynağı
+  /rc_input    (Float32MultiArray) — MANUAL twist
   /mod/komut   (UInt8)
   /cmd_vel     (Twist) — Nav2 çıkışı
 
@@ -46,33 +46,28 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
-from std_msgs.msg import UInt8, Bool, Float32MultiArray, Float32
+from std_msgs.msg import UInt8, UInt16, Bool, Float32MultiArray, Float32
 from geometry_msgs.msg import Twist
 
-from teknofest_ika.otonomi.pure_logic import rc_mod_otonom
+from teknofest_ika.otonomi.pure_logic import kip_modu, kesme_estop
 from teknofest_ika.otonomi.topics import (
     RC_INPUT_TOPIC, MOD_KOMUT_TOPIC, CMD_VEL_TOPIC, E_STOP_TOPIC,
-    MOD_AKTIF_TOPIC, MUX_CMD_VEL_TOPIC, MISSION_START_TOPIC, SHOOT_CMD_TOPIC,
-    SPEED_LIMIT_TOPIC, E_STOP_FORCE_RC_TOPIC, RC_MOD_ESIK_US,
+    MOD_AKTIF_TOPIC, MUX_CMD_VEL_TOPIC, MISSION_START_TOPIC,
+    SPEED_LIMIT_TOPIC, E_STOP_FORCE_RC_TOPIC,
     NAV2_CMD_BAYATLAMA_S,
+    KART_KIP_TOPIC, KART_DURUM_TOPIC, KART_KIP_OTONOM, DRM_KESME,
+    MOD_MANUAL, MOD_FULL_AUTO,
 )
 
 # ─── Mod Sabitleri ─────────────────────────────────────────────────────────
-MOD_MANUAL    = 0
-# FULL_AUTO 1 değil 2: /mod/aktif'i okuyan pano, misyon_fsm ve kayıtlı bag'ler
-# bu değeri bekliyor, kaydırmak protokolü bozar.
-MOD_FULL_AUTO = 2
-_MOD_ISIMLER  = {0: 'MANUAL', 2: 'FULL_AUTO'}
+# Değerler topics.py'de: ackermann_converter da aynı sayıya bakıyor.
+_MOD_ISIMLER  = {MOD_MANUAL: 'MANUAL', MOD_FULL_AUTO: 'FULL_AUTO'}
 
 # RC PWM eşikleri (µs — Flysky standart 1000–2000)
 RC_NEUTRAL        = 1500
 RC_MIN            = 1000
 RC_MAX            = 2000
 RC_DEADBAND       = 80       # ±80µs ölü bölge
-
-# ch3 aux — lazer tetikleme eşiği (MANUAL modda)
-RC_CH3_LAZER_ON  = 1700   # > 1700µs → lazer aç
-RC_CH3_LAZER_OFF = 1300   # < 1300µs → lazer kapat
 
 # Hız sınırları (ackermann_converter da kırpar; burada güvenlik sınırı)
 MANUAL_MAX_SPEED   = 2.0    # [m/s]
@@ -82,7 +77,10 @@ MANUAL_MAX_ANGULAR = 1.5    # [rad/s]
 RC_TIMEOUT_S = 0.5          # [s]
 
 # Mod geçiş debounce — pot eşiğin etrafında titrerse mod zıplamasın
-MOD_DEBOUNCE_S = 0.25       # [s] — bu süre stabil kalmazsa mod değişmez
+# Kart kipi 100 Hz geliyor; bu süre boyunca hiç gelmemesi kartın ya da köprünün
+# sustuğu anlamına gelir ve mod manuele düşer. Debounce'a gerek yok: kip artık
+# eşiklenen bir pot değil, kartın verdiği ayrık bir karar.
+KIP_TIMEOUT_S = 0.5         # [s]
 
 
 class ModYoneticisi(Node):
@@ -90,15 +88,16 @@ class ModYoneticisi(Node):
     def __init__(self):
         super().__init__('mod_yoneticisi')
 
-        self._mod      = MOD_MANUAL   # Güvenli başlangıç: RC pozisyonuna göre geçiş
+        self._mod      = MOD_MANUAL   # Kart otonom diyene kadar manuel
         self._lock     = threading.Lock()
         self._rc_son   = 0.0
+        self._kip      = None    # kartın bildirdiği son kip
+        self._kip_son  = 0.0
+        self._drm      = 0       # kartın DRM_* bayrakları
+        self._drm_geldi = False  # ilk 0x36'ya kadar kesme kaynağı susar
 
         self._ch1      = RC_NEUTRAL
         self._ch2      = RC_NEUTRAL
-        self._ch5      = RC_NEUTRAL
-        self._ch3      = RC_MIN       # ch3 aux — varsayılan: lazer kapalı
-        self._lazer_acik = False
 
         self._nav2_twist = Twist()
         # Komutun GELDİĞİ an. Bu olmadan mux son Twist'i 20 Hz ile sonsuza
@@ -110,11 +109,8 @@ class ModYoneticisi(Node):
         self._nav2_son   = 0.0
         self._fsm_tetiklendi = False
 
-        self._mod_bekleyen      = None   # debounce: beklenen yeni mod
-        self._mod_bekleyen_zaman = 0.0   # debounce: ne zaman değişmeye başladı
-
         self._e_stop_aktif     = False
-        self._rc_estop_aktif   = False   # RC sinyal kaybı E-STOP izleme
+        self._kesme_aktif      = False   # kumandadan kesme (SwA) izleme
         # imu_guvenlik'ten gelen hız sınırı — FULL_AUTO'da Nav2 parametreleri
         # üzerinden de uygulanır ama MANUAL'de RC komutuna hiç yansımaz;
         # devrilme ya da düşük batarya gibi durumlarda manuel sürüşte de hız
@@ -127,6 +123,8 @@ class ModYoneticisi(Node):
 
         self.create_subscription(
             Float32MultiArray, RC_INPUT_TOPIC, self._rc_cb, qos_be)
+        self.create_subscription(UInt8,  KART_KIP_TOPIC,   self._kip_cb,   qos_be)
+        self.create_subscription(UInt16, KART_DURUM_TOPIC, self._durum_cb, qos_be)
         self.create_subscription(
             UInt8, MOD_KOMUT_TOPIC, self._komut_cb, 10)
         self.create_subscription(
@@ -139,47 +137,53 @@ class ModYoneticisi(Node):
         self._mod_pub      = self.create_publisher(UInt8,  MOD_AKTIF_TOPIC,      10)
         self._mux_pub      = self.create_publisher(Twist,  MUX_CMD_VEL_TOPIC,    qos_rel)
         self._start_pub    = self.create_publisher(Bool,   MISSION_START_TOPIC,  10)
-        self._shoot_pub    = self.create_publisher(Bool,   SHOOT_CMD_TOPIC,      10)
-        self._rc_estop_pub = self.create_publisher(Bool,   E_STOP_FORCE_RC_TOPIC, 10)
+        self._kesme_pub    = self.create_publisher(Bool,   E_STOP_FORCE_RC_TOPIC, 10)
 
         self.create_timer(0.05, self._mux_dongusu)   # 20 Hz
         self.create_timer(1.0,  self._mod_yayinla)   # 1 Hz
 
         self.get_logger().info(
             'ModYoneticisi hazır | başlangıç: MANUAL\n'
+            '  kip kaynağı: /kart/kip (karar sürüş kartında)\n'
             '  /mod/komut 0=MANUAL 2=FULL_AUTO\n'
             '  /mux/cmd_vel → ackermann_converter'
         )
 
-    # ── RC Callback ─────────────────────────────────────────────────────────
+    # ── RC Callback — yalnız MANUAL twist ──────────────────────────────────
     def _rc_cb(self, msg: Float32MultiArray):
+        # Dizinin mod alanı burada okunmuyor: kip kararı /kart/kip'ten geliyor.
+        # Aux alanı da okunmuyor: sürüş kartı ham CH3'ü göndermiyor, dizide o
+        # alan sabit duruyor. Lazer yetkisi /shoot_command'ın sahiplerinde —
+        # misyon_fsm'in ShootState'i ve taret yazılımı.
         if len(msg.data) < 3:
             return
         with self._lock:
             self._ch1  = float(msg.data[0])
             self._ch2  = float(msg.data[1])
-            # data[2] = firmware'in RC_CH_MOD olarak seçtiği kanalın değeri.
-            # Mega kanalları ham sırayla değil anlamlarına göre gönderir
-            # (PKT_RC2.v0 = mod anahtarı), bu yüzden dizi indeksi kumandadaki
-            # kanal numarasıyla örtüşmez.
-            self._ch5  = float(msg.data[2])
-            self._ch3  = float(msg.data[3]) if len(msg.data) > 3 else RC_MIN
             self._rc_son = time.time()
 
+    # ── Kart kipi — mod otoritesi ───────────────────────────────────────────
+    def _kip_cb(self, msg: UInt8):
         with self._lock:
-            ch5 = self._ch5
-        yeni = self._ch5_mod(ch5)
-        with self._lock:
-            if yeni != self._mod:
-                if self._mod_bekleyen != yeni:
-                    self._mod_bekleyen       = yeni
-                    self._mod_bekleyen_zaman = time.time()
-            else:
-                self._mod_bekleyen = None
+            self._kip     = int(msg.data)
+            self._kip_son = time.time()
 
-    def _ch5_mod(self, ch5: float) -> int:
-        return (MOD_FULL_AUTO if rc_mod_otonom(ch5, RC_MOD_ESIK_US)
-                else MOD_MANUAL)
+    # ── Kart durum bayrakları — kesme anahtarı E-STOP kaynağı ───────────────
+    def _durum_cb(self, msg: UInt16):
+        with self._lock:
+            self._drm       = int(msg.data)
+            self._drm_geldi = True
+            drm, geldi = self._drm, self._drm_geldi
+
+        kesme = kesme_estop(drm, geldi, DRM_KESME)
+        if kesme != self._kesme_aktif:
+            self._kesme_aktif = kesme
+            self._kesme_pub.publish(Bool(data=kesme))
+            if kesme:
+                self.get_logger().error(
+                    '!!! KUMANDA KESME (SwA) — E-STOP kaynağı aktif !!!')
+            else:
+                self.get_logger().warn('[E-STOP] kumanda kesmesi kaldırıldı.')
 
     # ── Yazılımsal Komut Callback ────────────────────────────────────────────
     def _komut_cb(self, msg: UInt8):
@@ -229,36 +233,29 @@ class ModYoneticisi(Node):
 
     # ── Mux Döngüsü (20 Hz) ─────────────────────────────────────────────────
     def _mux_dongusu(self):
-        # Debounce: lock dışında uygula (publish/log lock altında çağrılmamalı)
-        mod_uygulanacak = None
-        with self._lock:
-            if (self._mod_bekleyen is not None and
-                    time.time() - self._mod_bekleyen_zaman >= MOD_DEBOUNCE_S):
-                mod_uygulanacak    = self._mod_bekleyen
-                self._mod_bekleyen = None
-        if mod_uygulanacak is not None:
-            self._mod_degistir(mod_uygulanacak)
-
         with self._lock:
             e_stop      = self._e_stop_aktif
             mod         = self._mod
             ch1         = self._ch1
             ch2         = self._ch2
-            ch3         = self._ch3
             rc_gecmis   = time.time() - self._rc_son
+            kip         = self._kip
+            kip_gecmis  = time.time() - self._kip_son
+            kip_hic     = (self._kip_son == 0.0)
             nav2        = self._nav2_twist
             nav2_gecmis = time.time() - self._nav2_son
             nav2_hic    = (self._nav2_son == 0.0)
             speed_limit = self._speed_limit
 
-        # RC sinyal kaybı → E-STOP kaynağı olarak yayınla (şartname 3. kaynak)
-        rc_kopuk = rc_gecmis > RC_TIMEOUT_S
-        if rc_kopuk and not self._rc_estop_aktif:
-            self._rc_estop_aktif = True
-            self._rc_estop_pub.publish(Bool(data=True))
-        elif not rc_kopuk and self._rc_estop_aktif:
-            self._rc_estop_aktif = False
-            self._rc_estop_pub.publish(Bool(data=False))
+        # Kart kipini uygula. Kip hiç gelmediyse ya da bayatladıysa manuel:
+        # kart susarken otonom komut basmak, gerçekte elle sürülen bir araca
+        # komut göndermek olur.
+        kip_bayat = kip_hic or kip_gecmis > KIP_TIMEOUT_S
+        istenen   = kip_modu(kip if kip is not None else -1, kip_bayat,
+                             KART_KIP_OTONOM, MOD_MANUAL, MOD_FULL_AUTO)
+        if istenen != mod:
+            self._mod_degistir(istenen)
+            mod = istenen
 
         # E-STOP: tüm modlarda sıfır Twist yayınla
         if e_stop:
@@ -268,21 +265,21 @@ class ModYoneticisi(Node):
         out = Twist()
 
         if mod == MOD_MANUAL:
+            # Manuel kipte aracı sürüş kartı doğrudan kumandadan sürüyor ve
+            # buradan çıkan komutu yok sayıyor. Yayın yine de sürüyor çünkü
+            # kart aldığı komutu 0x38 ile geri yolluyor: ölçek ve işaret
+            # doğrulaması araç kımıldamadan burada yapılabiliyor.
             if rc_gecmis > RC_TIMEOUT_S:
+                # Kanallar karttan geliyor; sessizlik kumandanın değil köprünün
+                # ya da kartın sustuğu anlamına gelir.
                 self.get_logger().warn(
-                    'RC sinyal yok! Araç durduruluyor.',
+                    'Kumanda kanalları gelmiyor — sıfır komut basılıyor.',
                     throttle_duration_sec=2.0
                 )
-                # out = sıfır Twist → dur
             else:
                 out = self._rc_twist(ch1, ch2)
-                self._lazer_kontrol(ch3)
 
         else:   # FULL_AUTO
-            # seri_kopru lazer aktifken hareketi kilitler; MANUAL'de açık kalan
-            # lazer otonomda aracı dondurur. AUX kanalı (CH4) direksiyonla ortak
-            # olduğu için stick sağa itildikçe tetiklenebiliyor.
-            self._lazer_kapat()
             if nav2_hic or nav2_gecmis > NAV2_CMD_BAYATLAMA_S:
                 # Bayat komut tekrarlanmaz, SIFIR basılır. Nav2'nin
                 # velocity_smoother'ı araç durunca zaten susuyor (bilinen
@@ -306,24 +303,6 @@ class ModYoneticisi(Node):
             out.linear.x = max(-speed_limit, min(speed_limit, out.linear.x))
 
         self._mux_pub.publish(out)
-
-    # ── MANUAL Lazer Tetikleme (ch3 aux) ────────────────────────────────────
-    def _lazer_kapat(self) -> None:
-        """Otonom modlara geçerken lazeri güvenceye alır."""
-        if self._lazer_acik:
-            self._lazer_acik = False
-            self._shoot_pub.publish(Bool(data=False))
-            self.get_logger().info('Otonom moda geçildi — lazer kapatıldı.')
-
-    def _lazer_kontrol(self, ch3: float):
-        if ch3 > RC_CH3_LAZER_ON and not self._lazer_acik:
-            self._lazer_acik = True
-            self._shoot_pub.publish(Bool(data=True))
-            self.get_logger().info('[MANUAL] Lazer AÇIK (ch3)')
-        elif ch3 < RC_CH3_LAZER_OFF and self._lazer_acik:
-            self._lazer_acik = False
-            self._shoot_pub.publish(Bool(data=False))
-            self.get_logger().info('[MANUAL] Lazer KAPALI (ch3)')
 
     # ── RC PWM → Twist ──────────────────────────────────────────────────────
     def _rc_twist(self, ch1: float, ch2: float) -> Twist:

@@ -40,21 +40,21 @@ SCAN_FILTERED_TOPIC = "/scan/filtered"
 # Frame      : os30a_frame
 POINTCLOUD_TOPIC = "/pointcloud"
 
-# MPU9250 IMU — 9 eksen (Madgwick filtreli)
+# BNO055 IMU — sürüş kartına bağlı, 0x32/0x33 paketlerinden
 # Mesaj tipi : sensor_msgs/Imu
-# Frekans    : 50 Hz
+# Frekans    : 50 Hz (yalnız çip takılıyken akar)
 # Frame      : imu_link
 IMU_TOPIC = "/imu/data"
 
-# AS5600 Enkoder — Tekerlek odometresi
+# Sürüş kartının ileri hızı (0x31) — konum ve yön EKF'te türetilir
 # Mesaj tipi : nav_msgs/Odometry
 # Frekans    : 30 Hz
 # Frame      : odom → base_link
 ODOM_TOPIC = "/odom"
 
-# AS5600 ham ADC — kalibrasyon/teşhis
-# Mesaj tipi : std_msgs/UInt16MultiArray  → [sol_adc, sag_adc], 0–1023
-# Frekans    : 50 Hz (enkoder paketiyle aynı)
+# Kartın ham enkoder sayımı (0x30) — ölçekten bağımsız, hareket teşhisi
+# Mesaj tipi : std_msgs/Int32
+# Frekans    : 20 Hz
 # Üretici    : seri_kopru (yalnız ham_enkoder=True iken)
 # Tüketen    : scripts/sensor_dogrula.py --mod ham
 # Hangi analog pinin bağlı olduğunu, tur başına düşen tick'i ve okuma
@@ -137,7 +137,7 @@ MOVING_OBS_TOPIC = "/moving_obs/prediction"
 # Üretici: Otomasyon (Nav2, SLAM node'ları)
 # ─────────────────────────────────────────────
 
-# Nav2 hareket komutu → Arduino Mega → VESC
+# Nav2 hareket komutu → ackermann_converter → seri_kopru → sürüş kartı
 # Mesaj tipi : geometry_msgs/Twist
 # Frekans    : 20 Hz
 # Format     : linear.x [m/s], angular.z [rad/s]
@@ -237,23 +237,68 @@ TARGETING_DEBUG_TOPIC = "/targeting/debug"
 # Mesaj tipi : std_msgs/Bool  (True = aktif, dur!)
 E_STOP_TOPIC = "/e_stop"
 
-# Batarya durumu (INA219 + Daly BMS)
+# Batarya durumu — üretici bms_koprusu (JK BMS, BLE üzerinden HTTP ucundan)
 # Mesaj tipi : sensor_msgs/BatteryState
 # Frekans    : 1 Hz
 BATTERY_TOPIC = "/battery/status"
+
+# Jetson'ı besleyen ikinci paket (DALY). Traksiyon paketinden AYRI konu:
+# ikisi farklı kimyada, farklı eşikte ve biri bitince ötekinden haber
+# gelmiyor. Kaynağı seri hat (0x3D), BLE değil — DALY BLE taramasında hiç
+# görünmüyor ve 3 Eylül'de Jetson'ı düşüren paket buydu.
+BATTERY_JETSON_TOPIC = "/battery/jetson"
+
+# ─── JK BMS köprüsü ──────────────────────────────────────────────────────────
+# Batarya gerilimi seri hattan gelmiyor ve gelmeyecek: araçta iki BMS var ve
+# ikisi de gerilimi hücre bazında kendi ölçüyor, okuma yolu BLE. Elektrik
+# tarafındaki servis paketi BLE'den okuyup düz bir JSON olarak yayınlıyor.
+BMS_HTTP_URL = "http://127.0.0.1:8091/bms"
+
+# 🔑 Tazelik ölçütü `bagli` DEĞİL `yas`: BLE koptuğunda ölçüm alanları
+# silinmiyor, SON DEĞERDE DONUYOR. Bağlantı bayrağına bakan bir tüketici
+# donmuş bir gerilimi canlı sanır — bu projede defalarca karşılaştığımız
+# "veri var görünüyor ama bayat" arıza sınıfının aynısı.
+BMS_YAS_ESIK_S = 10.0        # [s] üstünde okuma bayat sayılır
+
+# Kesme ölçütü hücre dibinden okunur, BMS'in SOC tahmininden değil: LiFePO4'ün
+# deşarj eğrisi düz olduğu için SOC yük altında zıplıyor. 16S paket.
+BMS_HUCRE_DIP_MV    = 2800   # [mV] pratik dip — altı "ölü"
+BMS_HUCRE_UYARI_MV  = 3000   # [mV] eğrinin dizi — altı uyarı
+BMS_HUCRE_SAYISI    = 16
+
+# Jetson paketinin uyarı eşiği ayrı, çünkü paket ayrı: 4S LiPo (nominal
+# 3,7 V/hücre), traksiyon paketi ise 16S LiFePO4 (3,2 V/hücre).
+#
+# Eşik kimyaya bağlı ve iki yönlü: LiPo'da 2800 mV uyarmak çok geç, hücre o
+# noktada kalıcı zarar görmüş olur. LiFePO4'te 3300 mV ise paket DOLUYKEN bile
+# sürekli alarm verir — sürekli yanan bir uyarı gerçek uyarıyı gizlediği için
+# hiç uyarmamaktan kötüdür. Bu yüzden "belirsizlikte yüksek eşik" diye bir
+# kural yok; sayı kimyayla birlikte değişir.
+#
+# ⚠️ Kimya paketin etiketinden değil kayıttan geliyor; sahada doğrulanacak.
+# LiFePO4 çıkarsa bu değer ~2900'e iner.
+BMS_JETSON_UYARI_MV = 3300   # [mV] — 4S LiPo
 
 # ─────────────────────────────────────────────
 # SERİ PORT ADRESLERI (udev kurallarıyla sabit)
 # ─────────────────────────────────────────────
 
 SERIAL_LIDAR   = "/dev/lidar"        # YDLidar Tmini Pro
-SERIAL_IMU     = "/dev/imu_arduino"  # Arduino Nano (IMU + servo + lazer) — artık kullanılmıyor, IMU Mega'ya entegre
-SERIAL_ODOM    = "/dev/mega"         # Arduino Mega (enkoder + Karaşimşek + step motor + BMI160 IMU) — udev: 99-ika.rules
-SERIAL_TARET   = "/dev/turret"       # Turret UNO (PCA9685 + BMI160) — udev symlink;
-                                     # ham ttyCH341USBx isimleri hub her koptuğunda
-                                     # yeniden numaralanıyor, Mega'nın portuna denk
-                                     # gelme riski var
-SERIAL_BAUD    = 115200
+SERIAL_IMU     = "/dev/imu_arduino"  # Arduino Nano (IMU + servo + lazer) — artık kullanılmıyor, IMU sürüş kartında
+# Sürüş kartı: Nucleo-F767ZI. Sabit symlink kartın kendi udev kuralıyla
+# kuruluyor; ham ttyACM* numarası her takışta kayabildiği için o isme
+# güvenilmez. Kart tek seri cihaz olduğundan by-path ayrımı gerekmiyor.
+SERIAL_ODOM    = "/dev/f767"
+SERIAL_TARET   = "/dev/turret"       # Eski Turret UNO yolu. Taret arayüzü sürüş
+                                     # kartına taşındı (0x03/0x05/0x06) ve bu port
+                                     # araçta artık yok; taret_rc_koprusu ile
+                                     # birlikte yalnız eski kurulumlar için duruyor
+# İkili telemetri (100 Hz x 9 paket x 8 B = 7.200 B/s) ile kartın ASCII teşhis
+# akışı (10 Hz x ~500 B = 5.000 B/s) birlikte 12.200 B/s ediyor; 115200 8N1'in
+# taşıyabildiği 11.520 B/s bunun altında kalıyordu. Taret ayrı bir cihaz ve
+# kendi hızında konuşuyor — iki hattın ortak bir sabiti yok.
+SERIAL_BAUD_KART  = 921600
+SERIAL_BAUD_TARET = 115200
 
 # ─────────────────────────────────────────────
 # FRAME ID'LERİ (TF tree)
@@ -339,6 +384,25 @@ YOLO_CONFIDENCE_THRESHOLD = 0.75
 # Kaç ardışık frame sonra FSM tetiklenir
 YOLO_CONSECUTIVE_FRAMES = 3
 
+# ── Nişan halkası HSV kalibrasyonu ───────────────────────────────────────────
+# 2026-07-19, kapalı alanda nişan kamerasıyla ölçüldü. Halka bu kamerada
+# H=165-169 okunuyor; turuncu bant sahte tespit ürettiği için üst sınır 4'te
+# kesildi ve V tabanı 70'e indirildi (karanlık sahteleri eler, loş ışıkta
+# gerçek halkayı elemez).
+#
+# 🔑 Değerler burada, düğümün varsayılanı olarak duruyor: bir dönem yalnız
+# launch dosyasında yazılıydı ve sahada koşan açılış betiği launch'u
+# kullanmadığı için kalibrasyon araca hiç ulaşmıyordu.
+#
+# ⚠️ Yarışma günü GÜN IŞIĞINDA yeniden kalibre edilmeli; yöntem
+# launch/taret_otonom.launch.py docstring'inde.
+NISAN_HSV_ALT   = [0,   40, 70]
+NISAN_HSV_UST   = [4,  255, 255]
+NISAN_HSV_ALT2  = [150, 40, 70]    # kırmızının ton ekseninde sarması
+NISAN_HSV_UST2  = [179, 255, 255]
+# Halkanın piksel yarıçapı üst sınırı — yakın mesafede büyük görünüyor.
+NISAN_HOUGH_MAX_YARICAP = 250
+
 # Taret açı limitleri (derece)
 TARET_PAN_MIN  = -90.0
 TARET_PAN_MAX  =  90.0
@@ -370,13 +434,6 @@ BATTERY_CRITICAL_SOC = 10.0  # Güvenli durdurma
 # seviyesinde de garanti eder (donanım/Nano zamanlamasına tek başına güvenilmez).
 LASER_FIRE_DURATION = 1.0
 
-# RC mod anahtarı eşiği (µs) — arduino/include/config.h RC_MOD_ESIK ile AYNI
-# sayı olmak zorunda. Aynı kanalı (CH6 VRB potu) hem Mega hem mod_yoneticisi
-# okuyor: Mega eşiğin altında RC'yi doğrudan sürüp Jetson'ın sürüş paketlerini
-# yok sayar, üstünde Jetson'ı dinler. İki taraf farklı yerden bölerse potun
-# arada kaldığı bantta ROS ile Mega aynı anda farklı modda olur.
-RC_MOD_ESIK_US = 1500
-
 # Dik eğim bekleme süresi — §6.10 (saniye)
 RAMP_STOP_DURATION = 2.0
 
@@ -397,11 +454,69 @@ FREN_TAM_DUR_ORAN   = 0.3    # hedef hız tam 0 olsa bile en fazla bu oranda fre
 FREN_RAMP_PER_S     = 500.0  # [‰/s] fren yüzdesi değişim hızı sınırı — ani sıçramayı önler
 
 # Güvenlik dallarının (watchdog, E-STOP) yayınladığı fren değeri. SIFIR OLAMAZ:
-# firmware'de 0, "servis freni istemiyorum" demek ve kararı §7.5 park freni
-# durum makinesine devreder — makine de sıkmadan önce FREN_BEKLEME_MS bekler.
-# §6.10'un zorunlu 2 sn duruşu %45 eğimde bu pencereye düşüyor, o yüzden
-# güvenlik dalları beklemeyi atlayıp doğrudan tam fren istiyor.
+# sürüş kartında 0 doğrudan "freni bırak" demek ve fren kaynakları arasında
+# büyük olan seçildiği için sıfır hiçbir katkı yapmaz. §6.10'un zorunlu 2 sn
+# duruşu %45 eğimde geçiyor; orada fren isteğini kesmek aracı kaydırır.
 FREN_GUVENLI_DUR_BINDE = 1000
+
+# Atış kilidinin ÜST SINIRI [s] — hem ackermann_converter'ın tam freni hem
+# seri_kopru'nun hareket kilidi buna bağlı. /shoot_command bir nabız değil
+# kenar sinyalidir (True ile False ayrı olaylar) ve arada isteği yayınlayan
+# düğüm ölürse kilit sonsuza kadar kapalı kalır: fren basılı, her sürüş komutu
+# sıfır hıza çevriliyor, araç bir daha hiç hareket etmiyor. Sınır bu yüzden
+# bayatlığa değil isteğin TOPLAM süresine bakar.
+# Meşru en uzun tutuş ShootState'in tek denemesi: TIMEOUT_S 8 s onay beklemesi
+# + LASER_FIRE_DURATION tamamlaması, yani ~9 s; targeting_node'un kendi darbesi
+# 1 s. 12 s ikisinin de üstünde, sonsuzun ise çok altında.
+ATIS_AZAMI_S = 12.0
+
+# ── §6.10 yokuş kalkışı — fren SIKILIYKEN gaz ────────────────────────────────
+# Eğimde duran araçta motorun tutma torku yok: fren bırakılınca araç geri kaçar,
+# rotor ters yöne döner ve Pilmak sürücü ters dönen rotora tork basmayı
+# reddeder. Kalkış o yüzden fren hâlâ basılıyken başlar; tork oturduktan sonra
+# fren rampayla bırakılır, böylece "fren gitti ama tork yok" boşluğu hiç oluşmaz.
+# Kart tarafı buna açık: PKT_FREN ve PKT_SURUCU bağımsız paketler ve firmware'in
+# gaz kesme koşulları arasında "fren basılı" YOK.
+YOKUS_KALKIS_AKTIF_TOPIC = "/yokus_kalkis/aktif"  # Bool  — override aktif mi
+YOKUS_KALKIS_FREN_TOPIC  = "/yokus_kalkis/fren"   # UInt16 — tutma freni [‰]
+
+# Tutma freni: duruş boyunca uygulanan değerle aynı kalır ki araç kımıldamasın.
+YOKUS_TUTMA_FREN_BINDE = FREN_GUVENLI_DUR_BINDE
+
+# Tork oturma süresi — fren basılıyken gazın verildiği pencere. ÖLÇÜLMEDİ.
+# Kısa tutuldu: motor frene karşı ne kadar uzun zorlanırsa akım ve ısı o kadar
+# artar, sürücü aşırı akımdan atabilir.
+YOKUS_TORK_SURESI_S = 0.4
+
+# Fren bırakma hızı [‰/s]. Ani bırakmak aracı sıçratır, çok yavaş bırakmak
+# motoru frene karşı gereksiz zorlar.
+YOKUS_FREN_BIRAKMA_BINDE_PER_S = 2000.0
+
+# Kalkış gazı [m/s] — tırmanış ve iniş AYRI, çünkü fizik farklı: tırmanışta
+# yerçekimi geri çeker (gaz kaçışı önler), inişte ileri iter (gaz fazlaysa araç
+# sıçrar). İkisi de ÖLÇÜLMEDİ, muhafazakâr başlangıç.
+# NOT: alt sınır kaygısı yok — yeni sürüş kartı duruştan kalkış itişini kendisi
+# uyguluyor, düşük komutta da araç kalkıyor.
+YOKUS_KALKIS_HIZ_TIRMANIS = 0.35
+YOKUS_KALKIS_HIZ_INIS     = 0.20
+
+# Yokuş kalkışı bayrağının bayatlama süresi. RampaState bayrağı NABIZ gibi
+# döngüde tekrar tekrar basıyor; ackermann_converter bu süre boyunca yeni
+# bayrak görmezse override'ı bırakıp normal fren hesabına döner.
+#
+# Neden gerekli: RampaState süreç olarak ölürse `finally` çalışmaz ve bayrak
+# ackermann_converter'da sonsuza kadar True kalır — otomatik fren tamamen ölür,
+# fren son değerinde donar. Bayrağı tek sefer basıp güvenmek bu kusuru üretiyor.
+#
+# RampaState.CMD_HZ = 10 Hz → 0,1 s periyot. Bu değer ondan BÜYÜK olmalı,
+# yoksa override normal çalışırken bayat sayılır. Beş kaçırma payı bırakıldı.
+YOKUS_BAYATLAMA_S = 0.5
+
+# Aynı kusur anti_rollback bayrağı için de geçerli: düğüm ölürse son True
+# ackermann_converter'da sonsuza kadar kalır ve Nav2 komutu kalıcı olarak
+# kurtarma komutuyla değiştirilir. anti_rollback bayrağı KONTROL_HZ = 20 Hz
+# ile nabız basıyor (0,05 s periyot); değer ondan büyük, on kaçırma payı var.
+ROLLBACK_BAYATLAMA_S = 0.5
 
 # ─────────────────────────────────────────────
 # KONTROL TOPIC'LERİ (node'lar arası iç protokol)
@@ -486,6 +601,18 @@ KAYAN_ODOM_BAYATLAMA_S = 1.0    # [s] /odometry/filtered bu süre gelmezse yol �
 # Mod yönetimi
 MOD_KOMUT_TOPIC   = "/mod/komut"    # yazılımsal/GCS mod değiştirme (UInt8)
 MOD_AKTIF_TOPIC   = "/mod/aktif"    # geçerli mod (UInt8)
+
+# /mod/aktif'in değerleri. Burada duruyorlar çünkü yayıncı (mod_yoneticisi) ve
+# tüketici (ackermann_converter) ayrı düğümler; iki yerde tutulan bir sayı er
+# geç ayrışır ve ayrıştığı gün kimse fark etmez.
+# FULL_AUTO 1 değil 2: panoyu, misyon_fsm'i ve kayıtlı bag'leri bu değer
+# bağlıyor, kaydırmak protokolü bozar.
+MOD_MANUAL    = 0
+MOD_FULL_AUTO = 2
+
+# /mod/aktif 1 Hz nabız (mod_yoneticisi `create_timer(1.0, _mod_yayinla)`).
+# Bundan eskisi "kip bilinmiyor" sayılır. Üç nabız payı bırakılıyor.
+MOD_BAYATLAMA_S = 3.0
 MUX_CMD_VEL_TOPIC = "/mux/cmd_vel"  # muxlanmış Twist → ackermann_converter
 
 # Misyon akışı
@@ -518,7 +645,130 @@ PAS_GECILEMEZ = ("KONİLİ_YOL", "HIZLANMA_PARKURU")
 # RC kumanda kanalları
 # Float32MultiArray [ch1_gaz, ch2_direksiyon/pan, ch5_mod, ch3_aux/lazer,
 #                     ch_tilt, ch_taret_aktif] µs
+#
+# Sürüş kartı ham kanalları göndermiyor: yalnız CH1 (direksiyon) ve CH9 (mod
+# anahtarı) 0x3A ile geliyor, gaz/fren türetilmiş oranlar hâlinde 0x36/0x37'de.
+# Dizinin şekli bozulmadı çünkü mod_yoneticisi, taret_rc_koprusu ve pano bu
+# indislere göre yazılmış. seri_kopru alanları elindeki en yakın karşılıkla
+# doldurur; ayrıntı için oradaki _rc_yayinla.
+#
+# ⚠️ data[2] ham CH9 DEĞİLDİR. CH9 üç konumlu ve orta konumu 1500 µs'e denk
+# geliyor; bu değeri eşikleyen taraf kullanılmayan orta kipi otonom okurdu.
+# Alan kartın çözdüğü kipten (KART_KIP_TOPIC) türetilir, ham CH9 teşhis
+# için ayrı bir indiste taşınır.
 RC_INPUT_TOPIC = "/rc_input"
+
+# ─────────────────────────────────────────────
+# SÜRÜŞ KARTI (Nucleo-F767ZI) DURUM YAYINLARI
+# Üretici: seri_kopru — kartın 0x30–0x3C telemetri bloğundan
+# ─────────────────────────────────────────────
+
+# Kartın çözdüğü sürüş kipi (UInt8): 0 manuel · 1 kullanılmıyor · 2 otonom.
+# Kip anahtarı (SwC/CH9) kartta okunuyor, kararı kart veriyor — Jetson'ın
+# oyu yok. Sıralama: güvenlik > kumanda > Jetson.
+KART_KIP_TOPIC = "/kart/kip"
+
+# Kart arıza bayrakları (UInt16): 0x35 v0'daki HATA_* biti kümesi.
+KART_HATA_TOPIC = "/kart/hata"
+
+# Kart sürüş durum bayrakları (UInt16): 0x36 v1'deki DRM_* biti kümesi.
+KART_DURUM_TOPIC = "/kart/durum"
+
+# Kartın Jetson'a dair gördüğü bayraklar (UInt16): 0x39 v1'deki JDR_* kümesi.
+# JDR_LINK düşükse kart bizi canlı görmüyordur ve komutlarımız yok sayılıyordur;
+# "gönderiyorum ama dinlemiyor" durumunun tek görünür yeri burasıdır.
+KART_LINK_TOPIC = "/kart/link"
+
+# Kart protokol/yapı sürümü (UInt16MultiArray [protokol, yapi]) — 0x3B.
+KART_SURUM_TOPIC = "/kart/surum"
+
+# Kartın ürettiği sürüş çıkışı (Int16MultiArray [gaz_mv, fren_binde]) — 0x37.
+# "Fren gerçekten sıkıldı mı" sorusunun cevabı burası: fren alanı işaretlidir,
+# negatif değer aktüatörün açma yönünde AKTİF sürüldüğünü gösterir ve bunu
+# yapan kumanda kolu olur. Bizim 0x08'imiz işaretsiz olduğu için negatif değer
+# bizden gelmez.
+KART_SURUS_TOPIC = "/kart/surus"
+
+# Kartın ANLADIĞI sürüş komutu (Int16MultiArray [hiz_mms, aci_1_100_derece]) — 0x38.
+# Gönderdiğimiz 0x01 ile farkı tek başına teşhistir: ölçek hatası, işaret hatası
+# ve kayıp paket burada görünür. Manuel kipte de basılıyor, yani ölçek
+# doğrulaması araç kımıldamadan yapılabilir.
+KART_KABUL_TOPIC = "/kart/kabul"
+
+# Kartın çalışma süresi [saniye] (UInt16) — 0x35 v1.
+# Kart resetlendiğinde enkoder sayımı da sıfırlanıyor ve bunun başka görünür
+# izi yok; sayaç sıçramasının gerçek mi reset mi olduğu buradan anlaşılır.
+KART_CALISMA_TOPIC = "/kart/calisma_suresi"
+
+# Hat sağlığı (UInt16MultiArray [alinan, bozuk]) — 0x3C, 1 Hz.
+# Alanlar 32 bit sayaçların alt 16 biti; mutlak değer değil ARTIŞ okunur.
+KART_HAT_TOPIC = "/kart/hat"
+
+# Kartın o an hangi ayarlarla çalıştığı (0x3E). Kart ayarları flash'a
+# yazmadığı için bu konu "kart ne hatırlıyor" sorusunun tek cevabı: reset
+# sonrası buradaki değerler sıfırlanır ve hız alanı sessizce 0'a döner.
+# İçerik: [kimlik, ham değer] — ölçek pure_logic.ayar_deger ile çözülür.
+KART_AYAR_TOPIC = "/kart/ayar"
+
+# ─── Sürüş kartı protokolü — bit ve sürüm sabitleri ──────────────────────────
+#
+# Kaynak: elektrik ekibinin arayüz sözleşmesi (4 Eylül 2026). Firmware kaynağı
+# paylaşılmıyor; bu sabitlerin dayanağı sözleşme metnidir.
+
+# 0x35 v0 — HATA_* arıza bayrakları
+HATA_BNO_YOK        = 0x01   # IMU cevap vermiyor
+HATA_BNO_KALIB      = 0x02   # IMU kalibrasyonu yetersiz
+HATA_ENK_SESSIZ     = 0x04   # araç hareket ederken enkoder kımıldamıyor
+HATA_GOST_SESSIZ    = 0x08   # gösterge ucu darbe basmıyor — ileri hız kaynağı sustu
+HATA_ESTOP_UYUSMAZ  = 0x10   # iki E-STOP okuması 100 ms'den uzun çelişiyor
+HATA_RC_YOK         = 0x20   # iBUS çerçevesi yok = KOPUK KABLO
+HATA_FREN_STALL     = 0x40   # fren aynı yönde 4200 ms sürdü
+HATA_GAZ_YOK        = 0x80   # gaz DAC'ına ulaşılamıyor
+
+# 0x36 v1 — DRM_* sürüş durum bayrakları
+DRM_KESME  = 0x01   # SwA düşük — kumandadan kesme
+DRM_TARET  = 0x02   # SwB yüksek — taret kipi
+DRM_GERI   = 0x04   # geri vites devrede
+DRM_SSR    = 0x08   # donanımı söküldü — KULLANILMAZ
+DRM_GECIS  = 0x10   # yön değiştirme sürüyor, gaz kilitli
+DRM_ISIK   = 0x20   # aydınlatma açık
+# Lazer komutunun uygulandığını bildirir — lazerin yandığını ÖLÇMEZ. Donanımda
+# akım ya da foto geri beslemesi yok; "röle sürüldü" onayı, "ışık çıktı" onayı
+# değildir. Atış zinciri bunu bilerek kurulmalı.
+DRM_LAZER  = 0x40
+
+# 0x39 v1 — JDR_* kartın Jetson'a dair gördükleri
+JDR_LINK  = 0x01   # Jetson canlı — son paket 700 ms içinde
+JDR_ESTOP = 0x02   # Jetson E-STOP ilan etti
+JDR_DUR   = 0x04   # son komut PKT_J_DUR, taze sürüş komutu bekleniyor
+JDR_ELLE  = 0x08   # elle kip açık — direksiyon tezgâh kipinde
+
+# 0x3B v0 — beklenen protokol sürümü.
+# Protokol numarası yalnız paket anlamları değişince artar (alan eklenir, ölçek
+# değişir, bit kayar). Firmware yapı numarası (v1) davranış değiştiren HER
+# yüklemede artıyor; onu karşılaştırmak ilk güncellemede sahte alarm verir.
+BEKLENEN_PROTOKOL_SURUMU = 1
+
+# Kartın otonom dalda uyguladığı hız kısıtları. Kart komutu reddetmez, kırpar;
+# kırpma 0x38'de (kartın anladığı hız) görünür.
+#   tavan  : üstü sessizce kırpılır
+#   taban  : sıfır olmayan ama tabanın altındaki komutlar buna YÜKSELTİLİR —
+#            o aralıkta motor dönüyor ama araç kalkmıyordu
+#   ölü bölge: altındaki komutlar rölanti sayılır
+# 🔑 Tabanın sonucu: yavaşlama rampasının son bölümü 0,20'de takılıyor, yani
+# duruş 0,20 m/s'den sıfıra basamaktır. Duruş hassasiyeti bunu hesaba katmalı.
+KART_HIZ_TAVAN     = 1.50   # [m/s]
+KART_HIZ_TABAN     = 0.20   # [m/s]
+KART_HIZ_OLU_BOLGE = 0.01   # [m/s]
+
+# Kart kipleri (0x39 v0)
+KART_KIP_MANUEL = 0
+# SwC ORTA KADEME — yumuşak E-STOP. Kart gazı, freni, direksiyonu ve tareti
+# aynı anda kilitliyor; araç bu kipte hiçbir komuta cevap vermez. Jetson
+# tarafında otonom sayılmaz, ama "manuel" diye göstermek de yanlış: operatör
+# panoda manuel görüp aracın neden sürmediğini arar.
+KART_KIP_BOS    = 1
+KART_KIP_OTONOM = 2
 
 # Anti-rollback override
 ANTI_ROLLBACK_CMD_TOPIC   = "/anti_rollback/cmd"    # Twist — override komutu

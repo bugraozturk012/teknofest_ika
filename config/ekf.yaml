@@ -2,8 +2,11 @@
 # robot_localization paketi — EKF node
 #
 # Füzyon kaynakları:
-#   odom0 : /odom          → tekerlek enkoderi (AS5600 analog, Mega üzerinden)
-#   imu0  : /imu/data      → BMI160 + Madgwick AHRS (Mega üzerinden)
+#   odom0 : /odom          → sürüş kartının ileri hızı (Nucleo-F767ZI, 0x31)
+#   imu0  : /imu/data      → BNO055, karta bağlı (0x32/0x33)
+#
+# İkisini de seri_kopru yayınlıyor; araçta ayrı bir IMU ya da ayrı bir enkoder
+# okuyucusu YOK.
 #
 # Arka aks TEK PARÇA (diferansiyelsiz, zincirle tahrik): iki tekerlek mekanik
 # olarak kilitli döner, sol/sağ farkından yön çıkarılamaz. Bu yüzden tekerlekten
@@ -25,7 +28,10 @@
 # bloğu hiç yüklenmez ve EKF sensörsüz varsayılanlarla sessizce koşar.
 #
 # Araç parametreleri:
-#   Dingil arası : 1.40 m   (2026-07-27 araçtan ölçüldü)
+#   Dingil arası : 1.40 m   🔴 ÖLÇÜLMEDİ — yer tutucu. Ackermann
+#                          kinematiğinin tek girdisi; yanlışsa her
+#                          direksiyon komutu yanlış. Elektrik tarafındaki
+#                          değer de aynı varsayımdan geliyor.
 #   İz genişliği : 0.90 m   (arka aks, EK-7 B)
 #   Kinematik    : Ackermann (yer aracı, 2D hareket)
 #
@@ -50,7 +56,7 @@ ekf_filter_node:
 
     # ── Frekans ve zamanlama ───────────────────────────────────────────────
     frequency: 50.0            # EKF güncelleme frekansı [Hz] — IMU'dan yüksek olmamalı
-    # Sensörler Mega üzerinden seri hattan geliyor; hat bir an tıkandığında
+    # Sensörler sürüş kartından seri hattan geliyor; hat bir an tıkandığında
     # filtrenin körleşmemesi için eşikler tek bir telemetri döngüsünden uzun
     # tutulur.
     sensor_timeout: 0.2        # Sensör sessiz kalırsa [s] — zaman damgası güncellenir
@@ -96,7 +102,7 @@ ekf_filter_node:
     odom0_differential:  false
     odom0_relative:      false
 
-    # ── Kaynak 1: IMU (BMI160 + Madgwick) ────────────────────────────────
+    # ── Kaynak 1: IMU (BNO055, sürüş kartı üzerinden) ────────────────────
     # Yalnız orientation geliyor. seri_kopru ham gyro ve ivmeyi göndermediği
     # için o alanların kovaryansını -1 yazar; robot_localization bunu
     # `fabs(cov[0] + 1) < 1e-9` ile sınayıp alanı tamamen atlar. Bu yüzden
@@ -122,7 +128,7 @@ ekf_filter_node:
     imu0_nodelay:        false
     imu0_differential:   false
     imu0_relative:       false
-    imu0_remove_gravitational_acceleration: false  # IMU ham ivme yayınlamıyor (cov[0]=-1)
+    imu0_remove_gravitational_acceleration: false  # kart ham ivme yayınlamıyor (cov[0]=-1)
 
     # ── Süreç gürültüsü kovaryansı (Q matrisi, 15×15) ────────────────────
     # Sıra: x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az

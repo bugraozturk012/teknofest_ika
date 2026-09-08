@@ -81,12 +81,10 @@ trap temizle TERM INT
 # Aynı halkayı iki kaynak basarsa TF ağacı iki konum arasında titrer ve SLAM
 # haritayı bozuk kapatır — bu yüzden seçim üç yönlü ve karşılıklı dışlamalı.
 : "${ENKODER_AKTIF:=0}"
-# HAM_ENKODER: /enkoder/ham üzerinden çiğ AS5600 ADC'si yayınlanır. Kalibrasyon
-# ve teşhis içindir (scripts/sensor_dogrula.py -p test:=ham), sürüşte kapalı.
-: "${HAM_ENKODER:=false}"
-# ENKODER_KANALI: arka aks tek parça olduğu için tek enkoder yeterli; Mega yine
-# iki analog kanal gönderdiğinden bağlı olan burada seçilir (sol=A0, sag=A1).
-: "${ENKODER_KANALI:=sol}"
+# HAM_ENKODER: kartın ham enkoder sayımını /enkoder/ham'a yayınlar. Sayım
+# ölçekten bağımsız olduğu için tekerlek çevresi ve dişli oranı ölçülmeden de
+# hareketin var olup olmadığını gösterir; /odom hızı o sırada 0 gelir.
+: "${HAM_ENKODER:=true}"
 # NAV2_AKTIF burada erken okunuyor: TF sahibinin kim olduğu seri_kopru
 # başlatılmadan önce bilinmeli, Nav2 bloğu ise betiğin çok sonrasında.
 # Anahtarın ön koşulları o bloğun başında yazılı.
@@ -101,6 +99,11 @@ trap temizle TERM INT
 # E-STOP basar. Açmadan önce araç düz dururken /imu/data'nın roll ve pitch'i
 # ~0 okumalı (gerekirse IMU_ROLL/PITCH/YAW_RAD ile düzelt).
 : "${IMU_GUVENLIK_AKTIF:=0}"
+# SLAM_SCAN_TOPIC: SLAM'in okuduğu tarama. Varsayılan filtrelenmiş tarama —
+# ham /scan aracın arkasındaki gövde dönüşlerini de taşıyor ve o dönüşler araç
+# çerçevesinde sabit durduğu için eşleştiriciyi yanıltıp haritaya leke basıyor.
+# Sahada sorun çıkarsa SLAM_SCAN_TOPIC=/scan ile ham taramaya dönülür.
+: "${SLAM_SCAN_TOPIC:=/scan/filtered}"
 # TARET_AKTIF: nişan alma ve taret aktüasyonu. Kapalı çünkü /turret/cmd'yi
 # tüketen İKİ aday var ve hangisinin araçta gerçek olduğu doğrulanmadı:
 #   taret_rc_koprusu   → seri port → Turret UNO   (düğümün kendi belgesi
@@ -114,14 +117,17 @@ trap temizle TERM INT
 # loglar ve harita da yazılamaz.
 : "${KAYIT_AKTIF:=0}"
 
-# SERI_PORT: sürüş kartının KOMUT portu (8 baytlık ikili çerçeve, seri_kopru).
-# 🔴 3 Eylül 2026 — Mega tasarımdan çıktı, yerine F767ZI geldi, AMA kartın
-# Jetson komut hattı USART6 (PG9/PG14): fiziksel UART, USB'den ÇIKMIYOR.
-# ST-LINK USB'si yalnız teşhis satırı basar, komut kabul etmez. Yani kablo
-# (USB-TTL → PG9/PG14) çekilene kadar bu cihaz YOK ve seri_kopru bağlanamaz;
-# E-STOP loglaması bunun sonucudur, arıza değildir.
-# Kablo çekilince: SERI_PORT=/dev/f767_komut (yeni udev kuralı) ver.
-: "${SERI_PORT:=/dev/mega}"
+# SERI_PORT: sürüş kartının komut portu (8 baytlık ikili çerçeve, seri_kopru).
+# 3 Eylül'deki not "ST-LINK yalnız ASCII teşhis basar, komut kabul etmez,
+# USART6/PG9-PG14'e ayrı kablo şart" diyordu. Kart→Jetson yönü için bu artık
+# geçerli değil: 8 Eylül'de ST-LINK VCP'sinden (/dev/f767, 921600) XOR'u tutan
+# ikili çerçeve okundu ve uzun süre tek bir bozuk paket çıkmadı. Kart ekibinin
+# 031/033 belgeleri de tek USB kablosunu tarif ediyor.
+# 🔴 Jetson→kart yönü HÂLÂ KANITLANMADI: komutlarımızın kabul edilip
+#    edilmediği yalnız 0x39'un JDR_LINK bitinde görünüyor ve o bit eski
+#    köprüde okunmuyordu. İlk otonom denemeden önce panodan doğrulanacak.
+# Ayrı bir komut hattı çekilirse: SERI_PORT=/dev/f767_komut ver, gerisi aynı.
+: "${SERI_PORT:=/dev/f767}"
 
 # F767 TELEMETRİ: ST-LINK USB'sinden akan ASCII teşhis satırını JSON'a çevirip
 # panoya besler. ⚠ Komut yolu DEĞİL — tek yönlü, yalnız dinler.
@@ -135,6 +141,10 @@ trap temizle TERM INT
 : "${BMS_AKTIF:=1}"
 : "${BMS_MAC:=28:D4:1E:12:C1:70}"   # 3 Eyl 2026'da canlı doğrulandı
 : "${BMS_HTTP:=8091}"
+
+# PANO_PORT: ROS panosu (web_dashboard.py). 8080 elektrik ekibinin statik
+# panosunda — ikisi ayri ise bakiyor, biri kapatilmiyor, portlar ayriliyor.
+: "${PANO_PORT:=8083}"
 
 if [ "$ENKODER_AKTIF" != "1" ]; then
     _TF_SAHIBI=statik
@@ -287,15 +297,29 @@ if [ "$_TF_SAHIBI" = "seri_kopru" ]; then
 else
     _SERI_TF=false
 fi
+# Sürüş kartı Nucleo-F767ZI: $SERI_PORT @ 921600. Bu iki değer düğümün
+# varsayılanıyla aynı tutulmalı — betik launch dosyasını kullanmıyor, yani
+# yalnız orada değiştirilen bir ayar sahaya hiç ulaşmaz.
+# KART AYARLARI (0x09) — hepsi varsayılan 0 = ÖLÇÜLMEDİ, sıfır olan
+# gönderilmez. Kart bu sayıları flash'a yazmıyor: köprü, kartı ilk gördüğünde
+# ve kart her resetlendiğinde yeniden gönderiyor, yani kalıcılık burada.
+# Ölçüm yapıldıkça aşağıdaki satırlar açılır — değeri değiştirmek için
+# yeniden DERLEME GEREKMEZ, düğümü yeniden başlatmak yeter:
+#     -p tekerlek_cevre_mm:=1842.5     tekerlekte bir tam tur, yerde ölçülür
+#     -p gosterge_darbe_tur:=6.0       gösterge ucu darbe/tur
+#     -p enkoder_disli_orani:=3.25     enkoder mili turu : teker turu
+#     -p direksiyon_orani:=12.4        kolon/teker oranı
+#     -p direksiyon_isaret:=-1         ⚠ ÖNCE tekerlekler yerden kesik denenir
+# 🔴 Tekerlek çevresi girilmeden kart hız alanını 0 basar; o hâlde Nav2
+#    aracı hareketsiz sanar ve her hedefi 20 saniyede iptal eder.
 if [ ! -e "$SERI_PORT" ]; then
-    echo "UYARI: sürüş kartı komut portu ($SERI_PORT) YOK — seri_kopru bağlanamayacak."
-    echo "       Sebep: F767'nin komut hattı USART6/PG9-PG14, USB'den çıkmıyor (kablo bekliyor)."
-    echo "       Düğüm yine de başlatılıyor: E-STOP ilan etmesi doğru davranıştır."
+    echo "UYARI: sürüş kartı portu ($SERI_PORT) YOK — seri_kopru veri alamaz."
+    echo "       udev kuralı oturmamış olabilir; ham ttyACM*'a ELLE bağlanma."
+    echo "       Düğüm yine de başlatılıyor: portu 2 sn'de bir yeniden dener."
 fi
 ros2 run teknofest_ika seri_kopru --ros-args \
-    -p port:="$SERI_PORT" -p baud:=115200 \
+    -p port:="$SERI_PORT" -p baud:=921600 \
     -p publish_tf:="$_SERI_TF" \
-    -p enkoder_kanali:="$ENKODER_KANALI" \
     -p ham_enkoder:="$HAM_ENKODER" > "$LOG/seri_kopru.log" 2>&1 &
 sleep 8
 ros2 run teknofest_ika mod_yoneticisi      > "$LOG/mod_yoneticisi.log" 2>&1 &
@@ -308,8 +332,10 @@ sleep 3
 # ackermann_converter, misyon_fsm ve pano sürekli "E-STOP yok" okur ve
 # panodaki durme düğmesi hiçbir şey yapmaz. Aracın kendi donanım kesmesi
 # ayrı bir yolla çalışsa bile ROS tarafındaki bütün kilitler buna bağlı.
-# Jetson.GPIO kurulu değilse düğüm gpio_mod'u kendi kapatır, yazılımsal
-# kaynaklar çalışmaya devam eder.
+# Fiziksel buton Jetson'ın GPIO'suna değil sürüş kartına bağlı ve durumu
+# 0x34 ile geliyor; düğümün işi kaynakları OR'lamak. gpio_mod düğüm
+# varsayılanında kapalı, burada da açılmıyor — boştaki bir giriş pini 48 V'un
+# gürültüsü altında rastgele E-STOP üretir.
 ros2 run teknofest_ika e_stop_node         > "$LOG/e_stop.log" 2>&1 &
 sleep 3
 # Eğimde geri kaymayı yakalayıp karşı komut basar. /odom'a bağlı olduğu için
@@ -412,7 +438,20 @@ if [ "$OS30A_TF_AKTIF" = "1" ]; then
         base_link dm_base_frame > "$LOG/tf_os30a.log" 2>&1 &
 fi
 sleep 4
-ros2 launch slam_toolbox online_async_launch.py > "$LOG/slam.log" 2>&1 &
+# SLAM parametre dosyası AÇIKÇA geçiliyor. Geçilmediğinde slam_toolbox kendi
+# stok ayarlarıyla açılıyordu ve config/mapper_params_online_sync.yaml'ın
+# tamamı — çözünürlük, çerçeveler, döngü kapama — hiç uygulanmıyordu; dosya
+# duruyor ama hiçbir şey yapmıyor görünmüyordu.
+#
+# Tarama konusu çalışma anında eziliyor: launch dosyası tek tek parametre
+# almıyor, yalnız dosya alıyor. Kopya log dizinine üretiliyor ki depodaki
+# yaml sahada değişmesin.
+_SLAM_PARAMS="$LOG/mapper_params.runtime.yaml"
+sed "s|^\( *scan_topic: *\).*|\1$SLAM_SCAN_TOPIC|" \
+    "$WS/config/mapper_params_online_sync.yaml" > "$_SLAM_PARAMS"
+echo "[SLAM] tarama konusu: $SLAM_SCAN_TOPIC"
+ros2 launch slam_toolbox online_async_launch.py \
+    slam_params_file:="$_SLAM_PARAMS" > "$LOG/slam.log" 2>&1 &
 sleep 14
 ros2 run teknofest_ika map_image_node > "$LOG/map_image.log" 2>&1 &
 sleep 3
@@ -521,9 +560,21 @@ fi
 # izlenirlerse watchdog kalıcı sahte arıza raporlar.
 # ham_tarama_topic: bu betikte sürücü doğrudan /scan basıyor (launch yolunda
 # scan_relay /scan_lidar basar). Yanlış ad = kalıcı "LiDAR veri gelmedi".
+# batarya_izle: /battery/status'un yayıncısı bms_koprusu ve o aşağıda koşulsuz
+# başlıyor. Sessizlik gerçek bir arızadır — BLE servisi düşmüş ya da hattı
+# başka bir istemci kapmıştır — ve /sensor/fault yalnız panoya gidiyor, hiçbir
+# kilit buna bağlı değil.
 ros2 run teknofest_ika watchdog --ros-args \
     -p nav2_aktif:="$([ "$NAV2_AKTIF" = "1" ] && echo true || echo false)" \
+    -p batarya_izle:=true \
     -p ham_tarama_topic:=/scan          > "$LOG/watchdog.log" 2>&1 &
+sleep 2
+# Batarya: gerilim seri hattan gelmiyor, elektrik tarafının BLE servisi
+# :8091'de düz JSON yayınlıyor. Köprü bayat okumayı bilerek yayınlamıyor;
+# panoda "batarya yok" görünürse ilk şüpheli, BLE'nin tek istemci kabul etmesi
+# (telefondan BMS uygulamasına bağlanılmış olması). Düğüm kipten bağımsız:
+# gerilim izleme, IMU güvenlik dalı kapalıyken de gerekli.
+ros2 run teknofest_ika bms_koprusu   > "$LOG/bms.log" 2>&1 &
 sleep 2
 if [ "$IMU_GUVENLIK_AKTIF" = "1" ]; then
     ros2 run teknofest_ika imu_guvenlik  > "$LOG/imu_guvenlik.log" 2>&1 &
@@ -536,17 +587,29 @@ fi
 ros2 run foxglove_bridge foxglove_bridge > "$LOG/foxglove.log" 2>&1 &
 sleep 2
 # Nişan paneli işlenmiş görüntüyü alsın (çevirme preprocessing'de yapılıyor).
-# 🔴 3 Eylul 2026: web_dashboard.py yerine STATIK IKA PANOSU kondu.
-# Gerekce: web_dashboard'in hicbir verisi gelmiyordu — telemetride arac
-# alanlarinin tamami null (seri_kopru /dev/mega ariyor, o cihaz artik yok) ve
-# butun /kare/ uclari 503 donuyordu. Yani ROS panosu bos bir kabuktu.
-# Geri donmek icin: asagidaki satiri yorumla, alttaki uc satiri ac.
-#python3 "$WS/scripts/web_dashboard.py" --ros-args \
-#    -r /camera/taret/image_raw:=/camera/taret/image_processed \
-#    > "$LOG/web_dashboard.log" 2>&1 &
+# İKİ PANO BİRDEN — biri ötekinin yerine geçmiyor.
+#
+# 3 Eylül'de web_dashboard.py kapatılmıştı ve gerekçesi o gün DOĞRUYDU: köprü
+# /dev/mega arıyordu, o cihaz yoktu, telemetride araç alanlarının tamamı null
+# geliyordu ve /kare/ uçları 503 dönüyordu. Pano boş bir kabuktu.
+#
+# O gerekçe köprü 0x30 bloğunu konuşmaya başlayınca ortadan kalkıyor: /kart/*
+# konuları ancak bu panoda görünüyor (link bayrakları, paket sayaçları,
+# protokol/yapı, kip, ham CH1/CH9, enkoder sayımı, HATA_*/DRM_*, 0x3E ayar
+# turnikesi). Otonom öncesi doğrulamaların hepsi buradan yapılıyor.
+#
+# Statik pano 8080'de kalıyor: kartın ASCII teşhis akışını gösteriyor ve o iş
+# bizimkinde yok. İkisi aynı portu açamayacağı için ROS panosu PANO_PORT'a
+# alındı. ⚠ seri_kopru portu exclusive açtığı için statik panoyu besleyen
+# f767_telemetri (:8092) köprü çalışırken susar — beklenen davranış.
 python3 -m http.server 8080 --bind 0.0.0.0 --directory /home/lydia/pano \
     > "$LOG/ika_pano.log" 2>&1 &
 sleep 1
+# Nişan paneli işlenmiş görüntüyü alsın (çevirme preprocessing'de yapılıyor).
+PANO_PORT="$PANO_PORT" python3 "$WS/scripts/web_dashboard.py" --ros-args \
+    -r /camera/taret/image_raw:=/camera/taret/image_processed \
+    > "$LOG/web_dashboard.log" 2>&1 &
+sleep 2
 
 # Panoyu besleyen iki veri servisi. 🔴 3 Eylül 2026'ya kadar ikisi de ELLE
 # başlatılıyordu: araç yeniden başladığında pano boş bir kabuk oluyordu ve
@@ -589,7 +652,7 @@ fi
 # değersizleştirdiği için gerçek arızayı kaçırmakla aynı sonucu veriyor.
 _BEKLENEN="seri_kopru mod_yoneticisi ackermann_converter e_stop_node
            anti_rollback preprocessing_node yolo_detection_node map_image_node
-           watchdog"
+           watchdog web_dashboard bms_koprusu"
 if [ "$NAV2_AKTIF" = "1" ]; then
     _BEKLENEN="$_BEKLENEN ekf_filter_node controller_server yolo_adapter_node
                terrain_adapter cone_fusion_node kayar_engel_kalman
@@ -619,7 +682,7 @@ fi
 # `ros2 node list` kontrolü bunları göremez. Karşılığı port dinlemesidir.
 # ⚠ Port dinliyor olmak VERİ AKTIĞI anlamına gelmez — telemetride bunun cevabı
 # /telemetri çıktısındaki "bagli" ve "yas" alanlarıdır.
-_PORTLAR="8080:pano"
+_PORTLAR="8080:statik_pano $PANO_PORT:ros_panosu"
 [ "$F767_TELEMETRI_AKTIF" = "1" ] && [ -e "$F767_TELEMETRI_PORT" ] &&
     _PORTLAR="$_PORTLAR $F767_TELEMETRI_HTTP:f767_telemetri"
 [ "$BMS_AKTIF" = "1" ] && [ -n "$BMS_MAC" ] &&

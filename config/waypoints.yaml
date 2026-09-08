@@ -222,6 +222,15 @@ asamalar:
     timeout_saniye: 65     # 13.0 m ÷ 0.20 m/s — engebeli arazi §6.9
     mesafe_m: 13.0         # [m] kayan hedef yolunda aşamanın bitiş ölçütü — CAD'den
                            # planlayıcıyla ölçülen GERÇEK yol (kuş uçuşu değil).
+    # §6.10 duruşu eğimin ORTASINDA — rampa dibinde DEĞİL. Parkur CAD'inde
+    # "Dik egim" 8,602 m uzunluğunda ve 1,850 m yüksekliğinde; %45 eğimde her
+    # yamacın yatay koşusu 4,11 m, yamaç boyu 4,51 m, ortası 2,25 m. Tepe
+    # platosu yalnız 0,38 m — araç 1,90 m olduğu için orada zirveyi köprüler
+    # ve pitch ~0 okur (atış noktası bu yüzden düz zemin gibi davranır).
+    # Sayı yamaç ortası DEĞİL 2,05: faz 'egimde'ye pitch 15°'yi geçince
+    # giriliyor ve o an araç merkezi yamaçta zaten ~0,20 m ilerlemiş oluyor.
+    # 0 verilirse ara duruş kapanır. Sahada kaydırılacak.
+    durus_mesafe_m: 2.05
     aciklama: >
       §6.10 Dik eğim girişi. Rampa öncesi düz zemin. Rampa dibindeki STOP işareti
       NavigateState tarafından tespit edilir (Tabela_stop/class_id=13):
@@ -267,6 +276,15 @@ asamalar:
     timeout_saniye: 25     # 2.5 m ÷ 0.20 m/s — %45 rampa inişi §6.10 · taban 25 s
     mesafe_m: 2.5          # [m] kayan hedef yolunda aşamanın bitiş ölçütü — CAD'den
                            # planlayıcıyla ölçülen GERÇEK yol (kuş uçuşu değil).
+    # §6.10 duruşu eğimin ORTASINDA — rampa dibinde DEĞİL. Parkur CAD'inde
+    # "Dik egim" 8,602 m uzunluğunda ve 1,850 m yüksekliğinde; %45 eğimde her
+    # yamacın yatay koşusu 4,11 m, yamaç boyu 4,51 m, ortası 2,25 m. Tepe
+    # platosu yalnız 0,38 m — araç 1,90 m olduğu için orada zirveyi köprüler
+    # ve pitch ~0 okur (atış noktası bu yüzden düz zemin gibi davranır).
+    # Sayı yamaç ortası DEĞİL 2,05: faz 'egimde'ye pitch 15°'yi geçince
+    # giriliyor ve o an araç merkezi yamaçta zaten ~0,20 m ilerlemiş oluyor.
+    # 0 verilirse ara duruş kapanır. Sahada kaydırılacak.
+    durus_mesafe_m: 2.05
     aciklama: >
       §6.10 Dik eğim çıkışı. Rampa üzerinde çıkarken ve inerken STOP işaretleri
       NavigateState tarafından ayrı ayrı işlenir. Cooldown=3s rampa geçiş süresinden
@@ -316,9 +334,14 @@ parametreler:
   #            koordinatına da SLAM haritasının doğruluğuna da ihtiyaç yok.
   #            Aşama, `mesafe_m` kadar YOL kat edilince biter.
   #   oto    : waypoint'ler doluysa harita, hepsi (0,0) ise kayan.
+  # Varsayılan `oto`, çünkü açıkça istenen `harita`'ya waypoint'ler boş olsa
+  # bile uyulur: araç map orijinine gider, sonraki aşamalar anında "ulaşıldı"
+  # sayılır ve koşu parkuru hiç sürmeden biter — tek bir hata satırı bile
+  # görünmeden. `oto` o tuzağı kapatır ve dönüşüm ölçülüp `waypoint:` alanları
+  # doldurulduğu anda kendiliğinden haritaya geçer.
   # `ros2 run ... --ros-args -p hedefleme_modu:=kayan` ile ezilir
   # (lydia_startup.sh HEDEFLEME_MODU değişkeni).
-  hedefleme_modu: harita
+  hedefleme_modu: oto
   kosu_suresi_saniye: 900.0       # §6.12 — atış dahil tüm koşu 15 dakika [s]
   # §6.10 rampa — RampaState Nav2'yi baypas edip doğrudan /cmd_vel basar.
   # ⚠️ İKİSİ DE ÖLÇÜLMEDİ. Tırmanış: patinaj yapmayacak kadar yüksek, tepede
@@ -332,7 +355,7 @@ parametreler:
   # sol U dönüşüne de aynı süreyi veriyordu.
   #
   # Süreler UYDURULMADI: istasyonlar arası mesafe parkur CAD'inden, aracın
-  # 1,85 × 1,16 m dikdörtgeni eğriliği sınırlı ve geri vitessiz yollar boyunca
+  # 1,90 × 1,16 m dikdörtgeni eğriliği sınırlı ve geri vitessiz yollar boyunca
   # süpürülerek ölçüldü (scripts/parkur_cad/donus.py ile aynı planlayıcı),
   # sonra zemine göre bir ortalama hıza bölündü. Türetim her aşamanın yanında.
   # Toplam 540 s; §6.12'nin 900 s'sine 360 s pay kalıyor.

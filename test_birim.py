@@ -25,9 +25,26 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from teknofest_ika.otonomi.pure_logic import (  # noqa: E402
     ackermann_steering,
     ackermann_komut,
-    encoder_delta,
     paket_olustur,
     paket_dogrula,
+    paket_v0_i,
+    paket_v1_i,
+    paket_v0_u,
+    paket_v1_u,
+    paket_int32,
+    gaz_binde_us,
+    kip_us,
+    rc_dizisi,
+    surum_uyumlu,
+    yaw_kovaryansi,
+    ayar_ham,
+    ayar_deger,
+    ayar_gonderilecek,
+    enkoder_sessiz,
+    kip_modu,
+    bms_okuma_gecerli,
+    bms_dip_olu,
+    kesme_estop,
     batarya_yuzdesi,
     quat_to_roll_pitch_deg,
     rollback_riskli,
@@ -44,11 +61,15 @@ from teknofest_ika.otonomi.pure_logic import (  # noqa: E402
     fren_yumusat,
     kosu_butcesi,
     pas_verilebilir,
-    rc_mod_otonom,
 )
 from teknofest_ika.otonomi.topics import (  # noqa: E402
     BATTERY_WARN_SOC, BATTERY_CRITICAL_SOC, PAS_HAKKI, PAS_GECILEMEZ,
-    KOSU_SURESI_S,
+    KOSU_SURESI_S, BEKLENEN_PROTOKOL_SURUMU,
+    KART_KIP_MANUEL, KART_KIP_BOS, KART_KIP_OTONOM,
+    SERIAL_ODOM, SERIAL_BAUD_KART, SERIAL_BAUD_TARET,
+    KART_HIZ_TAVAN, KART_HIZ_TABAN, KART_HIZ_OLU_BOLGE,
+    DRM_KESME, HATA_GAZ_YOK,
+    BMS_YAS_ESIK_S, BMS_HUCRE_DIP_MV, BMS_HUCRE_UYARI_MV, BMS_HUCRE_SAYISI,
 )
 
 PASS = 0
@@ -140,18 +161,110 @@ check("düz: hız korunur", round(hiz, 6), 0.90)
 check("düz: δ = 0",       round(delta, 6), 0.0)
 check("düz: doyma yok",   doydu, False)
 
-# ─── 2. Enkoder Overflow Koruması (AS5600 10-bit) ───────────────────────────
-print("\n=== 2. Enkoder Overflow (AS5600 10-bit) ===")
+# ─── 2. Sürüş Kartı Telemetri Alanlarının Çözülmesi ─────────────────────────
+print("\n=== 2. Telemetri alanları ===")
 
-check("ileri küçük adım", encoder_delta(10, 5),      5)
-check("geri küçük adım",  encoder_delta(5, 10),     -5)
-check("wrap ileri 1023→1", encoder_delta(1, 1023),   2)
-check("wrap geri  1→1023", encoder_delta(1023, 1),  -2)
-check("yarım tur ileri",   encoder_delta(512, 0),  512)
-check("tam tur sıfır",     encoder_delta(0, 0),     0)
+# Kartın gönderdiği paketleri aynı kurallarla üretip geri okuyoruz: alan
+# genişliği, işaret ve bayt sırası burada kilitlenir.
+_p = paket_olustur(0x31, -1234, 0)
+check("v0 işaretli okunur",        paket_v0_i(_p), -1234)
+check("v1 işaretli okunur",        paket_v1_i(paket_olustur(0x32, 0, -900)), -900)
+check("v0 işaretsiz okunur",       paket_v0_u(paket_olustur(0x35, 0x80, 0)), 0x80)
+check("işaretsiz alan 32767'yi aşar",
+      paket_v1_u(paket_olustur(0x35, 0, -1)), 65535)
 
-# ─── 3. Binary Paket CRC (seri_kopru.py protokolü) ──────────────────────────
-print("\n=== 3. Binary Protokol CRC ===")
+# 0x30'un iki alanı tek int32'dir: üst alan yüksek 16 bit.
+check("int32 birleşimi",  paket_int32(paket_olustur(0x30, 1, 0)),      65536)
+check("int32 negatif",    paket_int32(paket_olustur(0x30, -1, -1)),       -1)
+check("int32 alt alan",   paket_int32(paket_olustur(0x30, 0, 25)),        25)
+
+# ─── 3. RC Uyumluluk Dizisi ─────────────────────────────────────────────────
+print("\n=== 3. RC uyumluluk dizisi ===")
+
+check("gaz binde 0 → nötr",     gaz_binde_us(0),      1500.0)
+check("gaz binde +1000 → tam",  gaz_binde_us(1000),   2000.0)
+check("gaz binde -1000 → tam geri", gaz_binde_us(-1000), 1000.0)
+check("gaz binde taşarsa kırpılır", gaz_binde_us(5000), 2000.0)
+
+check("otonom kip üst uç", kip_us(KART_KIP_OTONOM), 2000.0)
+check("manuel kip alt uç", kip_us(KART_KIP_MANUEL), 1000.0)
+# Kullanılmayan orta kip güvenli tarafa yazılmalı: ham CH9 orta konumda mod
+# eşiğinin üstüne düşüyor ve eşikleyen taraf onu otonom okurdu.
+check("kullanılmayan kip manuel sayılır", kip_us(KART_KIP_BOS), 1000.0)
+# CH9 üç konumlu ve orta konumu 1500 µs; ham değeri eşikleyen her mantık o
+# konumu otonom okurdu. kip_us onu güvenli uca yazarak bu tuzağı kapatıyor.
+_CH9_ORTA_US = 1500.0
+check("kip alanı orta konumu otonom okumaz",
+      kip_us(KART_KIP_BOS) >= _CH9_ORTA_US, False)
+check("ham eşikleme aynı konumu otonom okurdu",
+      _CH9_ORTA_US >= _CH9_ORTA_US, True)
+
+_d = rc_dizisi(gaz_binde=500, ham_ch1=1620.0, kip=KART_KIP_OTONOM,
+               taret_aktif=True, ham_ch9=1750.0)
+check("dizi uzunluğu",        len(_d),  7)
+check("dizi[0] gaz",          _d[0], 1750.0)
+check("dizi[1] ham CH1",      _d[1], 1620.0)
+check("dizi[2] kipten türer", _d[2], 2000.0)
+check("dizi[3] lazer kapalı", _d[3], 1000.0)
+check("dizi[4] tilt nötr",    _d[4], 1500.0)
+check("dizi[5] taret aktif",  _d[5], 2000.0)
+check("dizi[6] ham CH9",      _d[6], 1750.0)
+# Ham CH9 mod alanına sızarsa üç konumlu anahtarın ortası otonom okunur.
+check("ham CH9 mod alanına sızmaz",
+      rc_dizisi(0, 1500.0, KART_KIP_MANUEL, False, 1900.0)[2], 1000.0)
+
+# ─── 4. Sürüm Karşılaştırması ───────────────────────────────────────────────
+print("\n=== 4. Protokol sürümü ===")
+
+check("aynı protokol uyumlu",   surum_uyumlu(BEKLENEN_PROTOKOL_SURUMU,
+                                             BEKLENEN_PROTOKOL_SURUMU), True)
+check("farklı protokol uyumsuz", surum_uyumlu(BEKLENEN_PROTOKOL_SURUMU + 1,
+                                              BEKLENEN_PROTOKOL_SURUMU), False)
+
+# Eşik kartınkiyle aynı olmalı: kart sys < 3'te HATA_BNO_KALIB basıyor, yani
+# sys == 2'de yaw'ı güvenilir saymak EKF'e kartın reddettiği ölçümü tam
+# ağırlıkla vermek olur. Arka aks tek parça, yönün ikinci kaynağı yok.
+check("sys 3 → yaw güvenilir",  yaw_kovaryansi(3), 0.02)
+check("sys 2 → yaw şüpheli",    yaw_kovaryansi(2), 0.30)
+check("sys 1 → yaw şüpheli",    yaw_kovaryansi(1), 0.30)
+check("sys 0 → yaw şüpheli",    yaw_kovaryansi(0), 0.30)
+check("kalibre yaw, kalibresizden dar", yaw_kovaryansi(3) < yaw_kovaryansi(2), True)
+
+# ─── Kart ayar paketi (0x09) ────────────────────────────────────────────────
+print("\n=== 5e. Kart ayarları ===")
+# Ölçekler kart sözleşmesinden; iki tarafın ayrı çarpan tutması sayının
+# sessizce on kat yanlış girilmesinin en kolay yolu. Örnekler sözleşmeden.
+check("çevre 1842,5 mm → 18425", ayar_ham(1, 1842.5)[0], 18425)
+check("dişli oranı 3,25 → 3250", ayar_ham(2, 3.25)[0],   3250)
+check("direksiyon 12,4 → 12400", ayar_ham(3, 12.4)[0],   12400)
+check("darbe/tur 6,0 → 60",      ayar_ham(4, 6.0)[0],    60)
+check("işaret -1 ham gider",     ayar_ham(5, -1.0)[0],   -1)
+# int16 taşması sessizce sarmamalı: 3,2 m üstü çevre kartta anlamsız bir
+# sayıya dönüşür ve odometri bir daha hiç doğru olmaz.
+check("aralık dışı gönderilmez", ayar_ham(1, 4000.0)[0], None)
+check("aralık dışı sebebi",      ayar_ham(1, 4000.0)[1], 'aralik_disi')
+check("bilinmeyen kimlik gönderilmez", ayar_ham(9, 1.0)[0], None)
+# Geri çevrim: kartın döndürdüğü ham sayı aynı ölçekten okunmalı.
+check("geri çevrim tutuyor", ayar_deger(1, 18425), 1842.5)
+check("bilinmeyen kimlik çözülmez", ayar_deger(9, 1), None)
+# 🔑 SIFIR = ÖLÇÜLMEDİ. Ölçülmemiş bir sayıyı göndermek, kartın bilerek
+# sustuğu alana uydurma değer yazmaktır — ve hiçbiri girilmeden köprünün
+# bugünkü davranışı değişmemeli.
+check("sıfır ayar gönderilmez",  ayar_gonderilecek(0.0),   False)
+check("ölçülmüş ayar gönderilir", ayar_gonderilecek(1842.5), True)
+# Kartın kabul kuralları bizde de uygulanır: 1-4 için sıfır ve negatif
+# reddediliyor (0 yazmak "ölçüm yok" demek ve hız alanını sessizce sıfırlar),
+# kimlik 5 yalnız ±1. Erken elemek, karşılaştırma alarmını beklemekten iyi.
+check("negatif çevre gönderilmez",  ayar_ham(1, -1842.5)[0], None)
+check("negatif çevre sebebi",       ayar_ham(1, -1842.5)[1], 'pozitif_olmali')
+check("sıfır çevre gönderilmez",    ayar_ham(1, 0.0)[0],     None)
+check("işaret +1 geçerli",          ayar_ham(5, 1.0)[0],     1)
+check("işaret 0 geçersiz",          ayar_ham(5, 0.0)[0],     None)
+check("işaret 2 geçersiz",          ayar_ham(5, 2.0)[0],     None)
+check("işaret sebebi",              ayar_ham(5, 2.0)[1],     'isaret_gecersiz')
+
+# ─── 5. Binary Paket CRC (seri_kopru.py protokolü) ──────────────────────────
+print("\n=== 5. Binary Protokol CRC ===")
 
 for cmd, v0, v1, desc in [
     (0x01, 1000, 1500, "PKT_SURUCU"),
@@ -169,8 +282,323 @@ check("bozuk CRC reddedilir", paket_dogrula(b'\xAA\x01\x00\x00\x00\x00\xFF\x55')
 check("yanlış başlangıç byte'ı reddedilir",
       paket_dogrula(b'\x00' + paket_olustur(0x01, 0, 0)[1:]), False)
 
-# ─── 4. Batarya Yüzdesi (4S LiPo, seri_kopru.py) ────────────────────────────
-print("\n=== 4. Batarya Yüzde (4S LiPo) ===")
+# ─── 5b. Sürüş Kartı Bağlantı Ayarı — üç yerde aynı olmalı ──────────────────
+print("\n=== 5b. Bağlantı ayarı tutarlılığı ===")
+
+# Sahada koşan yol scripts/lydia_startup.sh; launch dosyaları kullanılmıyor.
+# Port ya da baud yalnız bir yerde değiştirilirse köprü ya eski cihaza bağlanır
+# ya da hiç açılamaz, ve bunun tek belirtisi sessiz bir köprüdür.
+_KOK = os.path.dirname(os.path.abspath(__file__))
+
+check("port sabiti", SERIAL_ODOM, "/dev/f767")
+check("kart baud sabiti", SERIAL_BAUD_KART, 921600)
+check("taret baud'u ayrı", SERIAL_BAUD_TARET, 115200)
+
+with open(os.path.join(_KOK, 'scripts/lydia_startup.sh'), encoding='utf-8') as f:
+    _BETIK = f.read()
+_m_port = re.search(r'-p\s+port:=(\S+)', _BETIK)
+_m_baud = re.search(r'-p\s+baud:=(\S+)', _BETIK)
+check("boot betiği portu geçiyor", _m_port is not None, True)
+check("boot betiği baud'u geçiyor", _m_baud is not None, True)
+# Port artık doğrudan yazılmıyor, $SERI_PORT değişkeninden geliyor: elektrik
+# ekibi ayrı bir komut hattı çekerse betiği düzenlemeden geçebilsin diye.
+# Denetim bu yüzden iki kademeli — dolaylılık korunmalı VE varsayılan doğru
+# olmalı. Yalnız birine bakmak, değişkenin yanlış bir cihaza kurulmasını
+# görmezdi.
+if _m_port:
+    check("boot betiği portu değişkenden alıyor", _m_port.group(1), '"$SERI_PORT"')
+_m_seri = re.search(r':\s*"\$\{SERI_PORT:=([^}]+)\}"', _BETIK)
+check("SERI_PORT varsayılanı tanımlı", _m_seri is not None, True)
+if _m_seri:
+    check("SERI_PORT varsayılanı sabitle aynı", _m_seri.group(1), SERIAL_ODOM)
+if _m_baud:
+    check("boot betiği baud'u sabitle aynı", int(_m_baud.group(1)), SERIAL_BAUD_KART)
+
+with open(os.path.join(_KOK, 'launch/gercek_arac.launch.py'), encoding='utf-8') as f:
+    _LAUNCH = f.read()
+# Launch dosyasında başka düğümlerin de port parametresi var (LiDAR gibi);
+# arama seri_kopru bloğuyla sınırlanır.
+_sk_bas   = _LAUNCH.index('seri_kopru = Node(')
+_sk_blok  = _LAUNCH[_sk_bas:_sk_bas + 900]
+_l_port = re.search(r"'port':\s*'([^']+)'", _sk_blok)
+_l_baud = re.search(r"'baud':\s*(\d+)", _sk_blok)
+check("launch portu sabitle aynı", _l_port.group(1) if _l_port else None, SERIAL_ODOM)
+check("launch baud'u sabitle aynı", int(_l_baud.group(1)) if _l_baud else None, SERIAL_BAUD_KART)
+
+# Eski Mega bloğu köprüde kalmamalı: 0x10-0x23 aralığını bekleyen bir çözücü
+# yeni kartın hiçbir paketiyle örtüşmez ve sessizce hepsini atar.
+with open(os.path.join(_KOK, 'teknofest_ika/gomulu/seri_kopru.py'),
+          encoding='utf-8') as f:
+    _SK_KAYNAK = f.read()
+
+
+def _govde(kaynak: str, imza: str) -> str:
+    """Bir metodun gövdesi — arama fonksiyon sınırında durmalı."""
+    bas = kaynak.find(imza)
+    if bas < 0:
+        return ''
+    son = kaynak.find('\n    def ', bas + 1)
+    return kaynak[bas:son if son > 0 else len(kaynak)]
+
+
+for _kod in ('0x10', '0x11', '0x12', '0x13', '0x20', '0x21', '0x22', '0x23'):
+    check(f"köprü {_kod} beklemiyor", _kod in _SK_KAYNAK, False)
+for _kod in ('0x30', '0x31', '0x32', '0x33', '0x34', '0x35',
+             '0x36', '0x37', '0x38', '0x39', '0x3A', '0x3B', '0x3C'):
+    check(f"köprü {_kod} tanıyor", _kod in _SK_KAYNAK, True)
+
+# Eşik köprüde gömülü kalmamalı: kartınkiyle aynı tutulan tek yer saf
+# fonksiyon, kopyalanan bir sabit sessizce ayrışır.
+check("köprü yaw eşiğini saf fonksiyondan alıyor",
+      'yaw_kovaryansi(' in _SK_KAYNAK, True)
+check("köprüde gömülü kalibrasyon eşiği yok",
+      'sys_kalib >= 2' in _SK_KAYNAK, False)
+
+# Yapı numarası KARŞILAŞTIRILMAZ ama DEĞİŞİMİ izlenir: kartta haber verilmemiş
+# bir sabit değişikliğinin (hız tavanı, zaman aşımı, ölçek) tek görünür izi bu.
+check("köprü yapı numarasını takip ediyor", 'self._yapi' in _SK_KAYNAK, True)
+
+# Heartbeat penceresi kartta 700 ms. 400 ms'lik gönderim tek paketlik pay
+# bırakıyordu: bir heartbeat düşünce 800 ms > 700 ms olup kart Jetson'ı ölü
+# sayıyor ve gaz kesiliyordu. Sürüş komutu aktığı sürece görünmez, ama komut
+# akışının bilerek kesildiği anlarda (atış duraklatması) pay gerçekten dardı.
+_HB = re.search(r'create_timer\(([\d.]+),\s*self\._hb_gonder\)', _SK_KAYNAK)
+check("heartbeat zamanlayıcısı bulundu", _HB is not None, True)
+check("heartbeat penceresinin en az üçte biri hızında",
+      float(_HB.group(1)) <= 0.7 / 3.0 if _HB else False, True)
+
+# Jetson'ı besleyen paket (0x3D) traksiyon paketinden AYRI konuda: kimyaları
+# ve eşikleri farklı, biri bitince ötekinden işaret gelmiyor.
+check("köprü 0x3D tanıyor", 'PKT_F7_BATARYA' in _SK_KAYNAK, True)
+check("Jetson paketi ayrı konuda", 'BATTERY_JETSON_TOPIC' in _SK_KAYNAK, True)
+# Sağlık kararı paket geriliminden değil EN DÜŞÜK HÜCREDEN verilir.
+_BAT = _govde(_SK_KAYNAK, '    def _batarya_isle')
+check("Jetson paketi sağlığı hücre dibinden", 'dip_mv <' in _BAT, True)
+# Kimya teyit edilmedi; belirsizlikte yüksek (LiPo) eşik seçilir — erken
+# uyarının bedeli bir log satırı, geç uyarınınki paket.
+from teknofest_ika.otonomi.topics import (   # noqa: E402
+    BMS_JETSON_UYARI_MV, BMS_HUCRE_UYARI_MV,
+)
+check("Jetson eşiği traksiyon eşiğinden yüksek",
+      BMS_JETSON_UYARI_MV > BMS_HUCRE_UYARI_MV, True)
+check("yapı değişimi uyarı basıyor",
+      'FIRMWARE DEĞİŞTİ' in _SK_KAYNAK, True)
+
+# ATIŞ KİLİDİ — PKT_J_DUR ile durdurulamaz. Kart o paketi jetson_dur olarak
+# mandallıyor ve otonom kipte aynı bayrak lazer isteğini düşürüp tareti
+# merkeze döndürüyor: ateş komutu kendi ateşini iptal eder ve kilitli bir
+# döngü kurulur (istek → DUR → taret ölür → onay gelmez → istek sürer).
+# Kilit /ackermann_cmd yolunda durmalı. Aramayı fonksiyona hapsetmezsek
+# `if self._lazer_aktif:` ifadesi zaman aşımı dalında da geçtiği için,
+# buradaki dal tümüyle silinse bile denetim geçerdi.
+_CMD_CB  = _govde(_SK_KAYNAK, '    def _cmd_cb')
+_L_PARCA = _CMD_CB.split('if self._lazer_aktif:')
+_LAZER_DALI = _L_PARCA[1].split('return')[0] if len(_L_PARCA) > 1 else ''
+check("sürüş komutunda atış kilidi var", len(_L_PARCA) > 1, True)
+check("atış durdurması ayrı yolda", '_atis_duraklat()' in _LAZER_DALI, True)
+check("atış durdurması DUR kullanmıyor", 'PKT_J_DUR' in _LAZER_DALI, False)
+# Komut akışı atış sırasında bilerek kesiliyor; zaman aşımı dalı da DUR'a
+# düşerse taret aynı şekilde ölür.
+_ZA_DALI = _govde(_SK_KAYNAK, '    def _guvenlik_kontrol')
+check("zaman aşımı dalı atışı gözetiyor",
+      'if self._lazer_aktif:' in _ZA_DALI, True)
+# E-STOP gerçek acil durum: taretin sönmesi ve merkeze dönmesi İSTENEN
+# sonuçtur, DUR orada doğru pakettir. Kol kendi içinde denetlenir — dalın
+# herhangi bir yerinde DUR aramak, atış kolundaki DUR'u sayıp geçerdi.
+_ZA_ESTOP = _ZA_DALI.split('if self._e_stop_aktif:')
+check("zaman aşımı dalında E-STOP kolu var", len(_ZA_ESTOP) > 1, True)
+check("E-STOP acil durum paketini basıyor",
+      'PKT_J_DUR' in _ZA_ESTOP[1].split('return')[0] if len(_ZA_ESTOP) > 1 else False,
+      True)
+# Fren atış boyunca /fren_komut sahibinde tutulur; köprüden basılan bir fren
+# 20 Hz yayının altında 50 ms içinde üzerine yazılırdı.
+with open(os.path.join(_KOK, 'teknofest_ika/otonomi/ackermann_converter.py'),
+          encoding='utf-8') as f:
+    _ACK = f.read()
+check("fren sahibi atışı biliyor", 'SHOOT_CMD_TOPIC' in _ACK, True)
+
+# Gösterge ucu ileri hızın kaynağı olacak; sustuğunda 0x31 sıfıra düşer, EKF
+# konumu ilerlemez ve Nav2 hedefi "ilerleme yok" diye iptal eder. Bayrağın
+# sessizce yutulması, otonom koşunun neden yürümediğini görünmez kılardı.
+check("gösterge sessizliği raporlanıyor",
+      'HATA_GOST_SESSIZ' in _SK_KAYNAK, True)
+
+# Kalıcılık kartta DEĞİL köprüde: kart ayarları flash'a yazmıyor, resette
+# hepsi sıfırlanıyor ve 0x31 sessizce 0 basmaya dönüyor.
+check("köprü ayar paketi gönderiyor", 'PKT_J_AYAR' in _SK_KAYNAK, True)
+check("köprü 0x3E geri bildirimini okuyor", 'PKT_F7_AYAR' in _SK_KAYNAK, True)
+_CAL = _govde(_SK_KAYNAK, '    def _calisma_isle')
+check("kart ilk görüldüğünde ayarlar gidiyor",
+      "_ayarlari_gonder('kart ilk görüldü')" in _CAL, True)
+check("kart resetinde ayarlar yeniden gidiyor",
+      "_ayarlari_gonder('kart resetlendi')" in _CAL, True)
+# Reset sonrası eski karşılaştırma tabanı da düşmeli, yoksa kart temiz
+# değerlerle açılırken "uyuşmuyor" alarmı basılır.
+check("resette gönderilen kaydı temizleniyor",
+      '_ayar_gonderilen.clear()' in _CAL, True)
+# Kart ayarları RAM'de: panoda görünmezlerse "kart neye göre çalışıyor"
+# sorusunun cevabı hiçbir yerde yok. Turnike yayını 5 saniyede tam tur atıyor.
+with open(os.path.join(_KOK, 'scripts/web_dashboard.py'), encoding='utf-8') as f:
+    _PANO_AYAR = f.read()
+check("pano ayar turnikesini dinliyor", 'KART_AYAR_TOPIC' in _PANO_AYAR, True)
+check("pano beş ayarı da gösteriyor",
+      all(a in _PANO_AYAR for a in
+          ('ayar_cevre', 'ayar_disli', 'ayar_direksiyon', 'ayar_darbe',
+           'ayar_isaret')), True)
+# Ölçek panoda ikinci kez tutulmamalı — sayı burada on kat yanlış görünürdü.
+check("pano ölçeği saf fonksiyondan alıyor", 'ayar_deger(' in _PANO_AYAR, True)
+# Enkoder sessizliğinde olduğu gibi: yalnız uyarı, karşı davranış YOK. Kaynağı
+# henüz bağlanmamış araçta bir kilit, sürüşü kendi kendine durdururdu.
+_GOST_BAS  = _SK_KAYNAK.find('if yeni & HATA_GOST_SESSIZ:')
+_GOST_DALI = (_SK_KAYNAK[_GOST_BAS:_SK_KAYNAK.index('if yeni & HATA_GAZ_YOK:', _GOST_BAS)]
+              if _GOST_BAS >= 0 else '')
+check("gösterge bayrağına eylem bağlı değil",
+      _GOST_BAS >= 0 and '_paket_gonder' not in _GOST_DALI, True)
+check("atışta tam fren basılıyor",
+      'if atis_aktif:' in _ACK and 'FREN_GUVENLI_DUR_BINDE' in
+      _ACK[_ACK.index('if atis_aktif:'):_ACK.index('if atis_aktif:') + 500], True)
+
+# Kip 1 kumandadan verilen yumuşak E-STOP. Panoda boş bir işaretle göstermek
+# operatörü kilitli araçta arıza aramaya yollar.
+with open(os.path.join(_KOK, 'scripts/web_dashboard.py'), encoding='utf-8') as f:
+    _PANO = f.read()
+_kip_bas    = _PANO.find('_KIP_ADI')
+_kip_satiri = _PANO[_kip_bas:_kip_bas + 200] if _kip_bas >= 0 else ''
+check("pano kip 1'i boş göstermiyor", "KART_KIP_BOS: '—'" in _kip_satiri, False)
+check("pano kip 1'i kilitli gösteriyor", 'BOŞ/DUR' in _kip_satiri, True)
+
+# MANUEL LAZER TETİĞİ — geri konmamalı. Sürüş kartı ham CH3'ü göndermiyor;
+# /rc_input'un aux alanı sabit bir değer taşıyor, yani o alanı eşikleyen bir
+# tetik hiçbir koşulda ateşlenemez. Sessizce çalışmayan bir güvenlik yolu,
+# hiç olmayandan kötüdür: operatör anahtarı çevirir ve neden ateş etmediğini
+# arar. Lazer yetkisi /shoot_command'ın sahiplerinde.
+with open(os.path.join(_KOK, 'teknofest_ika/otonomi/mod_yoneticisi.py'),
+          encoding='utf-8') as f:
+    _MOD = f.read()
+check("mod yöneticisi aux alanını okumuyor", 'msg.data[3]' in _MOD, False)
+check("mod yöneticisi lazer yayınlamıyor", 'SHOOT_CMD_TOPIC' in _MOD, False)
+
+# DİNGİL ARASI ÖLÇÜLMEDİ. Değer beş yere yansıyor ve Ackermann kinematiğinin
+# tek girdisi; "araçtan ölçüldü" diye yazmak sahada kimsenin mezürü
+# çıkarmamasına yol açar. Elektrik tarafı da ölçülmediğini doğruladı.
+# Denetim dingil arasına daraltılır: aracın GÖVDE ölçüleri (1,90 × 1,16 m)
+# gerçekten ölçüldü ve öyle yazması doğru.
+for _dosya in ('config/ekf.yaml', 'config/nav2_params.yaml',
+               'teknofest_ika/otonomi/ackermann_converter.py'):
+    with open(os.path.join(_KOK, _dosya), encoding='utf-8') as f:
+        _SATIRLAR = [l for l in f if 'Dingil arası' in l or 'wheelbase' in l]
+    check(f"{_dosya}: dingil arası ölçüldü demiyor",
+          any('ölçüldü' in l for l in _SATIRLAR), False)
+
+# ─── 5c. Kart Hız Kısıtları ve Enkoder Sessizliği ───────────────────────────
+print("\n=== 5c. Kart kısıtları ===")
+
+# Kart komutu reddetmiyor, kırpıyor. Bizim tarafta daha yüksek bir tavan
+# tutmak komutu gerçekleşmeyecek bir değere kilitler ve gönderdiğimizle
+# 0x38'de okuduğumuz arasında kalıcı fark üretir.
+check("kart hız tavanı",    KART_HIZ_TAVAN,     1.50)
+check("kart hız tabanı",    KART_HIZ_TABAN,     0.20)
+check("kart ölü bölgesi",   KART_HIZ_OLU_BOLGE, 0.01)
+
+with open(os.path.join(_KOK, 'teknofest_ika/gomulu/seri_kopru.py'),
+          encoding='utf-8') as f:
+    _SK2 = f.read()
+check("köprü tavanı kart tavanına bağlı",
+      'MAX_HIZ_MS     = KART_HIZ_TAVAN' in _SK2, True)
+check("köprü sabit bir tavan yazmıyor",
+      re.search(r'MAX_HIZ_MS\s*=\s*[0-9]', _SK2) is None, True)
+
+with open(os.path.join(_KOK, 'teknofest_ika/otonomi/ackermann_converter.py'),
+          encoding='utf-8') as f:
+    _AC2 = f.read()
+check("ackermann tavanı kart tavanına bağlı",
+      "declare_parameter('max_speed', KART_HIZ_TAVAN)" in _AC2, True)
+
+with open(os.path.join(_KOK, 'teknofest_ika/otonomi/misyon_fsm.py'),
+          encoding='utf-8') as f:
+    _FSM2 = f.read()
+check("hızlanma tavanı kart tavanına bağlı",
+      'MAX_HIZ          = KART_HIZ_TAVAN' in _FSM2, True)
+
+# Enkoder sessizliği: kartın kendi bayrağı ölü olduğu için denetim bizde.
+check("hareket var, sayım sabit → sessiz",
+      enkoder_sessiz(hiz_mms=400, sayim_sabit_s=2.0), True)
+check("hareket var, sayım yeni değişti → sessiz değil",
+      enkoder_sessiz(hiz_mms=400, sayim_sabit_s=0.2), False)
+check("araç duruyor, sayım sabit → sessiz değil",
+      enkoder_sessiz(hiz_mms=0, sayim_sabit_s=10.0), False)
+check("geri giderken de yakalar",
+      enkoder_sessiz(hiz_mms=-400, sayim_sabit_s=2.0), True)
+# Kartın kalkış tabanı 0,20 m/s; gerçek bir sürüş komutu her zaman eşiğin
+# üstünde kalır, yani eşik taban altındaki gürültüye takılmamalı.
+check("eşik kart tabanının altında",
+      enkoder_sessiz(hiz_mms=int(KART_HIZ_TABAN * 1000), sayim_sabit_s=2.0), True)
+
+# Kart IMU paketlerini yalnız BNO takılıyken basıyor; çip yokken susması
+# arıza değil. Sabit listede tutmak kalıcı sahte alarm demek.
+with open(os.path.join(_KOK, 'teknofest_ika/otonomi/watchdog.py'),
+          encoding='utf-8') as f:
+    _WD = f.read()
+_temel = _WD[_WD.index('TEMEL_TOPICLER = {'):_WD.index('BATARYA_TOPICLERI')]
+check("IMU koşulsuz izlenmiyor",  'IMU_TOPIC' in _temel, False)
+check("batarya koşulsuz izlenmiyor", 'BATTERY_TOPIC' in _temel, False)
+check("IMU için ayrı anahtar var", "declare_parameter('imu_izle'" in _WD, True)
+
+# ─── 5d. Kip Otoritesi ve Kesme Kaynağı ─────────────────────────────────────
+print("\n=== 5d. Kip ve kesme ===")
+
+# Kip kararı kartta; Jetson eşiklemiyor.
+check("kart otonom → FULL_AUTO", kip_modu(KART_KIP_OTONOM, False), 2)
+check("kart manuel → MANUAL",    kip_modu(KART_KIP_MANUEL, False), 0)
+check("kullanılmayan kip manuel", kip_modu(KART_KIP_BOS,   False), 0)
+# Kart susarken otonom kalmak, elle sürülen bir araca komut basmak olur.
+check("bayat kip manuele düşer", kip_modu(KART_KIP_OTONOM, True), 0)
+
+# Kumandadan kesme (SwA): alıcı verici kapalıyken de yayın sürdürdüğü için
+# çerçeve sessizliği sinyal kaybını yakalamıyor, kesme biti yakalıyor.
+check("kesme biti → E-STOP",       kesme_estop(DRM_KESME, True), True)
+check("kesme yokken E-STOP yok",   kesme_estop(0x00, True), False)
+check("başka bit E-STOP üretmez",  kesme_estop(0x20, True), False)
+# Veri gelmeden E-STOP basmak kaynağı açılışta kalıcı kilitler.
+check("veri gelmeden E-STOP yok",  kesme_estop(DRM_KESME, False), False)
+
+with open(os.path.join(_KOK, 'teknofest_ika/otonomi/mod_yoneticisi.py'),
+          encoding='utf-8') as f:
+    _MY = f.read()
+check("mod kaynağı /kart/kip",     'KART_KIP_TOPIC' in _MY, True)
+check("ham kanal eşiklenmiyor",    'rc_mod_otonom' in _MY, False)
+check("kesme kaynağı DRM_KESME",   'DRM_KESME' in _MY, True)
+# Eski kural /rc_input sessizliğini E-STOP'a çeviriyordu ve açılışta
+# tetiklenip sistemi kalıcı olarak kilitliyordu.
+check("RC sessizliği E-STOP üretmiyor",
+      '_rc_estop_pub' in _MY or 'rc_kopuk' in _MY, False)
+
+# Gaz arızası kilidi mandallı: kurtarılamaz durum, geçici hata değil.
+with open(os.path.join(_KOK, 'teknofest_ika/otonomi/misyon_fsm.py'),
+          encoding='utf-8') as f:
+    _FSM3 = f.read()
+check("FSM gaz arızasını izliyor", 'HATA_GAZ_YOK' in _FSM3, True)
+check("durdurma kontrolü ortak",   'def durdurma_gerekli' in _FSM3, True)
+# Alanı okuyan tek yer yardımcının kendisi olmalı: durum kontrolleri dağınık
+# kalırsa gaz arızası yalnız bazı yerlerde durdurur.
+check("e_stop alanını yalnız yardımcı okuyor",
+      _FSM3.count("get_field('e_stop', False)"), 1)
+check("kontroller yardımcıdan geçiyor",
+      _FSM3.count('durdurma_gerekli(self.det_store)') >= 10, True)
+
+# E-STOP hattı Jetson'a bağlı değil; boştaki pini okumak gürültüyle
+# rastgele E-STOP üretir.
+with open(os.path.join(_KOK, 'teknofest_ika/otonomi/e_stop_node.py'),
+          encoding='utf-8') as f:
+    _ES = f.read()
+check("GPIO varsayılanı kapalı",
+      "declare_parameter('gpio_mod',   False)" in _ES, True)
+with open(os.path.join(_KOK, 'launch/gercek_arac.launch.py'), encoding='utf-8') as f:
+    _LC = f.read()
+check("launch GPIO'yu açmıyor", "'gpio_mod':   True" in _LC, False)
+
+# ─── 6. Batarya Yüzdesi (4S LiPo) ───────────────────────────────────────────
+print("\n=== 6. Batarya Yüzde (4S LiPo) ===")
 V_MIN, V_MAX = 14.0, 16.8
 
 
@@ -569,74 +997,26 @@ check("hak bitince ikinci pas yok",        pas(True, 'DIK_ENGEL', 1), (False, 'h
 check("yasak, hak dolu olsa da yasak",     pas(True, 'KONİLİ_YOL', 1), (False, 'sartname_yasak'))
 
 
-# ─── 17. RC Mod Eşiği — ROS ile firmware aynı sayıda bölmeli ────────────────
-from teknofest_ika.otonomi.topics import RC_MOD_ESIK_US  # noqa: E402
-
-check("eşiğin altı manuel",               rc_mod_otonom(1499, RC_MOD_ESIK_US), False)
-check("eşik dahil otonom",                rc_mod_otonom(1500, RC_MOD_ESIK_US), True)
-check("pot dipte manuel",                 rc_mod_otonom(1000, RC_MOD_ESIK_US), False)
-check("pot tepede otonom",                rc_mod_otonom(2000, RC_MOD_ESIK_US), True)
-check("ara bant yok — 1400 manuel",       rc_mod_otonom(1400, RC_MOD_ESIK_US), False)
-check("ara bant yok — 1600 otonom",       rc_mod_otonom(1600, RC_MOD_ESIK_US), True)
-
-
-def _firmware_mod_esigi():
-    """config.h'deki RC_MOD_ESIK — Mega'nın kullandığı sayı."""
-    yol = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                       'arduino', 'include', 'config.h')
-    with open(yol, encoding='utf-8', errors='replace') as f:
-        m = re.search(r'^#define\s+RC_MOD_ESIK\s+(\d+)', f.read(), re.M)
-    return int(m.group(1)) if m else None
-
-
-# Aynı kanalı iki taraf okuyor. Sayılar ayrışırsa potun arada kaldığı bantta
-# ROS ile Mega aynı anda farklı modda olur ve bu yalnız sahada fark edilir.
-check("ROS eşiği = firmware eşiği",       _firmware_mod_esigi(), RC_MOD_ESIK_US)
-
-
 # ─── §7.5 fren: sınır ötesi anlam kayması koruması ──────────────────────────
 from teknofest_ika.otonomi.topics import FREN_GUVENLI_DUR_BINDE  # noqa: E402
 
 
-def _firmware_kaynak():
-    yol = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                       'arduino', 'src', 'main.cpp')
-    with open(yol, encoding='utf-8', errors='replace') as f:
-        return f.read()
-
-
-def _firmware_fren_sifir_anlami():
-    """fren_uygula()'nın sıfır dalı: 'TUT' mu, 'SERBEST' mi.
-
-    Firmware bir kez sıfırı SERBEST'e çevirmiş, ROS tarafı haberdar olmamış ve
-    watchdog `data=0` yayınlayarak freni §6.10'un zorunlu duruşunun ortasında
-    bırakmıştı. Dal geri çevrilirse burada patlasın, sahada değil.
-    """
-    m = re.search(r'fren_esc_hiz\(binde > 0 \? binde / 1000\.0f : ([^)]+)\)',
-                  _firmware_kaynak())
-    return m.group(1).strip() if m else None
-
-
-check("firmware'de fren 0 = TUT (NOTR)",  _firmware_fren_sifir_anlami(), "0.0f")
-
-# Güvenlik dalları park freni makinesinin bekleme penceresini atlamalı.
+# Kart fren değerini oranla alıyor ve SIFIR "freni bırak" demek: fren
+# kaynakları arasında büyük olan seçildiği için sıfır hiçbir katkı yapmıyor.
+# Güvenlik dalları bu yüzden sıfır yayınlayamaz — §6.10'un zorunlu duruşu
+# %45 eğimde geçiyor ve orada fren isteğini kesmek aracı kaydırır.
 check("güvenli duruş freni sıfır değil",  FREN_GUVENLI_DUR_BINDE > 0, True)
 check("güvenli duruş freni tam fren",     FREN_GUVENLI_DUR_BINDE, 1000)
 
-
-def _firmware_fren_sabiti(ad):
-    yol = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                       'arduino', 'include', 'config.h')
-    with open(yol, encoding='utf-8', errors='replace') as f:
-        m = re.search(r'^#define\s+' + ad + r'\s+(\d+)UL', f.read(), re.M)
-    return int(m.group(1)) if m else None
-
-
-# Strok süreleri ÖLÇÜLMEDİ (placeholder). Testin iddiası sayının doğruluğu değil,
-# üçünün de tanımlı ve pozitif olması — biri silinirse geçiş anında takılır.
-check("FREN_ACMA_MS tanımlı",             (_firmware_fren_sabiti('FREN_ACMA_MS') or 0) > 0, True)
-check("FREN_SIKMA_MS tanımlı",            (_firmware_fren_sabiti('FREN_SIKMA_MS') or 0) > 0, True)
-check("FREN_BEKLEME_MS tanımlı",          (_firmware_fren_sabiti('FREN_BEKLEME_MS') or 0) > 0, True)
+# Köprü fren komutunu kartın kabul ettiği aralığa kırpmalı: 0x08 işaretsiz ve
+# negatif değeri kart sessizce sıfıra çeviriyor, yani kırpmayı görmeden
+# göndermek "fren istedim ama bırakıldı" durumunu üretir.
+with open(os.path.join(_KOK, 'teknofest_ika/gomulu/seri_kopru.py'),
+          encoding='utf-8') as f:
+    _SK3 = f.read()
+check("fren komutu 0-1000'e kırpılıyor",
+      'max(0, min(MAX_FREN_BINDE' in _SK3, True)
+check("fren üst sınırı binde 1000",  'MAX_FREN_BINDE = 1000' in _SK3, True)
 
 
 # ─── waypoints.yaml: FSM'i dallandıran `type` alanı ─────────────────────────
@@ -956,9 +1336,131 @@ check("ENGEBELİ_ARAZİ iç duvarı solda",   _VIRAJLAR.get('ENGEBELİ_ARAZİ'),
 # başka bir şey yazılırsa fonksiyon hedef üretmez ve viraj hedefsiz kalır.
 check("viraj değerleri geçerli",          set(_VIRAJLAR.values()) <= {'sol', 'sag'}, True)
 
+# ─── §6.10 eğim ortası duruşu + yokuş kalkışı ───────────────────────────────
+# Duruş noktası rampanın DİBİ DEĞİL, eğimin ORTASI (şartname: "rampa üzerindeki
+# işaretli yerlerde"). Cezası aşamanın tüm puanı, o yüzden sayı CAD geometrisine
+# kilitleniyor: "Dik egim" 8,602 × 1,850 m, %45 eğimde yamaç boyu 4,51 m.
+from teknofest_ika.otonomi.pure_logic import (          # noqa: E402
+    rampa_ara_durus_gerekli, yokus_kalkis_freni,
+)
+from teknofest_ika.otonomi.topics import (              # noqa: E402
+    YOKUS_TUTMA_FREN_BINDE, YOKUS_TORK_SURESI_S,
+    YOKUS_FREN_BIRAKMA_BINDE_PER_S, FREN_GUVENLI_DUR_BINDE,
+)
+
+_RAMPA_X, _RAMPA_H = 8.602, 1.850          # CAD sınır kutusu
+_YAMAC_KOSU = _RAMPA_H / 0.45              # §6.10 %45 eğim
+_YAMAC_BOYU = math.hypot(_YAMAC_KOSU, _RAMPA_H)
+check("CAD yamaç koşusu 4,11 m",          round(_YAMAC_KOSU, 2), 4.11)
+check("CAD yamaç boyu 4,51 m",            round(_YAMAC_BOYU, 2), 4.51)
+# Tepe platosu araçtan (1,90 m) kısa: araç zirveyi köprüler ve pitch ~0 okur.
+# Atış noktasının "düz zemin" gibi davranmasının sebebi bu.
+check("tepe platosu araçtan kısa",        (_RAMPA_X - 2 * _YAMAC_KOSU) < 1.90, True)
+
+_DURUSLU = [a for a in _ASAMALAR if float(a.get('durus_mesafe_m', 0) or 0) > 0]
+check("iki rampa aşamasında duruş var",   len(_DURUSLU), 2)
+check("duruşlu aşamalar DIK_EGIM",        sorted(a['isim'] for a in _DURUSLU),
+      ['DIK_EGIM_CIKIS', 'DIK_EGIM_GIRIS'])
+# Duruş yamacın yarısına yakın olmalı; yarıdan büyükse araç ortayı geçer,
+# çok küçükse eğime daha yeni girmişken durur.
+for _a in _DURUSLU:
+    _d = float(_a['durus_mesafe_m'])
+    check(f"{_a['isim']} duruşu yamaç ortasına yakın",
+          0.6 * (_YAMAC_BOYU / 2) < _d < _YAMAC_BOYU / 2, True)
+    check(f"{_a['isim']} duruşu eğim içinde", _d < _YAMAC_BOYU, True)
+
+# 🔑 ASIL REGRESYON: yükleyici anahtarları BEYAZ LİSTELİYOR. durus_mesafe_m
+# listeye eklenmezse RampaState wp.get() ile hep 0.0 okur ve duruş SESSİZCE
+# hiç tetiklenmez — aynı sınıf hata `type` alanında bir kez yaşandı.
+_FSM_KAYNAK = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                'teknofest_ika', 'otonomi', 'misyon_fsm.py'),
+                   encoding='utf-8').read()
+_YUKLEYICI = _FSM_KAYNAK[_FSM_KAYNAK.index('waypoints.append({'):]
+_YUKLEYICI = _YUKLEYICI[:_YUKLEYICI.index('})')]
+check("yükleyici durus_mesafe_m'i geçiriyor", "'durus_mesafe_m'" in _YUKLEYICI, True)
+check("yükleyici mesafe_m'i geçiriyor",       "'mesafe_m'" in _YUKLEYICI, True)
+
+# Ara duruş kararı
+check("ortada duruş tetiklenir",          rampa_ara_durus_gerekli('egimde', 2.10, 2.05, False), True)
+check("eşiğin altında tetiklenmez",       rampa_ara_durus_gerekli('egimde', 1.90, 2.05, False), False)
+check("bir kez tetiklenir",               rampa_ara_durus_gerekli('egimde', 3.00, 2.05, True), False)
+check("yaklaşmada tetiklenmez",           rampa_ara_durus_gerekli('yaklasma', 9.0, 2.05, False), False)
+check("0 mesafe duruşu kapatır",          rampa_ara_durus_gerekli('egimde', 9.0, 0.0, False), False)
+
+# Yokuş kalkışı: ÖNCE gaz (fren tam basılı), SONRA fren rampası. Sıra tersine
+# dönerse fren bırakıldığı an tork yoktur, araç geri kaçar ve sürücü ters dönen
+# rotoru sürmeyi reddeder — kaçınılan arıza tam olarak budur.
+_TB, _TS = YOKUS_TUTMA_FREN_BINDE, YOKUS_TORK_SURESI_S
+check("tork penceresinde fren TAM",       yokus_kalkis_freni(0.0, _TB, _TS, 2000.0), (_TB, False))
+check("tork penceresi sonuna kadar tam",  yokus_kalkis_freni(_TS * 0.99, _TB, _TS, 2000.0)[0], _TB)
+check("tork sonrası fren düşüyor",        yokus_kalkis_freni(_TS + 0.2, _TB, _TS, 2000.0)[0] < _TB, True)
+check("fren sıfırlanınca biter",          yokus_kalkis_freni(_TS + 1.0, _TB, _TS, 2000.0), (0, True))
+check("fren monoton azalıyor",
+      yokus_kalkis_freni(_TS + 0.10, _TB, _TS, 2000.0)[0] >
+      yokus_kalkis_freni(_TS + 0.20, _TB, _TS, 2000.0)[0], True)
+# Tutma freni tam güç olmalı: eğimde yarım fren aracı tutmaz.
+check("tutma freni tam güç",              _TB, FREN_GUVENLI_DUR_BINDE)
+check("bırakma hızı pozitif",             YOKUS_FREN_BIRAKMA_BINDE_PER_S > 0, True)
+# Tork penceresi motoru frene karşı zorluyor: uzun tutmak akım/ısı demek.
+check("tork penceresi kısa",              0.0 < _TS <= 1.0, True)
+
+# ─── Yokuş kalkışı override'ı BAYATLARSA bırakılmalı ────────────────────────
+# RampaState süreç olarak ölürse `finally` çalışmaz. Bayrak tek sefer basılıp
+# güvenilirse ackermann_converter sonsuza kadar override'da kalır: otomatik
+# fren tamamen ölür ve fren son değerinde donar. Koruma iki parçalı ve İKİSİ
+# BİRDEN gerekli — bayrağın nabız gibi basılması + karşı tarafta bayatlık
+# kontrolü. Biri düşerse diğeri anlamsız, hatta zararlı olur.
+from teknofest_ika.otonomi.topics import YOKUS_BAYATLAMA_S   # noqa: E402
+
+_AC_KAYNAK = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               'teknofest_ika', 'otonomi',
+                               'ackermann_converter.py'), encoding='utf-8').read()
+# Sabitin import edilmiş olması yetmez — KULLANILDIĞI da görülmeli. İlk
+# sürümde bu kontrol yalnız dizgenin varlığına bakıyordu ve mutasyon testinde
+# yakalanmadı: blok silinse bile import satırı dizgeyi hayatta tutuyordu.
+_AC_GOVDE = _AC_KAYNAK[_AC_KAYNAK.index('def _cmd_vel_callback'):]
+check("bayatlık kontrolü callback İÇİNDE",
+      'YOKUS_BAYATLAMA_S' in _AC_GOVDE, True)
+check("bayatlık karşılaştırması yapılıyor",
+      re.search(r'>\s*YOKUS_BAYATLAMA_S', _AC_GOVDE) is not None, True)
+check("bayrak zamanı callback'te okunuyor", '_yokus_zaman' in _AC_GOVDE, True)
+check("bayrak zamanı callback'te yazılıyor",
+      '_yokus_zaman = self.get_clock().now()' in _AC_KAYNAK, True)
+
+# Nabız periyodu: RampaState.CMD_HZ. Bayatlama ondan BÜYÜK olmalı, yoksa
+# override daha kalkış sürerken bayat sayılır ve fren ortada bırakılır.
+_CMD_HZ = float(re.search(r'class RampaState.*?CMD_HZ\s*=\s*([\d.]+)',
+                          _FSM_KAYNAK, re.S).group(1))
+check("RampaState nabız frekansı okundu",  _CMD_HZ > 0, True)
+check("bayatlama nabız periyodundan büyük",
+      YOKUS_BAYATLAMA_S > (1.0 / _CMD_HZ), True)
+check("bayatlama en az 3 nabız payı bırakıyor",
+      YOKUS_BAYATLAMA_S >= 3.0 / _CMD_HZ, True)
+
+# 🔑 ASIL REGRESYON: bayrak DÖNGÜNÜN İÇİNDE basılmalı. Döngü dışına alınırsa
+# tek mesaj gider, bayatlık koruması kalkışın ortasında override'ı bırakır ve
+# fren tam basılıyken gaz veren pencere çöker.
+_YK = _FSM_KAYNAK[_FSM_KAYNAK.index('def _yokus_kalkis'):]
+_YK = _YK[:_YK.index('\n    def ', 10)]
+_DONGU = _YK[_YK.index('while rclpy.ok():'):]
+check("yokuş bayrağı döngü İÇİNDE basılıyor",
+      '_yokus_aktif_pub.publish' in _DONGU, True)
+check("yokuş bayrağı döngü öncesi basılmıyor",
+      '_yokus_aktif_pub.publish' in _YK[:_YK.index('while rclpy.ok():')], False)
+# Bayrak her hâlükârda düşürülmeli — finally dalı da yerinde dursun.
+check("kalkışta finally ile bayrak düşürülüyor",
+      'finally:' in _YK and _YK.count('_yokus_aktif_pub.publish') >= 2, True)
+
 # waypoints.yaml'daki varsayılan mod da geçerli bir değer olmalı.
 _MOD = _WPY['parametreler'].get('hedefleme_modu')
 check("varsayılan mod geçerli",           _MOD in ('harita', 'kayan', 'oto'), True)
+# `harita` yalnız CAD→map dönüşümü ölçülmüşken meşru. Dönüşüm boşken bu modu
+# istemek, koşuyu parkuru hiç sürmeden bitirmenin sessiz yoludur; kural
+# kendi kendini bakar, dönüşüm doldurulduğu gün harita yeniden serbest kalır.
+_DONUSUM = _WPY.get('parkur_cad', {}).get('donusum', {})
+_DONUSUM_OLCULDU = all(_DONUSUM.get(k) is not None for k in ('dx', 'dy', 'dyaw'))
+check("dönüşüm ölçülmeden harita modu seçilmez",
+      _MOD == 'harita' and not _DONUSUM_OLCULDU, False)
 
 
 # ─── misyon_fsm: kayan hedef bağlantısı ─────────────────────────────────────
@@ -1309,12 +1811,401 @@ check("eşiğin altında bırakır",           _mudahale(15.0, -0.3, -_GE - 0.01
 # Hız negatif değilse zaten risk yok — geri komut olsa bile müdahale edilmez.
 check("ileri giderken müdahale yok",      _mudahale(15.0, 0.4, -0.5), False)
 
+# ─── BMS köprüsü: bayat okuma yayınlanmamalı ────────────────────────────────
+print("\n=== BMS köprüsü ===")
+
+_TAM = {'yas': 0.9, 'bagli': True, 'v48': 52.63, 'bms_enaz': 3289, 'bms_soc': 63}
+
+def _gec(d): return bms_okuma_gecerli(d, BMS_YAS_ESIK_S)[0]
+
+check("taze ve dolu okuma geçerli", _gec(_TAM), True)
+
+# 🔑 BLE koptuğunda alanlar silinmiyor, SON DEĞERDE donuyor. Ölçüt bu yüzden
+# bağlantı bayrağı değil okumanın yaşı.
+_bayat = dict(_TAM, yas=45.0)
+check("bayat okuma reddedilir",     _gec(_bayat), False)
+check("bayat okumanın sebebi",
+      bms_okuma_gecerli(_bayat, BMS_YAS_ESIK_S)[1], 'bayat')
+# Bağlantı o an kopuk görünse bile son okuma tazeyse sayı kullanılabilir —
+# tersi de doğru: bağlı görünüp donmuş veri yayınlanmamalı.
+check("kopuk ama taze → geçerli",   _gec(dict(_TAM, bagli=False)), True)
+check("bağlı ama bayat → geçersiz", _gec(dict(_TAM, bagli=True, yas=99.0)), False)
+
+# Servis ayakta ama henüz çerçeve çözmemişse ölçüm alanları hiç yok.
+check("ölçüm alanı yoksa geçersiz",
+      _gec({'yas': 0.4, 'bagli': True}), False)
+check("yaş alanı yoksa geçersiz",   _gec({'v48': 52.0, 'bms_enaz': 3289}), False)
+check("gövde sözlük değilse geçersiz", _gec(None), False)
+
+# Kesme kararı hücre dibinden verilir: LiFePO4 eğrisi düz olduğu için paket
+# %60 SOC gösterirken tek bir çökmüş hücre dibi görmüş olabilir.
+check("dip eşiğin altında → ölü",   bms_dip_olu(2750, BMS_HUCRE_DIP_MV), True)
+check("dip tam eşikte → ölü",       bms_dip_olu(BMS_HUCRE_DIP_MV, BMS_HUCRE_DIP_MV), True)
+check("dip eşiğin üstünde → sağlam", bms_dip_olu(3289, BMS_HUCRE_DIP_MV), False)
+
+check("bayatlık eşiği",  BMS_YAS_ESIK_S,      10.0)
+check("hücre dibi [mV]", BMS_HUCRE_DIP_MV,    2800)
+check("hücre uyarı [mV]", BMS_HUCRE_UYARI_MV, 3000)
+check("paket hücre sayısı", BMS_HUCRE_SAYISI, 16)
+
+# Düğüm sağlığı SOC'a değil hücre dibine bakmalı; SOC yalnız gösterge.
+with open(os.path.join(_KOK, 'teknofest_ika/gomulu/bms_koprusu.py'),
+          encoding='utf-8') as f:
+    _BMS = f.read()
+check("sağlık hücre dibinden",  'bms_dip_olu(' in _BMS, True)
+check("sağlık SOC'a bakmıyor",
+      "bms_soc" in _BMS.split('def _saglik')[1], False)
+check("tazelik saf fonksiyonda", 'bms_okuma_gecerli(' in _BMS, True)
+
+# Düğüm çalıştırılabilir ve sahada gerçekten başlatılıyor olmalı.
+with open(os.path.join(_KOK, 'setup.py'), encoding='utf-8') as f:
+    check("bms_koprusu setup.py'de", 'bms_koprusu' in f.read(), True)
+check("bms_koprusu boot betiğinde", 'bms_koprusu' in _BOOT, True)
+
+
+def _kosul_derinligi(betik: str, arama: str) -> int:
+    """Bir satırın kaç `if` bloğunun içinde kaldığı."""
+    derinlik = 0
+    for satir in betik.splitlines():
+        sadeleşmiş = satir.strip()
+        if arama in sadeleşmiş:
+            return derinlik
+        if sadeleşmiş.startswith('if ') and sadeleşmiş.endswith('then'):
+            derinlik += 1
+        elif sadeleşmiş == 'fi':
+            derinlik -= 1
+    return -1
+
+
+# Batarya izleme kipten bağımsız olmalı. Düğüm bir kez IMU güvenlik bloğunun
+# içine düştüğünde o bayrak varsayılan kapalı olduğu için araçta hiç
+# başlamıyordu: hata vermiyor, log basmıyor, yalnız pano boş kalıyor.
+check("bms_koprusu koşulsuz başlıyor",
+      _kosul_derinligi(_BOOT, 'ros2 run teknofest_ika bms_koprusu'), 0)
+# Yayıncısı koşulsuz başladığına göre sessizliği gerçek arızadır.
+check("watchdog bataryayı izliyor", 'batarya_izle:=true' in _BOOT, True)
+
+
+# ─── Açılış betiği ↔ launch: ayarlar sahaya ULAŞIYOR MU ─────────────────────
+print("\n=== Boot ↔ launch parametre ayrışması ===")
+
+# Sahada koşan yol açılış betiği; launch dosyası kullanılmıyor. Bir ayar
+# yalnız launch'ta durursa araca HİÇ ulaşmaz ve bu sessizdir. Bu depoda dört
+# kez oldu: SLAM parametre dosyası, sürüş kartı portu, gpio_mod ve nişan
+# kamerasının HSV kalibrasyonu.
+with open(os.path.join(_KOK, 'launch/gercek_arac.launch.py'), encoding='utf-8') as f:
+    _LNC = f.read()
+
+_boot_paramsiz = re.findall(r'ros2 run teknofest_ika (\w+)\s*>', _BOOT)
+
+def _launch_bloklari(kaynak):
+    blok = {}
+    for m in re.finditer(r"executable='(\w+)'(.*?)\n    \)", kaynak, re.S):
+        blok[m.group(1)] = m.group(2)
+    return blok
+
+_LB = _launch_bloklari(_LNC)
+
+# Açılış betiği bu düğümlere hiç parametre geçmiyor; launch'ta ayarlanan her
+# değer kod varsayılanıyla aynı olmalı, yoksa sahada başka bir araç koşar.
+for _dugum, _yasak in [
+    # image_timeout_sec ölçüme dayalı: üç kamera aynı USB2 hattını
+    # paylaştığında akış ~7-9 Hz'e düşüyor ve eşik kare aralığının altına
+    # inerse her kare STALE sayılıp nişan hiç çalışmıyor.
+    ('targeting_node',      ['hsv_lower', 'hsv_upper', 'hsv_lower2',
+                             'hsv_upper2', 'hough_max_radius',
+                             'image_timeout_sec']),
+    ('ackermann_converter', ['max_speed']),
+    ('taret_rc_koprusu',    ['port', 'baud']),
+]:
+    _blok = _LB.get(_dugum, '')
+    for _p in _yasak:
+        check(f"launch {_dugum}.{_p} sabitlemiyor",
+              re.search(rf"'{_p}':", _blok) is not None, False)
+
+# Kalibrasyon tek kaynakta: düğümün varsayılanı topics.py'den geliyor.
+with open(os.path.join(_KOK, 'teknofest_ika/gorsel/targeting_node.py'),
+          encoding='utf-8') as f:
+    _TN = f.read()
+check("nişan HSV varsayılanı sabitten geliyor",
+      'NISAN_HSV_ALT' in _TN and 'NISAN_HSV_UST' in _TN, True)
+check("nişan HSV literal yazılmıyor",
+      '[0, 100, 100]' in _TN, False)
+check("Hough yarıçapı sabitten geliyor",
+      'NISAN_HOUGH_MAX_YARICAP' in _TN, True)
+
+from teknofest_ika.otonomi.topics import (  # noqa: E402
+    NISAN_HSV_ALT, NISAN_HSV_UST, NISAN_HSV_ALT2, NISAN_HSV_UST2,
+    NISAN_HOUGH_MAX_YARICAP,
+)
+# 2026-07-19 kalibrasyonu. Üst ton sınırı 4: turuncu bant sahte tespit
+# üretiyor. V tabanı 70: karanlık sahteleri eler, loş ışıkta halkayı elemez.
+check("HSV alt sınır",        NISAN_HSV_ALT,  [0, 40, 70])
+check("HSV üst sınır",        NISAN_HSV_UST,  [4, 255, 255])
+check("HSV sarma alt sınırı", NISAN_HSV_ALT2, [150, 40, 70])
+check("HSV sarma üst sınırı", NISAN_HSV_UST2, [179, 255, 255])
+check("Hough azami yarıçap",  NISAN_HOUGH_MAX_YARICAP, 250)
+
+
+# ─── SLAM: parametre dosyası gerçekten yükleniyor mu ────────────────────────
+print("\n=== SLAM yapılandırması ===")
+
+# Dosya geçilmezse slam_toolbox stok ayarlarıyla açılıyor ve yaml'ın tamamı
+# sessizce ölü kalıyor — çözünürlük, çerçeveler, döngü kapama, hiçbiri
+# uygulanmıyor. Bu depoda üçüncü kez görülen desen.
+with open(os.path.join(_KOK, 'scripts/lydia_startup.sh'), encoding='utf-8') as f:
+    _BOOT = f.read()
+check("boot betiği SLAM parametre dosyası geçiyor",
+      'slam_params_file:=' in _BOOT, True)
+check("SLAM tarama konusu sahada ezilebiliyor",
+      'SLAM_SCAN_TOPIC' in _BOOT, True)
+
+with open(os.path.join(_KOK, 'config/mapper_params_online_sync.yaml'),
+          encoding='utf-8') as f:
+    _SLAM = yaml.safe_load(f)['slam_toolbox']['ros__parameters']
+
+# SLAM ile Nav2 aynı taramayı görmeli: farklı görmeleri, planlayıcının
+# gördüğü engelin haritada olmaması (ya da tersi) demek.
+with open(os.path.join(_KOK, 'config/nav2_params.yaml'), encoding='utf-8') as f:
+    _NV = f.read()
+_nav2_scan = re.search(r'scan:\s*\n\s*topic:\s*(\S+)', _NV)
+check("SLAM ve Nav2 aynı taramayı okuyor",
+      _SLAM['scan_topic'], _nav2_scan.group(1) if _nav2_scan else None)
+
+# Ham /scan aracın arkasındaki gövde dönüşlerini taşıyor; menzil eşiği onları
+# elemiyor, eleyen tek şey filtrenin açı kırpması.
+check("SLAM ham taramayı okumuyor", _SLAM['scan_topic'] == '/scan', False)
+
+# Sıfır eşik "her taramayı düğüm yap" demek ve duran araçta haritalama için
+# yazılmıştı; koşuda poz grafiği gereksiz büyür.
+check("hareket eşiği sıfır değil (mesafe)",
+      _SLAM['minimum_travel_distance'] > 0.0, True)
+check("hareket eşiği sıfır değil (yön)",
+      _SLAM['minimum_travel_heading'] > 0.0, True)
+
+
+# ─── Gövde Ölçüsü — footprint, urdf ve analiz betiği aynı aracı anlatmalı ───
+print("\n=== Gövde ölçüsü tutarlılığı ===")
+
+# Araçtan ölçülen gerçek gövde. Planlayıcı bu dikdörtgeni kullanıyor; küçük
+# yazmak koridorlarda ve dönüşlerde olmayan bir pay uydurur.
+_ARAC_BOY, _ARAC_GEN, _ARAC_YUK = 1.90, 1.16, 0.76
+
+with open(os.path.join(_KOK, 'config/nav2_params.yaml'), encoding='utf-8') as f:
+    _NAV2 = f.read()
+
+_fp = re.findall(r'footprint:\s*"(\[\[.*?\]\])"', _NAV2)
+check("iki costmap de footprint kullanıyor", len(_fp), 2)
+# robot_radius dairesel gövde varsayar; Ackermann araçta boy ile eni bir
+# tutmak dar geçişlerde gerçek olmayan pay üretiyordu.
+check("robot_radius parametresi yok",
+      re.search(r'^\s*robot_radius:', _NAV2, flags=re.M) is None, True)
+
+for _i, _metin in enumerate(_fp):
+    _kose = [[float(x) for x in c.split(',')]
+             for c in re.findall(r'\[([-\d., ]+)\]', _metin)]
+    check(f"footprint[{_i}] dört köşe", len(_kose), 4)
+    _boy = max(k[0] for k in _kose) - min(k[0] for k in _kose)
+    _gen = max(k[1] for k in _kose) - min(k[1] for k in _kose)
+    check(f"footprint[{_i}] boyu", round(_boy, 3), _ARAC_BOY)
+    check(f"footprint[{_i}] eni",  round(_gen, 3), _ARAC_GEN)
+    # Dikdörtgen base_footprint'e göre ortalanmış olmalı: kaydırılmış bir
+    # gövde, aracın önünü ya da arkasını costmap'te yanlış yere koyar.
+    check(f"footprint[{_i}] ortalanmış",
+          abs(max(k[0] for k in _kose) + min(k[0] for k in _kose)) < 1e-6, True)
+
+with open(os.path.join(_KOK, 'urdf/arac.urdf'), encoding='utf-8') as f:
+    _URDF = f.read()
+_kutu = re.search(r'<box size="([\d.]+) ([\d.]+) ([\d.]+)"/>', _URDF)
+check("urdf gövde kutusu boyu", float(_kutu.group(1)), _ARAC_BOY)
+check("urdf gövde kutusu eni",  float(_kutu.group(2)), _ARAC_GEN)
+check("urdf gövde kutusu yüksekliği", float(_kutu.group(3)), _ARAC_YUK)
+
+# Dönüş yarıçapı analizi de aynı gövdeyi varsaymalı, yoksa geçilebilirlik
+# hesabı gerçekte olmayan bir araç için çıkar.
+with open(os.path.join(_KOK, 'scripts/parkur_cad/donus.py'), encoding='utf-8') as f:
+    _DONUS = f.read()
+_da = re.search(r'boy=([\d.]+), gen=([\d.]+)', _DONUS)
+check("analiz betiği aynı boyu kullanıyor", float(_da.group(1)), _ARAC_BOY)
+check("analiz betiği aynı eni kullanıyor",  float(_da.group(2)), _ARAC_GEN)
+
+
 _AR_KAYNAK = _kaynak('teknofest_ika/otonomi/anti_rollback.py')
 # Komut aşağı akışta gerçekten uygulanacak olan topic'ten okunmalı: kendi
 # override'ı oraya yazılmadığı için geri besleme oluşmaz.
 check("anti_rollback komutu dinliyor",    'MUX_CMD_VEL_TOPIC' in _AR_KAYNAK, True)
 check("anti_rollback niyeti sorguluyor",  'rollback_mudahale_gerekli(' in _AR_KAYNAK, True)
 check("anti_rollback bayatlığı ölçüyor",  'NAV2_CMD_BAYATLAMA_S' in _AR_KAYNAK, True)
+# Bayrak nabız gibi basılmalı: tek sefer basıp bırakmak, tüketici tarafta
+# bayatlık ölçülemeyen kalıcı bir override üretir.
+check("anti_rollback bayrağı nabız basıyor",
+      _AR_KAYNAK.count('_durum_pub.publish') >= 2, True)
+
+# Tüketici taraf: bayat bayrak override'ı BIRAKMALI. anti_rollback düğümü
+# True bastıktan sonra ölürse, koruma olmadan Nav2 komutu sonsuza kadar
+# kurtarma komutuyla değiştirilir ve araç sabit hızda sürülmeye devam eder.
+_AC_KAYNAK2 = _kaynak('teknofest_ika/otonomi/ackermann_converter.py')
+check("override bayatlığı ölçülüyor",
+      'ROLLBACK_BAYATLAMA_S' in _AC_KAYNAK2, True)
+check("bayatlık _cmd_vel_callback içinde uygulanıyor",
+      'ROLLBACK_BAYATLAMA_S' in _AC_KAYNAK2.split('_cmd_vel_callback')[-1], True)
+check("bayrağın geliş anı kaydediliyor",
+      '_override_zaman' in _AC_KAYNAK2, True)
+# Yokuş bayrağındaki koruma da yerinde kalmalı — ikisi aynı kusurun iki yüzü.
+check("yokuş bayatlığı da duruyor",
+      'YOKUS_BAYATLAMA_S' in _AC_KAYNAK2.split('_cmd_vel_callback')[-1], True)
+
+
+# ─── Sürüş kartı hattı: her launch dosyasında AYNI port ve AYNI baud ────────
+# Yinelenen sözlük anahtarı Python'da sessizdir — sonuncusu kazanır. İki
+# launch dosyasında 'baud' iki kez yazılmıştı ve 921600'ün altına eklenen
+# 115200 galip geliyordu: port doğru, hız yanlış. Sahadaki belirtisi kartın
+# hiç konuşmaması, teşhisi ise `0x3C` sayaçlarında v0 sabitken v1'in artması.
+# Denetim dizgeye değil AST'ye bakıyor; sözlüğü gerçekten değerlendirdiği
+# için yinelenen anahtar yeniden eklenirse burada düşer.
+import ast   # noqa: E402
+
+_LAUNCH_DIZIN = os.path.join(_KOK, 'launch')
+_launch_dosyalar = sorted(a for a in os.listdir(_LAUNCH_DIZIN)
+                          if a.endswith('.launch.py'))
+check("launch dosyaları bulundu", len(_launch_dosyalar) >= 3, True)
+
+_yinelenen_anahtar = []
+_kopru_ayarlari = []
+for _ad in _launch_dosyalar:
+    _kaynak_l = open(os.path.join(_LAUNCH_DIZIN, _ad), encoding='utf-8').read()
+    _agac = ast.parse(_kaynak_l, _ad)
+    for _dugum in ast.walk(_agac):
+        if not isinstance(_dugum, ast.Dict):
+            continue
+        _anahtarlar = [k.value for k in _dugum.keys
+                       if isinstance(k, ast.Constant) and isinstance(k.value, str)]
+        if len(_anahtarlar) != len(set(_anahtarlar)):
+            _yinelenen_anahtar.append(f'{_ad}:{_dugum.lineno}')
+        if 'port' not in _anahtarlar or 'baud' not in _anahtarlar:
+            continue
+        _sozluk = {}
+        for _k, _v in zip(_dugum.keys, _dugum.values):
+            if isinstance(_k, ast.Constant) and isinstance(_v, ast.Constant):
+                _sozluk[_k.value] = _v.value
+        _kopru_ayarlari.append((_ad, _sozluk.get('port'), _sozluk.get('baud')))
+
+check("launch dosyalarında yinelenen anahtar yok", _yinelenen_anahtar, [])
+# Taret köprüsü portunu artık düğüm varsayılanından alıyor; port+baud çifti
+# yazan tek yer sürüş kartı bloğu. Hiç bulunamazsa denetim boşa dönerdi.
+check("launch'ta sürüş kartı bloğu var", len(_kopru_ayarlari) >= 2, True)
+check("her launch aynı portu veriyor",
+      sorted({p for _, p, _ in _kopru_ayarlari}), [SERIAL_ODOM])
+check("her launch aynı baud'u veriyor",
+      sorted({b for _, _, b in _kopru_ayarlari}), [SERIAL_BAUD_KART])
+
+# ─── Atış kilidi SÜREYLE sınırlı — /shoot_command kenar sinyali ─────────────
+# True ile False ayrı olaylar; arada yayınlayan düğüm ölürse kilidi açacak
+# kimse kalmaz. Sonucu iki yerde birden ölümcül: ackermann_converter freni tam
+# basılı bırakır, seri_kopru her sürüş komutunu sıfır hıza çevirir. Araç bir
+# daha hiç hareket etmez ve log'a tek satır düşmez. Yokuş bayrağındaki
+# bayatlık koruması buraya UYMAZ — o bayrak nabız gibi tekrarlanıyor, bu
+# tekrarlanmıyor; ölçüt bu yüzden isteğin TOPLAM süresi.
+from teknofest_ika.otonomi.topics import ATIS_AZAMI_S, LASER_FIRE_DURATION  # noqa: E402
+
+_ATIS_GOVDE = _AC_KAYNAK[_AC_KAYNAK.index('def _cmd_vel_callback'):]
+check("fren tarafında süre sınırı uygulanıyor",
+      re.search(r'>\s*ATIS_AZAMI_S', _ATIS_GOVDE) is not None, True)
+check("atış isteğinin başlangıcı okunuyor", '_atis_zaman' in _ATIS_GOVDE, True)
+# Kenar sinyali: zaman YALNIZ yükselen kenarda kurulmalı. Her mesajda
+# tazelenirse sınır hiç dolmaz ve koruma kâğıt üstünde kalır.
+_ATIS_CB = _govde(_AC_KAYNAK, '    def _atis_cb')
+check("başlangıç yükselen kenarda kuruluyor",
+      'not self._atis_aktif' in _ATIS_CB, True)
+# Sınır dolunca mandal da düşmeli; yalnız yerel değişkeni bırakmak, düğüm
+# geri gelip yeni bir atış yayınladığında yükselen kenarı yutardı.
+check("sınır dolunca mandal düşüyor",
+      'self._atis_aktif = False' in _ATIS_GOVDE, True)
+
+# Köprü tarafı: aynı kilit, aynı sınır. Denetim güvenlik zamanlayıcısından
+# çağrılmalı, yoksa hiç koşmaz.
+_KILIT = _govde(_SK_KAYNAK, '    def _atis_kilidi_denetle')
+check("köprüde atış kilidi denetimi var", _KILIT != '', True)
+check("köprü denetimi süre sınırını kullanıyor", 'ATIS_AZAMI_S' in _KILIT, True)
+check("köprü sınır dolunca kilidi açıyor",
+      'self._lazer_aktif = False' in _KILIT, True)
+# Sahibi ölmüş bir atış isteğinin lazeri süresiz yakık bırakması, kilidi
+# açmaktan daha kötü.
+check("köprü sınır dolunca lazeri kapatıyor",
+      re.search(r'PKT_J_LAZER,\s*0', _KILIT) is not None, True)
+_GUV = _govde(_SK_KAYNAK, '    def _guvenlik_kontrol')
+check("denetim güvenlik zamanlayıcısından çağrılıyor",
+      '_atis_kilidi_denetle()' in _GUV, True)
+
+# Sınır meşru en uzun tutuşun ÜSTÜNDE olmalı: ShootState tek denemede
+# TIMEOUT_S kadar onay bekliyor, ardından LASER_FIRE_DURATION'ı tamamlıyor.
+# Altına inerse koruma gerçek atışı keser.
+_ST = _FSM_KAYNAK[_FSM_KAYNAK.index('class ShootState'):]
+_ST_TIMEOUT = float(re.search(r'TIMEOUT_S\s*=\s*([\d.]+)', _ST).group(1))
+check("ShootState onay penceresi okundu", _ST_TIMEOUT > 0, True)
+check("sınır en uzun meşru atıştan büyük",
+      ATIS_AZAMI_S > _ST_TIMEOUT + LASER_FIRE_DURATION, True)
+
+
+# ─── FREN KAPISI: manuelde Jetson frene karışmaz ────────────────────────────
+# Kart fren kaynaklarının BÜYÜĞÜNÜ alıyor ve bizimkini operatör çözemiyor
+# (seri_kopru docstring'i, kart ekibinin sözleşmesi). Manuelde aracı kart
+# kumandadan sürüyor; orada hesapladığımız her fren, sürücünün gazı bıraktığı
+# anda üstüne binen ve açamadığı bir frene dönüşür.
+from teknofest_ika.otonomi.topics import (   # noqa: E402
+    MOD_MANUAL, MOD_FULL_AUTO, MOD_BAYATLAMA_S,
+)
+
+check("mod sabitleri topics.py'de", (MOD_MANUAL, MOD_FULL_AUTO), (0, 2))
+# Yayıncı ve tüketici ayrı düğüm; sayı iki yerde tutulursa ayrışır ve
+# ayrıştığı gün kimse fark etmez.
+_MOD_KAYNAK2 = _kaynak('teknofest_ika/otonomi/mod_yoneticisi.py')
+check("mod_yoneticisi sabiti yerel tanımlamıyor",
+      re.search(r'^MOD_MANUAL\s*=', _MOD_KAYNAK2, re.M) is not None, False)
+
+_AC3 = _kaynak('teknofest_ika/otonomi/ackermann_converter.py')
+check("fren sahibi kipi dinliyor", 'MOD_AKTIF_TOPIC' in _AC3, True)
+
+# 🔑 ASIL REGRESYON: fren TEK kapıdan çıkmalı. Yeni bir dal eklenip doğrudan
+# publish edilirse kapı baypas edilir ve manuel koruması sessizce delinir.
+# Ham publish yalnız iki yerde meşru: kapının kendisi ve kip geçişindeki
+# sıfırlama. Aramayı fonksiyona hapsetmezsek beşinci bir dal fark edilmezdi.
+_KAPI    = _govde(_AC3, '    def _fren_yayinla')
+_MODCB   = _govde(_AC3, '    def _mod_cb')
+_ham_top = _AC3.count('_fren_pub.publish')
+_ham_ici = _KAPI.count('_fren_pub.publish') + _MODCB.count('_fren_pub.publish')
+check("ham fren yayını yalnız kapıda ve kip geçişinde", _ham_top, _ham_ici)
+check("kapı gerçekten yayınlıyor", _KAPI.count('_fren_pub.publish') >= 1, True)
+
+# E-STOP kipten BAĞIMSIZ basmalı (B kararı): acil durdurma manuelde de
+# geçerlidir. Diğer dallar geçmemeli, yoksa kapı hiçbir şey kısmaz.
+_ESTOP_DALI = _govde(_AC3, '    def _cmd_vel_callback')
+_ESTOP_DALI = _ESTOP_DALI[:_ESTOP_DALI.index('return')] if 'return' in _ESTOP_DALI else _ESTOP_DALI
+check("E-STOP freni kipten muaf", 'estop=True' in _ESTOP_DALI, True)
+check("muafiyet yalnız E-STOP'ta", _AC3.count('estop=True'), 1)
+
+# Manuele GEÇİŞTE sıfır basılmalı. Susmak yetmez: kart son gönderdiğimiz
+# değeri tutuyor, 1000 basılıyken susarsak o 1000 orada kalır.
+check("kip geçişi yükselen kenarda yakalanıyor",
+      'onceki != MOD_MANUAL' in _MODCB, True)
+check("manuele geçişte sıfır basılıyor",
+      re.search(r'UInt16\(data=0\)', _MODCB) is not None, True)
+
+# Kip bilinmiyorsa fren SERBEST kalır. Ters kurmak, mod_yoneticisi otonom
+# koşunun ortasında ölürse aracı %45 eğimde frensiz bırakırdı.
+_MANUEL = _govde(_AC3, '    def _manuel_mi')
+check("kip bilinmiyorsa fren serbest",
+      'return False' in _MANUEL.split('yas')[0], True)
+check("bayatlık kontrolü var",
+      re.search(r'>\s*MOD_BAYATLAMA_S', _MANUEL) is not None, True)
+
+# /mod/aktif 1 Hz nabız — bayatlama ondan büyük olmalı, yoksa kip daha ilk
+# saniyede bayat sayılır ve koruma hiç çalışmaz.
+_m_hz = re.search(r'create_timer\(([\d.]+),\s*self\._mod_yayinla\)', _MOD_KAYNAK2)
+check("mod yayın periyodu okundu", _m_hz is not None, True)
+if _m_hz:
+    check("bayatlama en az üç nabız payı bırakıyor",
+          MOD_BAYATLAMA_S >= 3.0 * float(_m_hz.group(1)), True)
 
 
 # ─── Sonuç ───────────────────────────────────────────────────────────────────

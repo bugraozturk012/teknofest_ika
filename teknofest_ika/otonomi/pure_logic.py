@@ -82,22 +82,7 @@ def ackermann_komut(v: float, omega: float, wheelbase: float,
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 2. Enkoder Overflow Koruması (AS5600 10-bit ADC)
-# ─────────────────────────────────────────────────────────────────────────
-
-def encoder_delta(yeni: int, eski: int, maks: int = 1024) -> int:
-    """Dairesel (wrap-around) enkoder farkı — 0/1023 sınırını doğru aşar."""
-    d = yeni - eski
-    yarim = maks // 2
-    if d > yarim:
-        d -= maks
-    if d < -yarim:
-        d += maks
-    return d
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# 3. Binary Seri Protokol — Paket Oluşturma/Doğrulama (seri_kopru.py ile
+# 2. Binary Seri Protokol — Paket Oluşturma/Doğrulama (seri_kopru.py ile
 #    BİREBİR aynı format: [0xAA][CMD][D0][D1][D2][D3][CRC][0x55])
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -128,6 +113,262 @@ def paket_dogrula(ham: bytes) -> bool:
         return False
     beklenen_crc = crc_hesapla(ham[1], ham[2:6])
     return ham[6] == beklenen_crc
+
+
+def paket_v0_i(ham: bytes) -> int:
+    """Birinci alan, işaretli int16."""
+    return struct.unpack('>h', ham[2:4])[0]
+
+
+def paket_v1_i(ham: bytes) -> int:
+    """İkinci alan, işaretli int16."""
+    return struct.unpack('>h', ham[4:6])[0]
+
+
+def paket_v0_u(ham: bytes) -> int:
+    """Birinci alan, işaretsiz uint16 — bayrak kümeleri ve sayaçlar için."""
+    return struct.unpack('>H', ham[2:4])[0]
+
+
+def paket_v1_u(ham: bytes) -> int:
+    """İkinci alan, işaretsiz uint16."""
+    return struct.unpack('>H', ham[4:6])[0]
+
+
+def paket_int32(ham: bytes) -> int:
+    """
+    İki alanı tek bir işaretli int32 olarak okur (0x30 enkoder sayımı).
+    Taşmayı sürüş kartı çözüyor; burada sarma düzeltmesi uygulanmaz.
+    """
+    return struct.unpack('>i', ham[2:6])[0]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 3. Sürüş Kartı Telemetrisi → RC Uyumluluk Dizisi
+# ─────────────────────────────────────────────────────────────────────────
+
+RC_US_MIN     = 1000.0
+RC_US_NEUTRAL = 1500.0
+RC_US_MAX     = 2000.0
+
+
+def gaz_binde_us(binde: int) -> float:
+    """
+    Kartın binde cinsinden bildirdiği gazı (0x36 v0, -1000…1000) kumanda
+    kanallarının µs ölçeğine taşır. Pano ve teşhis aynı ölçeği bekliyor.
+    """
+    return max(RC_US_MIN, min(RC_US_MAX, RC_US_NEUTRAL + binde * 0.5))
+
+
+def kip_us(kip: int, otonom_kip: int = 2) -> float:
+    """
+    Kartın çözdüğü sürüş kipini /rc_input'un mod alanına taşır.
+
+    Ham CH9 bilerek kullanılmaz: kanal üç konumlu bir anahtar ve orta konumu
+    1500 µs'e denk geliyor, yani o değeri eşikleyen taraf orta kipi OTONOM
+    okurdu — oysa orta kademe kartın yumuşak E-STOP'u. Yalnız kartın otonom
+    dediği kip otonom sayılır, geri kalan her değer güvenli tarafa yazılır.
+    """
+    return RC_US_MAX if kip == otonom_kip else RC_US_MIN
+
+
+def rc_dizisi(gaz_binde: int, ham_ch1: float, kip: int, taret_aktif: bool,
+              ham_ch9: float, otonom_kip: int = 2) -> list:
+    """
+    seri_kopru'nun /rc_input dizisini kurar:
+      [0] gaz · [1] direksiyon · [2] kip · [3] aux/lazer · [4] tilt
+      [5] taret aktif · [6] ham CH9 (teşhis)
+
+    Kart ham kanalların yalnız ikisini gönderiyor (CH1, CH9); gaz ve taret
+    türetilmiş alanlardan gelir, aux ve tilt'in karşılığı yok ve etkisiz
+    değerde tutulur.
+    """
+    return [
+        gaz_binde_us(gaz_binde),
+        float(ham_ch1),
+        kip_us(kip, otonom_kip),
+        RC_US_MIN,                                   # aux/lazer: kaynağı yok
+        RC_US_NEUTRAL,                               # tilt: kaynağı yok
+        RC_US_MAX if taret_aktif else RC_US_MIN,
+        float(ham_ch9),
+    ]
+
+
+def bms_okuma_gecerli(veri: dict, yas_esigi: float) -> tuple:
+    """
+    BMS ucundan gelen gövde yayınlanacak kadar taze ve dolu mu.
+    Dönüş: `(gecerli, sebep)`.
+
+    🔑 Ölçüt `bagli` DEĞİL `yas`. BLE koptuğunda servis ölçüm alanlarını
+    silmiyor, SON DEĞERDE donduruyor: bağlantı bayrağına bakan bir tüketici
+    donmuş bir gerilimi canlı sanır. Tersi de geçerli — bağlantı o an kopuk
+    görünse bile son okuma tazeyse sayı kullanılabilir.
+
+    Bayat okumayı yayınlamaktansa susmak seçiliyor, çünkü /battery/status'u
+    okuyan taraf gelen son yüzdeyi kalıcı olarak tutuyor: bir kez basılan
+    yanlış değer bir daha düzelmiyor.
+    """
+    if not isinstance(veri, dict):
+        return False, 'govde_sozluk_degil'
+    yas = veri.get('yas')
+    if yas is None:
+        return False, 'yas_yok'
+    try:
+        if float(yas) > yas_esigi:
+            return False, 'bayat'
+    except (TypeError, ValueError):
+        return False, 'yas_sayi_degil'
+    if veri.get('v48') is None or veri.get('bms_enaz') is None:
+        return False, 'olcum_yok'
+    return True, 'gecerli'
+
+
+def bms_dip_olu(dip_mv: float, dip_esigi: float) -> bool:
+    """
+    Kesme kararı en düşük hücreden verilir, BMS'in SOC tahmininden değil.
+
+    LiFePO4'ün deşarj eğrisi düz: paket %60 SOC gösterirken tek bir çökmüş
+    hücre dibi görmüş olabilir. Paket gerilimi ve SOC ortalamadır ve o hücreyi
+    gizler; kesmesi gereken şey ise tam olarak odur.
+    """
+    return dip_mv <= dip_esigi
+
+
+def kip_modu(kart_kip: int, bayat: bool, otonom_kip: int = 2,
+             mod_manuel: int = 0, mod_otonom: int = 2) -> int:
+    """
+    Sürüş kartının bildirdiği kipten mod yöneticisinin modu.
+
+    Kip kararı kartta veriliyor; Jetson'ın oyu yok. Kart susarsa son bilinen
+    kipte kalmak, gerçekte manuel sürülen bir araca otonom komut basmaya
+    dönüşebilir — bayat veri bu yüzden manuel sayılır.
+
+    Orta kip (SwC yumuşak E-STOP) de manuel tarafına düşer: otonom yalnız
+    kartın açıkça otonom dediği değerdir. Araç o kipte zaten kilitli, mux'ın
+    ne bastığı sonucu değiştirmiyor.
+    """
+    if bayat:
+        return mod_manuel
+    return mod_otonom if kart_kip == otonom_kip else mod_manuel
+
+
+def kesme_estop(drm_bayraklar: int, veri_geldi: bool,
+                kesme_biti: int = 0x01) -> bool:
+    """
+    Kumandadaki kesme anahtarından (SwA) E-STOP.
+
+    Alıcı, verici kapalıyken de yayın sürdürdüğü için "çerçeve gelmiyorsa dur"
+    mantığı bu araçta sinyal kaybını yakalamıyor; yakalayan tek şey alıcının
+    failsafe kaydı ve o kayıt CH7'yi kesme konumuna düşürüyor. Kaynak bu
+    yüzden çerçeve sessizliğine değil kesme bitine bakar.
+
+    Veri hiç gelmediyse False döner: veri yokluğunu E-STOP'a çevirmek, kaynağı
+    açılışta kalıcı olarak kilitler ve hiçbir şey onu temizleyemez.
+    """
+    return veri_geldi and bool(drm_bayraklar & kesme_biti)
+
+
+def enkoder_sessiz(hiz_mms: int, sayim_sabit_s: float,
+                   hiz_esigi_mms: int = 100,
+                   sure_esigi_s: float = 1.0) -> bool:
+    """
+    Kart hareket ettiğini söylerken enkoder sayımı duruyorsa True.
+
+    Sürüş kartındaki karşılığı ölü bir bayrak: karşılaştırma için ikinci bir
+    hız kaynağı (gösterge ucu) gerekiyordu ve o uç tasarımdan çıktı. Denetim
+    bu yüzden bu tarafta kuruluyor ve iki bağımsız alana bakıyor: kartın
+    anladığı hız (0x38) ile ham sayım (0x30).
+
+    Eşik kartın kalkış tabanının altında tutulur — taban altındaki komutlar
+    zaten tabana yükseltildiği için, gerçek bir sürüş komutu her zaman bunun
+    üstündedir.
+    """
+    return abs(hiz_mms) >= hiz_esigi_mms and sayim_sabit_s >= sure_esigi_s
+
+
+def surum_uyumlu(protokol: int, beklenen: int) -> bool:
+    """
+    Yalnız protokol sürümü karşılaştırılır. Firmware yapı numarası davranış
+    değiştiren her yüklemede artıyor ve paket anlamlarını değiştirmiyor;
+    onu karşılaştırmak ilk güncellemede sahte alarm verir.
+    """
+    return protokol == beklenen
+
+
+# Sürüş kartının ayar paketi (0x09) — kimlik → ölçek. Kart bu sayıları
+# FLASH'A YAZMIYOR, RAM'de tutuyor: reset olduğunda hepsi sıfırlanır ve hız
+# alanı sessizce 0 basmaya döner. Kalıcılık bu yüzden kartta değil köprüde;
+# değerler kart her göründüğünde yeniden gönderilir.
+AYAR_CEVRE_MM      = 1   # tekerlek yuvarlanma çevresi
+AYAR_DISLI_ORANI   = 2   # enkoder mili turu : teker turu
+AYAR_DIREKSIYON    = 3   # direksiyon kolon/teker oranı
+AYAR_DARBE_TUR     = 4   # gösterge darbe/tur
+AYAR_DIR_ISARET    = 5   # direksiyon işareti (+1 / -1)
+
+_AYAR_OLCEK = {
+    AYAR_CEVRE_MM:    10.0,
+    AYAR_DISLI_ORANI: 1000.0,
+    AYAR_DIREKSIYON:  1000.0,
+    AYAR_DARBE_TUR:   10.0,
+    AYAR_DIR_ISARET:  1.0,
+}
+_INT16_MIN, _INT16_MAX = -32768, 32767
+
+
+def ayar_ham(kimlik: int, deger: float):
+    """
+    Ayar değerini kartın beklediği int16'ya çevirir.
+    Dönüş: `(ham, sebep)` — `ham` None ise gönderilmez.
+
+    Ölçek kimliğe bağlı ve tek yerde duruyor: iki tarafın ayrı ayrı çarpan
+    tutması, sayının sessizce on kat yanlış girilmesinin en kolay yoludur.
+    """
+    olcek = _AYAR_OLCEK.get(kimlik)
+    if olcek is None:
+        return None, 'bilinmeyen_kimlik'
+    # Kartın kabul kuralları burada da uygulanır: 1–4 için sıfır ve negatif
+    # reddediliyor (0 yazmak "ölçüm yok" demek ve hız alanını sessizce
+    # sıfırlar), kimlik 5 yalnız ±1. Erken elemek, karşılaştırma alarmını
+    # beklemekten iyi: reddedilen paket sahada "neden tutmuyor" diye aranır.
+    if kimlik == AYAR_DIR_ISARET:
+        if deger not in (1.0, -1.0):
+            return None, 'isaret_gecersiz'
+    elif deger <= 0.0:
+        return None, 'pozitif_olmali'
+    ham = int(round(deger * olcek))
+    if not (_INT16_MIN <= ham <= _INT16_MAX):
+        return None, 'aralik_disi'
+    return ham, 'gecerli'
+
+
+def ayar_deger(kimlik: int, ham: int):
+    """Kartın geri yolladığı ham sayıyı ölçeğine döndürür; bilinmeyen kimlikte None."""
+    olcek = _AYAR_OLCEK.get(kimlik)
+    return None if olcek is None else ham / olcek
+
+
+def ayar_gonderilecek(deger: float) -> bool:
+    """
+    Ayar yapılandırıldı mı. Sıfır "ölçülmedi" demek: ölçülmemiş bir sayıyı
+    göndermek, kartın bilerek sustuğu alana uydurma bir değer yazmaktır.
+    """
+    return abs(deger) > 1e-9
+
+
+def yaw_kovaryansi(sys_kalib: int, esik: int = 3,
+                   guvenilir: float = 0.02, supheli: float = 0.30) -> float:
+    """
+    BNO055 sistem kalibrasyonundan /imu/data'nın yaw kovaryansı [rad²].
+
+    Eşik kartınkiyle aynı tutulur: kart `sys < 3` iken HATA_BNO_KALIB basıyor,
+    yani o aralıkta yaw'ı güvenilir saymak EKF'e kartın kendisinin yetersiz
+    saydığı bir ölçümü tam ağırlıkla vermek olur.
+
+    Bedeli tek bir açıyla sınırlı değil: arka aks tek parça olduğu için yönün
+    ikinci bir kaynağı yok, EKF yaw'ı yalnız buradan alıyor. Hak etmediği
+    ağırlıkla alınan bir yaw doğrudan rotaya çıkar.
+    """
+    return guvenilir if sys_kalib >= esik else supheli
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -524,23 +765,6 @@ def pas_verilebilir(pas_gecilir: bool, label: str, pas_kullanildi: int,
     return True, 'izin'
 
 
-def rc_mod_otonom(ch5_us: float, esik_us: float) -> bool:
-    """
-    RC mod potundan (CH6 VRB) otonom istenip istenmediğini döndürür.
-
-    Karar bilerek İKİLİ ve tek eşiklidir, çünkü aynı kanalı Mega da okuyor
-    (arduino/src/main.cpp guncel_mod, config.h RC_MOD_ESIK) ve eşiğin altında
-    RC'yi doğrudan sürüp Jetson'ın sürüş paketlerini yok sayıyor. ROS tarafı
-    kanalı başka bir yerden bölerse potun arada kaldığı bantta iki taraf aynı
-    anda farklı modda olur; kanal üç konumlu bir anahtar değil sürekli bir pot
-    olduğu için o bant kazayla girilebilecek bir yerdir.
-
-    Eşikte eşitlik otonom sayılır — firmware de `> esik` değil kendi
-    karşılaştırmasında aynı sınırı kullanıyor.
-    """
-    return ch5_us >= esik_us
-
-
 def kurtarma_karari(retry_count: int, max_retries: int) -> str:
     """
     Bir aşama başarısız olduğunda ne yapılacağı. Dönüş: 'tekrar' | 'sonraki'.
@@ -592,6 +816,55 @@ def rampa_faz_gecisi(faz: str, pitch_mutlak: float, pitch_esik: float,
             return 'asildi'
         return 'egimde'
     return faz
+
+
+def rampa_ara_durus_gerekli(faz: str, faz_mesafe_m: float,
+                            durus_mesafe_m: float, yapildi: bool) -> bool:
+    """
+    §6.10'un eğim ÜZERİNDEKİ zorunlu duruşu şimdi yapılmalı mı.
+
+    Duruş noktası eğimin ortasında, rampa dibinde DEĞİL: parkur CAD'inde
+    rampa 8,60 m uzunluğunda ve 1,85 m yüksekliğinde, %45 eğimde her yamacın
+    yatay koşusu 4,11 m ve yamaç boyu 4,51 m — orta nokta 2,25 m.
+
+    Ölçüt PİTCH OLAMAZ: eğim boyunca pitch sabittir, nerede olduğunu söylemez.
+    Bu yüzden mutlak bir başlangıç (pitch eşiği ile 'egimde' fazına giriş) ile
+    kısa mesafeli odometri birleştiriliyor; iki metrede odometri sapması
+    ihmal edilebilir.
+
+    `durus_mesafe_m <= 0` duruşu kapatır (düz zeminde sürülen aşamalar).
+    """
+    if yapildi or faz != 'egimde':
+        return False
+    if durus_mesafe_m <= 0.0:
+        return False
+    return faz_mesafe_m >= durus_mesafe_m
+
+
+def yokus_kalkis_freni(gecen_s: float, tutma_binde: int, tork_s: float,
+                       birakma_binde_per_s: float) -> tuple:
+    """
+    Yokuş kalkışının o anki fren değeri. Dönüş: `(fren_binde, bitti)`.
+
+    Üç pencere:
+      1. `gecen_s < tork_s`      → fren TAM tutuyor, gaz zaten veriliyor;
+                                   motor torku bu pencerede oturuyor.
+      2. rampa                    → fren `birakma_binde_per_s` ile sıfıra iner.
+      3. fren sıfırlandı          → `bitti = True`, override bırakılır.
+
+    Gazın frenden ÖNCE verilmesi işin özü: sıra ters olursa fren bırakıldığı an
+    tork henüz yoktur, araç geri kaçar ve sürücü ters dönen rotoru sürmeyi
+    reddeder — kaçınılmak istenen tam olarak budur.
+    """
+    if gecen_s < tork_s:
+        return tutma_binde, False
+    if birakma_binde_per_s <= 0.0:
+        return 0, True
+    dusen = (gecen_s - tork_s) * birakma_binde_per_s
+    kalan = tutma_binde - dusen
+    if kalan <= 0.0:
+        return 0, True
+    return int(round(kalan)), False
 
 
 def koridor_merkez_cizgisi(ranges, angle_min: float, angle_increment: float,
