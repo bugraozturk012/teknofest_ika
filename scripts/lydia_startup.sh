@@ -146,6 +146,24 @@ trap temizle TERM INT
 # panosunda — ikisi ayri ise bakiyor, biri kapatilmiyor, portlar ayriliyor.
 : "${PANO_PORT:=8083}"
 
+# TEKERLEK_CEVRE_MM: tekerleğin bir turda yerde kat ettiği mesafe [mm].
+# Kart bu sayı girilmeden 0x31 hız alanını bilerek 0 basıyor; o hâlde /odom
+# ilerlemiyor ve Nav2 her hedefi 20 saniyede "ilerleme yok" diye iptal ediyor.
+# Kart ölçeği mm x 10 (1256.6 -> 12566, int16 tavanı 32767).
+#
+# 🔴 HENÜZ ÖLÇÜLMEDİ — 0 bırakıldı. Sıfır "ölçüm yok" demek ve GÖNDERİLMİYOR;
+#   kart da hız alanını 0 basmaya devam ediyor. Uydurma bir sayı göndermek
+#   susmaktan kötüdür: yanlış mesafeye dayanan rota sessizce yanlış yere gider.
+#
+#   Ölçüm: tekerleğe işaret koy, aracı düz bir çizgide it, işaret tam bir tur
+#   dönünce yerdeki mesafeyi mezürle ölç. ⚠ YÜK ÜSTÜNDEYKEN ölç — havalı lastik
+#   çöktüğü için yuvarlanma çevresi 2*pi*r'den küçüktür; hesaplanmış geometrik
+#   çevre kullanılırsa araç aldığı yolu olduğundan fazla sanar.
+#
+#   Ölçüm gelince tek satır: aşağıdaki 0 yerine milimetre değerini yaz.
+#   Yeniden derleme gerekmiyor, düğümü yeniden başlatmak yeter.
+: "${TEKERLEK_CEVRE_MM:=0}"
+
 if [ "$ENKODER_AKTIF" != "1" ]; then
     _TF_SAHIBI=statik
 elif [ "$NAV2_AKTIF" = "1" ]; then
@@ -291,6 +309,27 @@ else
 fi
 sleep 6
 
+# Geri sürüş kamerası — panoda ön ve nişanla birlikte üçlü sürüş görünümünü
+# besliyor. Konu adı topics.py CAMERA_REAR_TOPIC ile aynı tutulmalı; pano o
+# adı dinliyor ve cihaz yokken "sinyal yok" gösteriyor.
+# 🔴 /dev/kamera_arka için udev kuralı HENÜZ YOK (Jetson'da
+#    /etc/udev/rules.d/99-ika.rules). Kamera takıldığında ham video düğümüne
+#    değil, kurala bağlanmalı: ham numara her açılışta kayabiliyor.
+if [ -e /dev/kamera_arka ]; then
+    ros2 run usb_cam usb_cam_node_exe --ros-args \
+        -p camera_name:=geri_kamera \
+        -p video_device:=/dev/kamera_arka \
+        -p image_width:=640 -p image_height:=480 \
+        -p pixel_format:=mjpeg2rgb -p framerate:=30.0 \
+        -p qos_history_policy:=keep_last -p qos_history_depth:=1 \
+        -r /image_raw:=/camera/rear/image_raw \
+        -r /camera_info:=/camera/rear/camera_info \
+        > "$LOG/arka_cam.log" 2>&1 &
+    sleep 5
+else
+    echo "UYARI: arka kamera (/dev/kamera_arka) bulunamadı"
+fi
+
 # ── Gövde bağlantısı ve kontrol zinciri ──────────────────────────────────────
 if [ "$_TF_SAHIBI" = "seri_kopru" ]; then
     _SERI_TF=true
@@ -319,6 +358,7 @@ if [ ! -e "$SERI_PORT" ]; then
 fi
 ros2 run teknofest_ika seri_kopru --ros-args \
     -p port:="$SERI_PORT" -p baud:=921600 \
+    -p tekerlek_cevre_mm:="$TEKERLEK_CEVRE_MM" \
     -p publish_tf:="$_SERI_TF" \
     -p ham_enkoder:="$HAM_ENKODER" > "$LOG/seri_kopru.log" 2>&1 &
 sleep 8

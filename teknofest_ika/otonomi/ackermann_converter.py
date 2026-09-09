@@ -89,7 +89,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from geometry_msgs.msg import Twist
 from ackermann_msgs.msg import AckermannDriveStamped
-from std_msgs.msg import UInt16
+from std_msgs.msg import UInt8, UInt16
 
 from teknofest_ika.otonomi.topics import (
     MUX_CMD_VEL_TOPIC, ACKERMANN_CMD_TOPIC, E_STOP_TOPIC,
@@ -238,7 +238,11 @@ class AckermannConverter(Node):
         self.create_subscription(
             BoolMsg, SHOOT_CMD_TOPIC, self._atis_cb, 10
         )
-        self.create_subscription(UInt16, MOD_AKTIF_TOPIC, self._mod_cb, 10)
+        # Tip UInt8 — yayıncı (mod_yoneticisi) ve diğer beş abone öyle
+        # kullanıyor, topics.py de öyle diyor. DDS farklı tipleri
+        # EŞLEŞTİRMEZ: yanlış tiple abone olmak hata vermez, sadece hiç
+        # mesaj gelmez ve kip sonsuza kadar bilinmez kalır.
+        self.create_subscription(UInt8, MOD_AKTIF_TOPIC, self._mod_cb, 10)
 
         # ── Publisher: /ackermann_cmd ─────────────────────────────────────────
         self._pub = self.create_publisher(

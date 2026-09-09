@@ -64,7 +64,7 @@ from teknofest_ika.otonomi.topics import (
     E_STOP_TOPIC, E_STOP_FORCE_GCS_TOPIC, MOD_AKTIF_TOPIC, FSM_STATE_TOPIC,
     BATTERY_TOPIC, IMU_TOPIC, EKF_ODOM_TOPIC, MISYON_WP_INDEX_TOPIC,
     TARGETING_STATUS_TOPIC, TARGETING_DEBUG_TOPIC, SHOOT_RESULT_TOPIC,
-    CAMERA_IMAGE_TOPIC, CAMERA_TARET_TOPIC, YOLO_RAW_DEBUG_TOPIC,
+    CAMERA_IMAGE_TOPIC, CAMERA_TARET_TOPIC, CAMERA_REAR_TOPIC, YOLO_RAW_DEBUG_TOPIC,
     MAP_IMAGE_TOPIC, DEPTH_IMAGE_TOPIC, SCAN_TOPIC,
     RC_INPUT_TOPIC, MUX_CMD_VEL_TOPIC, ODOM_TOPIC, ENKODER_HAM_TOPIC,
     YOLO_RAW_TOPIC, MISYON_KALAN_SURE_TOPIC, KAYIT_DURUMU_TOPIC,
@@ -96,7 +96,10 @@ PORT        = int(os.environ.get('PANO_PORT', 8083))
 JPEG_KALITE = 35     # düşük = küçük dosya, kablosuz için uygun
 MAKS_GENIS  = 480    # kameralar bu genişliğe küçültülür (en-boy korunur)
 AKIS_FPS    = 12     # MJPEG akış tavanı (izleme için yeterli)
-PANELLER    = {'on', 'yolo', 'nisan', 'harita', 'derinlik', 'lidar'}
+# 'yolo' uçtan erişilebilir kalıyor ama ana ızgarada değil: tarayıcı aynı
+# kaynağa en fazla 6 eşzamanlı bağlantı açıyor ve sürüş için üç kamera
+# (ön, nişan, arka) öncelikli. YOLO'ya bakmak isteyen /kare/yolo'yu çağırır.
+PANELLER    = {'on', 'yolo', 'nisan', 'geri', 'harita', 'derinlik', 'lidar'}
 # Bu süreden eski kare "sinyal yok" sayılır — donmuş görüntü canlı sanılırsa
 # yanlış karar verdirir. SLAM haritası seyrek yayınlandığı için (~5 s) kamera
 # eşiğine tabi tutulursa panel sürekli boş görünür, ayrı eşiği var.
@@ -235,6 +238,7 @@ class Ortak:
         self.kilit = threading.Lock()
         # panel adı → (bgr numpy, zaman)
         self.kareler = {'on': (None, 0.0), 'yolo': (None, 0.0),
+                        'geri': (None, 0.0),
                         'harita': (None, 0.0), 'nisan_ham': (None, 0.0),
                         'nisan_dbg': (None, 0.0), 'derinlik': (None, 0.0),
                         'lidar': (None, 0.0)}
@@ -311,6 +315,11 @@ class WebDashboardNode(Node):
                                  lambda m: self._ham_kare('harita', m), be)
         self.create_subscription(Image, CAMERA_TARET_TOPIC,
                                  lambda m: self._ham_kare('nisan_ham', m), be)
+        # Geri sürüş kamerası. Açılış betiği bu düğümü yalnız /dev/kamera_arka
+        # varsa başlatıyor; cihaz yokken konu hiç doğmuyor ve panel 'sinyal
+        # yok' gösteriyor — bu doğru davranış, boş bir kare basmıyoruz.
+        self.create_subscription(Image, CAMERA_REAR_TOPIC,
+                                 lambda m: self._ham_kare('geri', m), be)
         # Derinlik kamerası — sürücü rgb8 yayınlar (renklendirme kendisinde),
         # cv_bridge bgr8'e çevirir, ek işlem gerekmez.
         self.create_subscription(Image, DEPTH_IMAGE_TOPIC,
@@ -794,7 +803,7 @@ body{background:%(BG)s;color:%(TEXT)s;font:13px 'Segoe UI',system-ui,sans-serif}
 #sol{width:178px;display:flex;flex-direction:column;gap:6px}
 /* minmax(0,1fr): hücre tabanı içerikten bağımsız olsun. Düz 1fr min-content'i
    taban alır, SLAM haritası büyüdükçe panel boyu da oynar. */
-#orta{flex:1;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr));gap:6px;min-height:0}
+#orta{flex:1;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));grid-template-rows:minmax(0,1fr);gap:6px;min-height:0}
 .vid{min-width:0;min-height:0;overflow:hidden}
 #sag{width:200px;display:flex;flex-direction:column;gap:6px}
 .kart{background:%(CARD)s;border:1px solid %(LINE)s;border-radius:6px;padding:8px 10px}
@@ -844,16 +853,10 @@ button{border:none;border-radius:4px;cursor:pointer;font-family:inherit}
  <div id=orta>
   <div class=vid><div class=h>Ön Kamera</div><div class=g>
    <span class=yok>sinyal yok</span><img id=cam_on></div></div>
-  <div class=vid><div class=h>YOLO Debug</div><div class=g>
-   <span class=yok>sinyal yok</span><img id=cam_yolo></div></div>
   <div class=vid><div class=h>Nişan Kamera</div><div class=g>
    <span class=yok>sinyal yok</span><img id=cam_nisan></div></div>
-  <div class=vid><div class=h>SLAM Haritası</div><div class=g>
-   <span class=yok>sinyal yok</span><img id=cam_harita></div></div>
-  <div class=vid><div class=h>Derinlik Kamerası</div><div class=g>
-   <span class=yok>sinyal yok</span><img id=cam_derinlik></div></div>
-  <div class=vid><div class=h>LiDAR (anlık)</div><div class=g>
-   <span class=yok>sinyal yok</span><img id=cam_lidar></div></div>
+  <div class=vid><div class=h>Arka Kamera</div><div class=g>
+   <span class=yok>sinyal yok</span><img id=cam_geri></div></div>
  </div>
  <div id=sag>
   <div class=kart style=padding:0>
@@ -872,9 +875,8 @@ button{border:none;border-radius:4px;cursor:pointer;font-family:inherit}
 <script>
 // Kamera panelleri — her kare ayrı istek. MJPEG bağlantıyı süresiz açık tutar,
 // 6 panel + SSE tarayıcının 6 eşzamanlı bağlantı sınırını doldurur.
-for(const [id,ad] of [['cam_on','on'],['cam_yolo','yolo'],
-                      ['cam_nisan','nisan'],['cam_harita','harita'],
-                      ['cam_derinlik','derinlik'],['cam_lidar','lidar']]){
+for(const [id,ad] of [['cam_on','on'],['cam_geri','geri'],
+                      ['cam_nisan','nisan']]){
   const im=document.getElementById(id), yok=im.previousElementSibling;
   let bekliyor=false;
   const cek=()=>{
@@ -1076,14 +1078,18 @@ h1 b{font-weight:400;color:var(--y2)}
 #surLidar .kamAlan{aspect-ratio:1/1}
 #surSol,#surSag{display:flex;flex-direction:column;gap:10px;min-height:0;
         overflow:auto}
-#surOrta{display:flex;flex-direction:column;gap:10px;min-height:0}
+/* Sürüş ve otonom görünümlerinde AYNI üç kamera, AYNI yerleşim: ön üstte
+   tam genişlik, arka ve nişan altta yan yana. Görünüm değiştirince kameranın
+   yeri değişmiyor — sürücü aynı yere bakmaya devam ediyor. */
+#surOrta,#otoKam{display:grid;gap:10px;min-height:0;
+        grid-template-columns:repeat(2,minmax(0,1fr));
+        grid-template-rows:minmax(0,1.35fr) minmax(0,1fr)}
+#surOrta .kamOn,#otoKam .kamOn{grid-column:1/-1}
 
 /* ═════════ OTONOM DÜZENİ ═════════ */
 #gOtonom{grid-template-columns:minmax(0,1fr) 240px;grid-template-rows:auto minmax(0,1fr)}
 #otoUst{grid-column:1/-1;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));
         gap:10px}
-#otoKam{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
-        grid-template-rows:repeat(2,minmax(0,1fr));gap:10px;min-height:0}
 #otoSag{display:flex;flex-direction:column;gap:10px;min-height:0;overflow:auto}
 
 /* ═════════ KAYIT DÜZENİ ═════════ */
@@ -1124,6 +1130,11 @@ tr.kaynaksiz td.kDeg{color:var(--y3)}
   #gSurus{grid-template-columns:minmax(0,1fr);grid-auto-rows:min-content}
   #gOtonom{grid-template-columns:minmax(0,1fr)}
   #otoUst{grid-template-columns:repeat(2,minmax(0,1fr))}
+  /* Telefonda üç kamera alt alta. Dar ekranda `min-content` satır yüksekliği
+     vermediği için kamera alanı çöküyordu; oranla sabitleniyor. */
+  #surOrta,#otoKam{grid-template-columns:minmax(0,1fr);grid-template-rows:auto}
+  #surOrta .kamOn,#otoKam .kamOn{grid-column:auto}
+  #surOrta .kamAlan,#otoKam .kamAlan{aspect-ratio:16/9}
 }
 </style></head><body>
 
@@ -1164,8 +1175,12 @@ tr.kaynaksiz td.kDeg{color:var(--y3)}
         <div class=altbil>ham <span class="sayi" data-inline=encp>—</span> sayım</div></div></div>
     </div>
     <div id=surOrta>
-      <div class=wj style="flex:1"><div class=wjUst><h3>Ön Kamera</h3><span class=ek data-kamfps=on>—</span></div>
+      <div class="wj kamOn"><div class=wjUst><h3>Ön Kamera</h3><span class=ek data-kamfps=on>—</span></div>
         <div class=wjGov><div class="kamAlan" data-kam=on><span class=kamYok>sinyal yok</span><img alt=""></div></div></div>
+      <div class=wj><div class=wjUst><h3>Arka Kamera</h3><span class=ek data-kamfps=geri>—</span></div>
+        <div class=wjGov><div class="kamAlan" data-kam=geri><span class=kamYok>sinyal yok</span><img alt=""></div></div></div>
+      <div class=wj><div class=wjUst><h3>Nişan Kamerası</h3><span class=ek data-kamfps=nisan>—</span></div>
+        <div class=wjGov><div class="kamAlan" data-kam=nisan><span class=kamYok>sinyal yok</span><img alt=""></div></div></div>
     </div>
     <div id=surSag>
       <!-- LiDAR taraması kare; geniş panelde genişliğin yarısı boşa gidiyordu,
@@ -1221,12 +1236,10 @@ tr.kaynaksiz td.kDeg{color:var(--y3)}
         <div class=wjGov><div class="metinD yok" id=oSure>—</div></div></div>
     </div>
     <div id=otoKam>
-      <div class=wj><div class=wjUst><h3>YOLO</h3><span class=ek data-kamfps=yolo>—</span></div>
-        <div class=wjGov><div class="kamAlan" data-kam=yolo><span class=kamYok>sinyal yok</span><img alt=""></div></div></div>
-      <div class=wj><div class=wjUst><h3>SLAM Haritası</h3><span class=ek data-kamfps=harita>—</span></div>
-        <div class=wjGov><div class="kamAlan pikselli" data-kam=harita><span class=kamYok>sinyal yok</span><img alt=""></div></div></div>
-      <div class=wj><div class=wjUst><h3>Derinlik</h3><span class=ek>OS30A · 0,02–2,5 m</span></div>
-        <div class=wjGov><div class="kamAlan" data-kam=derinlik><span class=kamYok>sinyal yok</span><img alt=""></div></div></div>
+      <div class="wj kamOn"><div class=wjUst><h3>Ön Kamera</h3><span class=ek data-kamfps=on>—</span></div>
+        <div class=wjGov><div class="kamAlan" data-kam=on><span class=kamYok>sinyal yok</span><img alt=""></div></div></div>
+      <div class=wj><div class=wjUst><h3>Arka Kamera</h3><span class=ek data-kamfps=geri>—</span></div>
+        <div class=wjGov><div class="kamAlan" data-kam=geri><span class=kamYok>sinyal yok</span><img alt=""></div></div></div>
       <div class=wj><div class=wjUst><h3>Nişan Kamerası</h3><span class=ek data-kamfps=nisan>—</span></div>
         <div class=wjGov><div class="kamAlan" data-kam=nisan><span class=kamYok>sinyal yok</span><img alt=""></div></div></div>
     </div>

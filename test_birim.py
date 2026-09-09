@@ -18,6 +18,7 @@ import re
 import yaml
 import sys
 import time as _time
+import glob
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -2206,6 +2207,110 @@ check("mod yayın periyodu okundu", _m_hz is not None, True)
 if _m_hz:
     check("bayatlama en az üç nabız payı bırakıyor",
           MOD_BAYATLAMA_S >= 3.0 * float(_m_hz.group(1)), True)
+
+
+# ─── Tekerlek çevresi karta ULAŞMALI ────────────────────────────────────────
+# Kart bu sayı girilmeden 0x31'i bilerek 0 basıyor; sıfır kalırsa /odom
+# ilerlemez ve Nav2 her hedefi "ilerleme yok" diye iptal eder. Değerin betikte
+# yazılı olması yetmez — ros2 run satırına da GEÇMELİ. İlk sürümde değişken
+# tanımlıydı ama düğüme verilmiyordu; o hâlde hiçbir şey değişmezdi.
+_m_cevre_var = re.search(r':\s*"\$\{TEKERLEK_CEVRE_MM:=([\d.]+)\}"', _BETIK)
+check("tekerlek çevresi betikte tanımlı", _m_cevre_var is not None, True)
+check("çevre ros2 run satırına geçiyor",
+      're.search' and 'tekerlek_cevre_mm:="$TEKERLEK_CEVRE_MM"' in _BETIK, True)
+# Değer DAYATILMIYOR: ölçülene kadar 0 kalması doğru davranış. Denetim
+# ölçüme değil, ölçüm geldiğinde karta ULAŞACAĞINA bakıyor.
+from teknofest_ika.otonomi.pure_logic import (   # noqa: E402
+    ayar_ham, ayar_gonderilecek, AYAR_CEVRE_MM,
+)
+# Sıfır "ölçüm yok" demek ve gönderilmemeli — kartın bilerek sustuğu alana
+# uydurma sayı yazmak, susmasından kötüdür.
+check("sıfır çevre gönderilmiyor", ayar_gonderilecek(0.0), False)
+check("ölçülmüş çevre gönderilir", ayar_gonderilecek(1842.5), True)
+# Ölçek mm x 10, alan int16. Ölçek yanlış kurulursa sayı sessizce on kat
+# yanlış gider; aralık aşılırsa ayar hiç gönderilmez.
+_ham, _sebep = ayar_ham(AYAR_CEVRE_MM, 1842.5)
+check("çevre karta gönderilebilir", _sebep, 'gecerli')
+check("çevre ölçeği mm x 10", _ham, 18425)
+check("çevre int16'ya sığıyor", -32768 <= _ham <= 32767, True)
+# int16 tavanı 3,2 m çevreye kadar yer bırakıyor — bundan büyüğü reddedilmeli.
+check("aşırı çevre reddediliyor", ayar_ham(AYAR_CEVRE_MM, 4000.0)[1], 'aralik_disi')
+
+
+# ─── KONU MESAJ TİPLERİ TÜM DEPODA TUTARLI OLMALI ──────────────────────────
+# Kart ekibi 040'ta yakaladı: ackermann_converter /mod/aktif'e UInt16 abone
+# oluyordu, yayıncı ve diğer beş tüketici UInt8 kullanıyordu. DDS farklı
+# tipleri EŞLEŞTİRMEZ ve bu sessiz bir arızadır — hata yok, uyarı yok,
+# sadece mesaj hiç gelmez. Sonucu: manuelde fren kapısı hiç devreye girmedi.
+#
+# Bu denetim dizgeye bakmıyor, AST'den `create_subscription(TİP, KONU, ...)`
+# ve `create_publisher(TİP, KONU, ...)` çağrılarını çıkarıp konu sabiti
+# başına tip kümesi kuruyor. Bir konuda iki tip görünürse düşer.
+import ast as _ast   # noqa: E402
+
+_TIP_HARITA = {}     # konu sabiti -> {tip: [dosya...]}
+for _dosya in sorted(glob.glob(os.path.join(_KOK, 'teknofest_ika', '**', '*.py'),
+                               recursive=True) +
+                     glob.glob(os.path.join(_KOK, 'scripts', '*.py'))):
+    try:
+        _agac = _ast.parse(open(_dosya, encoding='utf-8').read(), _dosya)
+    except SyntaxError:
+        continue
+    _takma = {}
+    for _d in _ast.walk(_agac):
+        if isinstance(_d, _ast.ImportFrom):
+            for _n in _d.names:
+                if _n.asname:
+                    _takma[_n.asname] = _n.name
+    for _d in _ast.walk(_agac):
+        if not isinstance(_d, _ast.Call) or not isinstance(_d.func, _ast.Attribute):
+            continue
+        if _d.func.attr not in ('create_subscription', 'create_publisher'):
+            continue
+        if len(_d.args) < 2:
+            continue
+        _tip, _konu = _d.args[0], _d.args[1]
+        # Yalnız "tip adı + konu sabiti" biçimindekiler; string konular ve
+        # değişkenden gelenler atlanır (karşılaştırılabilir değiller).
+        if not isinstance(_tip, _ast.Name) or not isinstance(_konu, _ast.Name):
+            continue
+        if not _konu.id.isupper():
+            continue
+        # Takma ad çözümü: `from std_msgs.msg import Bool as BoolMsg` yerel adı
+        # değiştiriyor ama mesaj tipi aynı. Yerel adı gerçek tipe çeviriyoruz,
+        # yoksa aynı tipin iki adı çakışma sanılır.
+        _TIP_HARITA.setdefault(_konu.id, {}).setdefault(
+            _takma.get(_tip.id, _tip.id), []).append(os.path.basename(_dosya))
+
+check("konu-tip taraması bir şey buldu", len(_TIP_HARITA) >= 10, True)
+_catisan = {k: v for k, v in _TIP_HARITA.items() if len(v) > 1}
+if _catisan:
+    for _k, _v in sorted(_catisan.items()):
+        print(f"    ÇAKIŞMA {_k}: " +
+              " | ".join(f"{t} ({', '.join(sorted(set(d)))})" for t, d in _v.items()))
+check("hiçbir konuda mesaj tipi çakışması yok", sorted(_catisan), [])
+
+# /mod/aktif özel olarak kilitleniyor — bu hatanın çıktığı yer.
+check("/mod/aktif tek tip kullanıyor",
+      sorted(_TIP_HARITA.get('MOD_AKTIF_TOPIC', {})), ['UInt8'])
+
+# ─── Kapanmış porta yazmak düğümü ÖLDÜRMEMELİ ──────────────────────────────
+# Kart her firmware yüklemesinde resetleniyor; okuma döngüsü portu kapatırken
+# /cmd_vel geri çağrısı yazmaya devam ediyor. pyserial bu durumda
+# SerialException değil TypeError üretiyor (iç iptal borusu None oluyor).
+# Yakalanmayan istisna köprüyü öldürdü ve açılış betiği düğümleri
+# denetlemediği için köprü bir daha dönmedi — boşta kalan portu
+# f767_telemetri kaptı.
+_GONDER = _govde(_SK_KAYNAK, '    def _paket_gonder')
+check("yazmadan önce port açık mı denetleniyor", 'ser.is_open' in _GONDER, True)
+# 🔑 Dizge araması YETMEZ: açıklama yorumunda da "TypeError" geçiyor ve ilk
+# sürümde bu test, except demetinden TypeError silindiğinde bile geçiyordu —
+# mutasyon turu yakaladı. Denetim artık except SATIRINI eşleştiriyor.
+_m_exc = re.search(r'except\s*\(([^)]*)\)\s*as\s+\w+:', _GONDER)
+check("except demeti bulundu", _m_exc is not None, True)
+check("TypeError except demetinde",
+      'TypeError' in (_m_exc.group(1) if _m_exc else ''), True)
+check("hata sonrası port kapatılıyor", '_port_kapat()' in _GONDER, True)
 
 
 # ─── Sonuç ───────────────────────────────────────────────────────────────────

@@ -1032,9 +1032,21 @@ class SeriKopru(Node):
             self.get_logger().debug(
                 f'[SIM] 0x{komut:02X} v0={v0} v1={v1} → {pkt.hex()}')
             return
+        # Kapanmış porta yazmak SerialException DEĞİL, TypeError üretiyor:
+        # pyserial kapanırken iç iptal borusunu None yapıyor ve select() onu
+        # dosya tanıtıcısı sanıp patlıyor. Yarış penceresi dar ama gerçek —
+        # kart her firmware yüklemesinde resetleniyor, okuma döngüsü portu
+        # kapatıyor ve /cmd_vel geri çağrısı aynı anda yazmaya devam ediyor.
+        # Yakalanmayan istisna düğümü öldürüyordu; açılış betiği düğümleri
+        # denetlemediği için köprü bir daha kendiliğinden dönmüyor ve boşta
+        # kalan portu f767_telemetri kapıyor. Bu yüzden hem önden denetim
+        # hem geniş ağ var: burada ölmek, bir paketi kaybetmekten pahalı.
         try:
+            if not ser.is_open:
+                self._port_kapat()
+                return
             ser.write(pkt)
-        except (serial.SerialException, OSError) as e:
+        except (serial.SerialException, OSError, TypeError, AttributeError) as e:
             self.get_logger().warn(f'Seri yazma hatası: {e}',
                                    throttle_duration_sec=5.0)
             self._port_kapat()
