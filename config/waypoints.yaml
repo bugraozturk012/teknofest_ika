@@ -366,7 +366,7 @@ parametreler:
   # sol U dönüşüne de aynı süreyi veriyordu.
   #
   # Süreler UYDURULMADI: istasyonlar arası mesafe parkur CAD'inden, aracın
-  # 1,90 × 1,16 m dikdörtgeni eğriliği sınırlı ve geri vitessiz yollar boyunca
+  # 1,90 × 1,17 m dikdörtgeni eğriliği sınırlı ve geri vitessiz yollar boyunca
   # süpürülerek ölçüldü (scripts/parkur_cad/donus.py ile aynı planlayıcı),
   # sonra zemine göre bir ortalama hıza bölündü. Türetim her aşamanın yanında.
   # Toplam 540 s; §6.12'nin 900 s'sine 360 s pay kalıyor.

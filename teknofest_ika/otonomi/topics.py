@@ -428,11 +428,15 @@ IMU_PITCH_RAMP_THRESHOLD  = 15.0  # Rampa — yüksek tork
 # eğimde stabil olmasını istiyor. %20 = arctan(0.20) = 11,31°, yani uyarı
 # eşiği bunun altında kaldığı sürece zorunlu bir aşamada hız kısılır.
 IMU_ROLL_WARN_THRESHOLD   = 13.0  # Yan eğim — §6.5'in 11,31°'si + pay
-# ⚠️ Aşağıdaki iki eşik ÖLÇÜME BAĞLI, şu anki değerler devralınmış tahmindir.
 # Statik devrilme açısı  θ = arctan(iz_genişliği / (2 × ağırlık_merkezi_yük.))
-# formülüyle türetilir; iz genişliği §7.1 kapsamında hâlâ ölçülmedi (depoda
-# 0,50 / 0,67 / 0,900 diye üç değer var) ve ağırlık merkezi yüksekliği hiç
-# bilinmiyor. İkisi ölçülünce buradan yeniden hesaplanacak.
+# İz genişliği ÖLÇÜLDÜ: 1,00 m (arka teker merkezleri arası). Ağırlık merkezi
+# yüksekliği hâlâ bilinmiyor, ama kötümser bir değerle bile sonuç rahat:
+#   a.m. 0,30 m → 59°  ·  0,40 m → 51°  ·  0,50 m → 45°  ·  0,60 m → 40°
+# 0,60 m gövde kutusunun üstünden yüksek, yani gerçekçi olmayan bir üst sınır.
+# Aşağıdaki eşikler bunların çok altında ve BİLEREK öyle bırakılıyor: §6.5'in
+# zorunlu %20 yan eğimi 11,31° ve eşikler o aşamayı geçirmeye göre kurulu,
+# devrilme sınırına göre değil. Ağırlık merkezi ölçülse bile eşikleri
+# yükseltmek §6.5'i riske atar.
 IMU_ROLL_STOP_THRESHOLD   = 15.0  # Yan eğim — dur
 IMU_ROLL_ESTOP_THRESHOLD  = 20.0  # Devrilme — E-STOP
 IMU_PITCH_DOWN_THRESHOLD  = 15.0  # Yokuş aşağı fren modu

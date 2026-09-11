@@ -323,13 +323,13 @@ global_costmap:
       # doğduğu için uzaktaki engelin konumu kararı belirlemiyor.
       global_frame: odom
       robot_base_frame: base_footprint
-      # Gövde 1,90 × 1,16 m (araçtan ölçüldü). Köşeler base_footprint'e
+      # Gövde 1,90 × 1,17 m (en araçtan ölçüldü). Köşeler base_footprint'e
       # göre; o da dingil ortasında (ön teker +0,70, arka −0,70) ve
       # taşmaların önden/arkadan dağılımı ölçülmediği için kutu simetrik.
       # Daireyle temsil edilemez: çevrel yarıçap 1,09 m ve o daire §6.1'in
       # 3 m şeridinde yalnız 0,82 m serbest bant bırakır — koridor baştan
       # sona kapanır. Dikdörtgen gerçek yanal boşluğu 0,87 m/yan yapar.
-      footprint: "[[0.950, 0.580], [0.950, -0.580], [-0.950, -0.580], [-0.950, 0.580]]"
+      footprint: "[[0.950, 0.585], [0.950, -0.585], [-0.950, -0.585], [-0.950, 0.585]]"
       footprint_padding: 0.05     # [m] güvenlik payı — gövde ölçüsünden AYRI
 
       resolution: 0.05            # [m/piksel] — 5 cm çözünürlük
@@ -479,7 +479,7 @@ local_costmap:
       robot_base_frame: base_footprint
       # global_costmap ile birebir aynı gövde — ikisi ayrışırsa planlayıcının
       # geçilebilir bulduğu yolu kontrolcünün costmap'i engelli görür.
-      footprint: "[[0.950, 0.580], [0.950, -0.580], [-0.950, -0.580], [-0.950, 0.580]]"
+      footprint: "[[0.950, 0.585], [0.950, -0.585], [-0.950, -0.585], [-0.950, 0.585]]"
       footprint_padding: 0.05     # [m] güvenlik payı — gövde ölçüsünden AYRI
       rolling_window: true
       width: 8                    # [m] — lokal harita genişliği

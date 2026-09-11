@@ -497,11 +497,53 @@ for _dosya, _anahtar in (
     check(f"{_dosya}: dingil arası {_L_BEKLENEN}",
           bool(_SATIRLAR) and any(_L_BEKLENEN in l for l in _SATIRLAR), True)
 
-# URDF teker joint'leri dingil arasının yarısında durmalı: L/2 = 0.72.
-with open(os.path.join(_KOK, 'urdf/arac.urdf'), encoding='utf-8') as f:
-    _URDF = f.read()
-check("urdf ön teker x = +0.72",  '"0.72 -0.335' in _URDF and '"0.72 0.335'  in _URDF, True)
-check("urdf arka teker x = -0.72", '"-0.72 0.335' in _URDF and '"-0.72 -0.335' in _URDF, True)
+# ── ARAÇ ÖLÇÜLERİ — URDF'in DÜŞEY geometrisi ve iz genişliği ──────────────
+# Gövde kutusunun eni/boyu/yüksekliği aşağıda ayrıca sınanıyor; burada
+# sayılar metin olarak değil URDF'ten ÇÖZÜLÜP aritmetikle doğrulanıyor.
+# Bir sayı elle değiştirilip ötekiler unutulursa kutu havada kalır ya da
+# tekerlek yere gömülür — ikisi de yalnız rviz'de gözle görülür.
+import xml.etree.ElementTree as _ET25
+_U25_ROOT = _ET25.parse(os.path.join(_KOK, 'urdf/arac.urdf')).getroot()
+
+
+def _u25_xyz(e):
+    return [float(v) for v in e.get('xyz').split()]
+
+
+# Araçtan ölçülen (11 Eylül): en 1,17 · toplam yükseklik 0,78 ·
+# zemin boşluğu 0,365 (şasi altı) · iz genişliği 1,00 · dingil arası 1,44
+_U25_TOPLAM_Y, _U25_BOSLUK, _U25_IZ, _U25_L = 0.78, 0.365, 1.00, 1.44
+
+_u25_bj = [j for j in _U25_ROOT.iter('joint') if j.get('name') == 'base_joint'][0]
+_U25_BASE_Z = _u25_xyz(_u25_bj.find('origin'))[2]
+_u25_govde = [l for l in _U25_ROOT.iter('link') if l.get('name') == 'base_link'][0]
+_u25_vis = _u25_govde.find('visual')
+_U25_KUTU = [float(v) for v in _u25_vis.find('geometry').find('box').get('size').split()]
+_U25_KUTU_Z = _u25_xyz(_u25_vis.find('origin'))[2]
+
+# 🔑 Kutu ZEMİNE DEĞMİYOR: şasi altı 0,365 m yukarıda. Eskiden kutu zemine
+# oturuyordu ve yüksekliği toplam yükseklik sanılıyordu.
+check("kutu yüksekliği = toplam − zemin boşluğu",
+      round(_U25_KUTU[2], 4), round(_U25_TOPLAM_Y - _U25_BOSLUK, 4))
+check("kutu altı = zemin boşluğu",
+      round(_U25_BASE_Z + _U25_KUTU_Z - _U25_KUTU[2] / 2.0, 4), _U25_BOSLUK)
+check("kutu üstü = toplam yükseklik",
+      round(_U25_BASE_Z + _U25_KUTU_Z + _U25_KUTU[2] / 2.0, 4), _U25_TOPLAM_Y)
+
+# Tekerlek merkezleri: |x| = L/2, |y| = iz/2. Dördü de sınanıyor — iz
+# genişliği ÖLÇÜLENE kadar depoda 0,50/0,67/0,900 diye üç değer dolaşıyordu.
+_u25_tekerler = {j.get('name'): _u25_xyz(j.find('origin'))
+                 for j in _U25_ROOT.iter('joint')
+                 if j.get('name', '').split('_')[0] in ('sag', 'sol')}
+check("dört teker joint'i bulundu", len(_u25_tekerler), 4)
+for _u25_ad, _u25_o in sorted(_u25_tekerler.items()):
+    check(f"{_u25_ad}: |x| = L/2",  round(abs(_u25_o[0]), 4), round(_U25_L / 2.0, 4))
+    check(f"{_u25_ad}: |y| = iz/2", round(abs(_u25_o[1]), 4), round(_U25_IZ / 2.0, 4))
+check("ön tekerler +x",
+      all(o[0] > 0 for a, o in _u25_tekerler.items() if '_on_' in a), True)
+check("arka tekerler -x",
+      all(o[0] < 0 for a, o in _u25_tekerler.items() if '_arka_' in a), True)
+
 
 
 # ─── 5c. Kart Hız Kısıtları ve Enkoder Sessizliği ───────────────────────────
@@ -2125,7 +2167,10 @@ print("\n=== Gövde ölçüsü tutarlılığı ===")
 
 # Araçtan ölçülen gerçek gövde. Planlayıcı bu dikdörtgeni kullanıyor; küçük
 # yazmak koridorlarda ve dönüşlerde olmayan bir pay uydurur.
-_ARAC_BOY, _ARAC_GEN, _ARAC_YUK = 1.90, 1.16, 0.76
+# Boy bu turda YENİDEN ÖLÇÜLMEDİ. En ölçüldü. Kutu yüksekliği TÜRETİLİR:
+# toplam yükseklik (0,78) eksi zemin boşluğu (0,365) — gövde zemine değmiyor.
+_ARAC_BOY, _ARAC_GEN = 1.90, 1.17
+_ARAC_YUK = round(0.78 - 0.365, 3)
 
 with open(os.path.join(_KOK, 'config/nav2_params.yaml'), encoding='utf-8') as f:
     _NAV2 = f.read()
