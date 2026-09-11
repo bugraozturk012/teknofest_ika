@@ -637,7 +637,8 @@ ros2 run tf2_ros static_transform_publisher \
 # göre yayınlanıyor ve base_link zeminden BASE_LINK_Z_M yukarıda. Fark burada
 # alınıyor. Önceden ölçülen sayı doğrudan base_link'e konuyordu, yani tarama
 # düzlemi TF'te zeminden 0,28 m fazla yükseğe yerleşiyordu.
-: "${BASE_LINK_Z_M:=0.28}"     # urdf/arac.urdf base_joint ile AYNI olmalı
+: "${BASE_LINK_Z_M:=0.2989}"   # urdf/arac.urdf base_joint ile AYNI olmalı
+                               # = tekerlek yarıçapı 0,1989 (çevre 1250 mm) + 0,10
 : "${LIDAR_Z_M:=0.60}"         # ZEMİNDEN tarama düzlemine, mezürle ölçüldü
 _LIDAR_Z_BASE=$(awk "BEGIN{printf \"%.4f\", $LIDAR_Z_M - $BASE_LINK_Z_M}")
 echo "[LiDAR] zeminden $LIDAR_Z_M m → base_link'e göre $_LIDAR_Z_BASE m"

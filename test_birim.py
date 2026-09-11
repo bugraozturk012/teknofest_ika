@@ -567,8 +567,16 @@ check("betikte LIDAR_Z_M zeminden", ': "${LIDAR_Z_M:=0.60}"' in _u25_st, True)
 check("betik base_link farkını düşüyor",
       '$LIDAR_Z_M - $BASE_LINK_Z_M' in _u25_st, True)
 check("betikteki base_link yüksekliği urdf ile aynı",
-      ': "${BASE_LINK_Z_M:=0.28}"' in _u25_st, True)
-check("urdf base_joint da 0.28", _U25_BASE_Z, 0.28)
+      ': "${BASE_LINK_Z_M:=0.2989}"' in _u25_st, True)
+# base_link yüksekliği = tekerlek yarıçapı + teker joint ofseti (0,10).
+# Yarıçap ölçümden: yuvarlanma çevresi 1250 mm → r = 1,250/2π = 0,1989.
+check("urdf base_joint = yarıçap + 0.10", _U25_BASE_Z, 0.2989)
+_u25_sil = [l for l in _U25_ROOT.iter('link')
+            if l.get('name', '').endswith('teker')]
+check("dört teker link'i", len(_u25_sil), 4)
+for _u25_l in _u25_sil:
+    _u25_r = float(_u25_l.find('visual').find('geometry').find('cylinder').get('radius'))
+    check(f"{_u25_l.get('name')} yarıçapı çevreden", _u25_r, 0.1989)
 # Ham sayı doğrudan TF'e verilmemeli.
 check("TF'e ham LIDAR_Z_M verilmiyor",
       'static_transform_publisher 0 0 "$LIDAR_Z_M"' in _u25_st, False)
@@ -4007,6 +4015,22 @@ check("sed: başka satır değişmedi",
       _SONUC.count('\n'), _ORNEK.count('\n'))
 # frame_id, betiğin bastığı statik TF'in child'ıyla aynı olmak zorunda.
 check("frame_id statik TF ile aynı", 'base_link laser_frame' in _ST26, True)
+
+
+
+# ─── 27. SwB taret anahtarı otonomda gazı kesiyor ──────────────────────────
+print("\n=== 27. SwB gaz kesme uyarısı ===")
+
+# 🔴 051 §6.3: kart, SwB yukarıdayken OTONOMDA DA gazı uygulamıyor (taret
+# kipi rölanti kümesinde). Fren ve direksiyon etkilenmiyor, yani belirti
+# "direksiyon dönüyor ama araç kımıldamıyor" ve sebebi hiçbir logda yoktu.
+_SK27 = _kaynak('teknofest_ika/gomulu/seri_kopru.py')
+_DRM27 = _SK27.split('def _drm_isle')[1].split('\n    def ')[0]
+check("SwB uyarısı var", 'DRM_TARET' in _DRM27, True)
+check("uyarı gazı işaret ediyor", 'GAZ YOK' in _DRM27, True)
+# Uyarı yalnız OTONOM kipte basılmalı: manuelde SwB'yi kaldırmak normal.
+check("uyarı otonom kiple sınırlı", 'KART_KIP_OTONOM' in _DRM27, True)
+check("uyarı throttle'lı", 'throttle_duration_sec' in _DRM27, True)
 
 
 # ─── Sonuç ───────────────────────────────────────────────────────────────────

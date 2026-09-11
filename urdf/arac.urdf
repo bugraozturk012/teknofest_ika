@@ -25,10 +25,15 @@
   <joint name="base_joint" type="fixed">
     <parent link="base_footprint"/>
     <child link="base_link"/>
-    <origin xyz="0 0 0.28" rpy="0 0 0"/>
+    <origin xyz="0 0 0.2989" rpy="0 0 0"/>
     <!--
-      Z=0.28: tekerlek yarıçapı (0.18) + zemin boşluğu (0.10)
-      Böylece tekerlekler tam yere oturur.
+      Z=0.2989: tekerlek yarıçapı (0.1989) + teker joint'inin base_link'e
+      göre düşey ofseti (0.10). Böylece tekerlekler tam yere oturur.
+
+      🔑 Yarıçap ÖLÇÜMDEN türetildi: yuvarlanma çevresi 1250 mm (araçta
+      mezürle) → r = 1,250 / 2π = 0,1989 m. Önceki 0,18 ölçülmemişti.
+      ⚠️ Bu sayı değişirse gövde kutusunun ve lidar_joint'in düşey ofsetleri
+      de değişir: ikisi de ZEMİNDEN ölçülüyor ve base_link'e göre yazılıyor.
     -->
   </joint>
 
@@ -46,21 +51,21 @@
 
       🔑 Kutu ZEMİNE DEĞMİYOR: şasi altı zeminden 0,365 m yukarıda (ölçüldü).
       base_link zeminden 0,28 m'de olduğu için kutunun merkezi
-      0,365 + 0,415/2 - 0,28 = 0,2925 m'ye oturuyor.
+      0,365 + 0,415/2 - 0,2989 = 0,2736 m'ye oturuyor.
       §6.6'nın 15 cm'lik dik engeli bu boşluğun çok altında kalıyor.
 
       Nav2 costmap'i bu kutuyu değil footprint parametresini kullanıyor
       (nav2_params.yaml); buradaki geometri TF ağacı ve görselleştirme için.
     -->
     <visual>
-      <origin xyz="0 0 0.2925" rpy="0 0 0"/>
+      <origin xyz="0 0 0.2736" rpy="0 0 0"/>
       <geometry>
         <box size="1.83 1.17 0.415"/>
       </geometry>
       <material name="blue"/>
     </visual>
     <collision>
-      <origin xyz="0 0 0.2925" rpy="0 0 0"/>
+      <origin xyz="0 0 0.2736" rpy="0 0 0"/>
       <geometry>
         <box size="1.83 1.17 0.415"/>
       </geometry>
@@ -89,14 +94,14 @@
     <visual>
       <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <cylinder length="0.15" radius="0.18"/>
+        <cylinder length="0.15" radius="0.1989"/>
       </geometry>
       <material name="siyah"/>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <cylinder length="0.15" radius="0.18"/>
+        <cylinder length="0.15" radius="0.1989"/>
       </geometry>
     </collision>
     <inertial>
@@ -123,14 +128,14 @@
     <visual>
       <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <cylinder length="0.15" radius="0.18"/>
+        <cylinder length="0.15" radius="0.1989"/>
       </geometry>
       <material name="siyah"/>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <cylinder length="0.15" radius="0.18"/>
+        <cylinder length="0.15" radius="0.1989"/>
       </geometry>
     </collision>
     <inertial>
@@ -156,14 +161,14 @@
     <visual>
       <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <cylinder length="0.15" radius="0.18"/>
+        <cylinder length="0.15" radius="0.1989"/>
       </geometry>
       <material name="siyah"/>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <cylinder length="0.15" radius="0.18"/>
+        <cylinder length="0.15" radius="0.1989"/>
       </geometry>
     </collision>
     <inertial>
@@ -189,14 +194,14 @@
     <visual>
       <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <cylinder length="0.15" radius="0.18"/>
+        <cylinder length="0.15" radius="0.1989"/>
       </geometry>
       <material name="siyah"/>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <cylinder length="0.15" radius="0.18"/>
+        <cylinder length="0.15" radius="0.1989"/>
       </geometry>
     </collision>
     <inertial>
@@ -267,15 +272,15 @@
     <parent link="base_link"/>
     <child link="laser_frame"/>
     <!--
-      Z = 0.32: tarama düzlemi ZEMİNDEN 0,60 m (mezürle ölçüldü), base_link
-      ise zeminden 0,28 m yukarıda → 0,60 - 0,28 = 0,32.
+      Z = 0.3011: tarama düzlemi ZEMİNDEN 0,60 m (mezürle ölçüldü), base_link
+      ise zeminden 0,2989 m yukarıda → 0,60 - 0,2989 = 0,3011.
       ⚠️ Ölçülen sayı doğrudan buraya yazılmaz; zeminden ölçülüp base_link
       farkı düşülür. lydia_startup.sh aynı hesabı yapıyor (LIDAR_Z_M eksi
       BASE_LINK_Z_M) ve test_birim.py ikisinin aynı zemin yüksekliğini
       verdiğini doğruluyor.
       Y açısı (yaw) montaj açısı — sahada lidar_aci_kalibre.py ile bulunur.
     -->
-    <origin xyz="0.0 0 0.32" rpy="0 0 1.6284"/>
+    <origin xyz="0.0 0 0.3011" rpy="0 0 1.6284"/>
   </joint>
 
   <!-- ═══════════════════════════════════════════════

@@ -655,6 +655,19 @@ class SeriKopru(Node):
         elif (onceki & DRM_KESME) and not (bayraklar & DRM_KESME):
             self.get_logger().warn('KUMANDA: kesme kaldırıldı.')
 
+        # 🔴 SwB yukarıdayken kart OTONOMDA DA gazı uygulamıyor: taret kipi
+        # rölanti kümesinde. Fren ve direksiyon etkilenmiyor, yani belirti
+        # "direksiyon dönüyor ama araç kımıldamıyor" oluyor ve sebebi hiçbir
+        # yerde yazmıyordu — bit panoda 'taret' diye görünüyor, gazla
+        # ilişkisi görünmüyor. Uyarı yalnız OTONOM kipte basılıyor: manuelde
+        # SwB'yi kaldırmak normal bir iş.
+        if self._kip == KART_KIP_OTONOM and (bayraklar & DRM_TARET):
+            self.get_logger().error(
+                'OTONOMDA GAZ YOK: SwB (taret anahtarı) yukarıda. Kart taret '
+                'kipinde gazı uygulamıyor — direksiyon ve fren çalışmaya '
+                'devam eder. Sürüş için SwB aşağı alınmalı.',
+                throttle_duration_sec=3.0)
+
         # Lazer durumu: bit komutun UYGULANDIĞINI bildirir, lazerin yandığını
         # ölçmez — donanımda akım ya da foto geri beslemesi yok. Atış onayı
         # "röle sürüldü" anlamındadır.
