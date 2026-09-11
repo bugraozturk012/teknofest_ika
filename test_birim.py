@@ -2212,6 +2212,8 @@ print("\n=== Gövde ölçüsü tutarlılığı ===")
 # (0,78) eksi zemin boşluğu (0,365) — gövde zemine değmiyor.
 # ⚠️ Taşmanın öne/arkaya dağılımı ölçülmedi; footprint simetrik varsayıyor.
 _ARAC_BOY, _ARAC_GEN = 1.83, 1.17
+# Footprint eni ayrı bir sayı: iki ölçüm 5 cm ayrıştı, büyüğü alındı.
+_FOOTPRINT_EN = 1.22
 _ARAC_YUK = round(0.78 - 0.365, 3)
 
 with open(os.path.join(_KOK, 'config/nav2_params.yaml'), encoding='utf-8') as f:
@@ -2231,7 +2233,15 @@ for _i, _metin in enumerate(_fp):
     _boy = max(k[0] for k in _kose) - min(k[0] for k in _kose)
     _gen = max(k[1] for k in _kose) - min(k[1] for k in _kose)
     check(f"footprint[{_i}] boyu", round(_boy, 3), _ARAC_BOY)
-    check(f"footprint[{_i}] eni",  round(_gen, 3), _ARAC_GEN)
+    # 🔑 Footprint eni ölçülen ene EŞİT DEĞİL, ondan GENİŞ olmak zorunda.
+    # Aracın en geniş yeri iki kez ölçülüp 5 cm ayrıştı (gövde boyunca
+    # tekerlek dışları 1,17 · orta eksenden tekerleğe 0,61 → 1,22) ve
+    # kullanıcı kararı büyüğünü almak oldu. Hata asimetrik: geniş footprint
+    # geçebileceği yerden geçirmez (zaman), dar footprint SÜRTTÜRÜR (temas,
+    # puan, hasar). Test bu yüzden alt sınır koyuyor — daraltan bir değişiklik
+    # düşer, genişleten düşmez.
+    check(f"footprint[{_i}] eni ölçülenden dar değil", _gen >= _ARAC_GEN, True)
+    check(f"footprint[{_i}] eni seçilen değer",        round(_gen, 3), _FOOTPRINT_EN)
     # Dikdörtgen base_footprint'e göre ortalanmış olmalı: kaydırılmış bir
     # gövde, aracın önünü ya da arkasını costmap'te yanlış yere koyar.
     check(f"footprint[{_i}] ortalanmış",
@@ -2250,7 +2260,10 @@ with open(os.path.join(_KOK, 'scripts/parkur_cad/donus.py'), encoding='utf-8') a
     _DONUS = f.read()
 _da = re.search(r'boy=([\d.]+), gen=([\d.]+)', _DONUS)
 check("analiz betiği aynı boyu kullanıyor", float(_da.group(1)), _ARAC_BOY)
-check("analiz betiği aynı eni kullanıyor",  float(_da.group(2)), _ARAC_GEN)
+# Analiz PLANLAYICININ dikdörtgenini süpürmeli, ölçülen gövdeyi değil: daha
+# dar bir dikdörtgenle "geçer" demek, Nav2'nin çarpışma göreceği bir yolu
+# onaylamak olur.
+check("analiz betiği footprint enini kullanıyor", float(_da.group(2)), _FOOTPRINT_EN)
 
 
 _AR_KAYNAK = _kaynak('teknofest_ika/otonomi/anti_rollback.py')
