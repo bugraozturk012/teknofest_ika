@@ -3780,6 +3780,43 @@ check("derleme tazeliği colcon_build.rc'ye bakıyor",
       'build/teknofest_ika/colcon_build.rc"' in _ST24, True)
 check("kurulum kipi ayırt ediliyor", '_KURULUM=symlink' in _ST24 and
       '_KURULUM=kopya' in _ST24, True)
+# 🔴 Kip göstergesi EGG-LINK olmalı, build/ içindeki symlink DEĞİL. O symlink
+# eski bir --symlink-install denemesinden geride kalıyor ve sonraki düz
+# derlemeler silmiyor: araçta Ağustos tarihli bir tanesi duruyor ve kurulum
+# kopya. Ona bakan denetim "symlink kipi" sanıp .py bayatlığını hiç uyarmaz,
+# yani kontrol en gerekli olduğu yerde susar (araçta ölçüldü).
+check("kip göstergesi egg-link", '-name "*.egg-link"' in _ST24, True)
+# if TEK SATIR olmalı: _kosul_derinligi satır bazlı sayıyor ve çok satırlı
+# bir `if` sayılmazken eşleşen `fi` sayılır, derinlik negatife düşer ve
+# "bms_koprusu koşulsuz başlıyor" testi sahte alarm verir (bu oldu).
+check("egg-link if'i tek satır", 'if [ -n "$_EGG" ]; then' in _ST24, True)
+
+# Metin aramak yetmiyor: `_EGG=$(: find ...)` gibi bir değişiklik deseni yerinde
+# bırakıp tespiti tamamen etkisiz kılıyor (mutasyon bunu kaçırdı). O yüzden
+# BETİKTEN ÇIKARILAN satır iki sahte kurulum ağacına karşı KOŞTURULUYOR.
+import subprocess as _sp26
+import tempfile as _tf26
+_EGG_SATIR = [l for l in _ST24.splitlines() if l.strip().startswith('_EGG=')]
+check("egg-link tespit satırı tek", len(_EGG_SATIR), 1)
+if len(_EGG_SATIR) == 1:
+    with _tf26.TemporaryDirectory() as _d26:
+        _sp26.run(['mkdir', '-p',
+                   f'{_d26}/kopya/install/teknofest_ika/lib/python3.10/site-packages/teknofest_ika',
+                   f'{_d26}/sym/install/teknofest_ika/lib/python3.10/site-packages'], check=True)
+        open(f'{_d26}/sym/install/teknofest_ika/lib/python3.10/site-packages/'
+             'teknofest-ika.egg-link', 'w').close()
+
+        def _kip(kok):
+            betik = (f'_WS_KOK="{kok}"\n' + _EGG_SATIR[0].strip() + '\n'
+                     'if [ -n "$_EGG" ]; then echo symlink; else echo kopya; fi\n')
+            return _sp26.run(['bash', '-c', betik], capture_output=True,
+                             text=True).stdout.strip()
+
+        check("koşturuldu: kopya kurulum → kopya",  _kip(f'{_d26}/kopya'), 'kopya')
+        check("koşturuldu: symlink kurulum → symlink", _kip(f'{_d26}/sym'), 'symlink')
+        check("koşturuldu: kurulum yok → kopya",    _kip(f'{_d26}/yok'), 'kopya')
+check("build/ symlink'i ölçüt DEĞİL",
+      '-L "$_WS_KOK/build/teknofest_ika/teknofest_ika"' in _ST24, False)
 # symlink kipinde .py değişikliği uyarı ÜRETMEMELİ (kaynak zaten canlı),
 # yalnız setup.py — console_scripts stub'ları iki kipte de kopya.
 _TAZE = _ST24.split('_YAPI_IZI="')[1].split('export ROS_DOMAIN_ID')[0]

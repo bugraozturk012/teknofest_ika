@@ -49,7 +49,16 @@ fi
 _WS_KOK=${WS%/src/*}
 _YAPI_IZI="$_WS_KOK/build/teknofest_ika/colcon_build.rc"
 if [ -f "$_YAPI_IZI" ]; then
-    if [ -L "$_WS_KOK/build/teknofest_ika/teknofest_ika" ]; then
+    # Kip göstergesi EGG-LINK, build/ içindeki symlink DEĞİL. `--symlink-install`
+    # ament_python'da site-packages'a bir `.egg-link` koyuyor ve modül ağacını
+    # kurmuyor; düz derleme ise gerçek dosyaları kopyalıyor.
+    # 🔴 build/<paket>/<paket> symlink'i ölçüt OLAMAZ: eski bir symlink-install
+    # denemesinden geride kalıyor ve sonraki düz derlemeler onu silmiyor.
+    # Araçta tam bu hâl ölçüldü — Ağustos tarihli symlink duruyor, kurulum
+    # kopya. O symlink'e bakan bir denetim aracı "symlink kipi" sanıp .py
+    # bayatlığını hiç uyarmaz, yani kontrolün en gerekli olduğu yerde susar.
+    _EGG=$(find "$_WS_KOK/install/teknofest_ika" -name "*.egg-link" -print -quit 2>/dev/null)
+    if [ -n "$_EGG" ]; then
         _KURULUM=symlink
         _YENI=$(find "$WS/setup.py" -newer "$_YAPI_IZI" -print -quit 2>/dev/null)
         _NE="setup.py (console_scripts stub'ları kopya)"
