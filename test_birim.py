@@ -2746,7 +2746,14 @@ if _m_slam:
                      'ros2() { echo "ROS2 $*" >> "$IZ"; }\n'
                      'sed() { :; }\n'
                      'sleep() { :; }\n'
-                     + _m_slam.group(1))
+                     + _m_slam.group(1)
+                     # Dalın iki `ros2` çağrısı da arka plana atılıyor. `sleep`
+                     # boş olduğu için kabuk `fi`'yi geçip çıkarken alt kabuk
+                     # izi yazmayı bitirmemiş olabiliyor: 300 koşuda 2 kez
+                     # map_image_node satırı eksik ölçüldü. `wait` o yarışı
+                     # kapatır; dalın kendisinde böyle bir sorun yok, gerçek
+                     # `ros2` çağrıları düğümü kendisi başlatıyor.
+                     + 'wait\n')
             subprocess.run(['bash', '-c', betik], capture_output=True, text=True)
             if not os.path.exists(_iz):
                 return ''
