@@ -3006,6 +3006,84 @@ _CAGRI = _m_sk.group(1) if _m_sk else ''
 for _ad in sorted(_SK_AYAR):
     check(f"{_ad} düğüme geçiriliyor", f'-p {_ad}:=' in _CAGRI, True)
 
+# ── Parametre TİPİ: `-p x:=0` düğümü çökertir ───────────────────────────────
+# ROS tipi değerin YAZIMINDAN çıkarıyor: `0` INTEGER, `0.0` DOUBLE. Köprü
+# beşini de DOUBLE ilan ediyor, yani noktasız bir değer düğümü
+# InvalidParameterTypeException ile düşürür. Sahada tam bu oldu: köprü
+# açılışta çöktü, /odom ve /imu/data hiç gelmedi, kip okunmadı ve gözcü
+# köprüyü bilerek yeniden başlatmadığı için arıza bir saat sessiz kaldı.
+#
+# Denetim, betikten çıkarılan dönüştürücü KOŞTURULARAK yapılıyor: dizge
+# araması bir ondalık noktası görür, o noktanın ROS'un ayrıştırıcısından
+# geçtiğini göstermez.
+_M_OND = re.search(r'(_ondalik\(\) \{.*?\n\}\n)', _BOOT_A, flags=re.S)
+check("ondalık dönüştürücüsü bulundu", _M_OND is not None, True)
+
+if _M_OND:
+    import subprocess as _sp3
+
+    def _ondalige_cevir(ham):
+        r = _sp3.run(['bash', '-c', _M_OND.group(1)
+                      + f'_ondalik {_sp3.list2cmdline([ham])}'],
+                     capture_output=True, text=True)
+        return r.stdout
+
+    def _ros_tipi(metin):
+        """ROS'un `-p x:=metin` için çıkaracağı Python tipi."""
+        try:
+            return type(yaml.safe_load(metin)).__name__
+        except Exception:
+            return 'hata'
+
+    # Sahada köprüyü düşüren tam değer.
+    check("0 → DOUBLE olarak geçiyor", _ros_tipi(_ondalige_cevir('0')), 'float')
+    # Belgelenen kullanım: işaret -1 olarak yazılıyor ve aynı tuzağa düşerdi.
+    check("-1 → DOUBLE", _ros_tipi(_ondalige_cevir('-1')), 'float')
+    # Ölçülen oran zaten ondalıklı; bozulmadan geçmeli.
+    check("13.091 → DOUBLE", _ros_tipi(_ondalige_cevir('13.091')), 'float')
+    check("13.091 değeri korunuyor",
+          float(_ondalige_cevir('13.091')), 13.091)
+    # Tam sayı çıkan bir çevre ölçümü de geçerli olmalı.
+    check("1842 → DOUBLE", _ros_tipi(_ondalige_cevir('1842')), 'float')
+    check("1842 değeri korunuyor", float(_ondalige_cevir('1842')), 1842.0)
+    # 🔑 Üstel yazım ROS'ta STRING okunuyor — `1e3` de `1.0e3` de çökertir.
+    # Dönüştürücü bu yüzden yazıma dokunmakla yetinmiyor, sayıyı yeniden
+    # biçimlendiriyor.
+    check("1e3 → DOUBLE", _ros_tipi(_ondalige_cevir('1e3')), 'float')
+    check("1e3 değeri korunuyor", float(_ondalige_cevir('1e3')), 1000.0)
+    check("üstel yazım ham hâlde STRING olurdu", _ros_tipi('1e3'), 'str')
+    # Boşluklu ortam değişkeni makul bir kaza; ölçümü çöpe atmamalı.
+    check("boşluklu değer kırpılıyor", float(_ondalige_cevir(' 13.091 ')), 13.091)
+    # Sayı olmayan girdi ölçülmedi (0) sayılır: kart o alana dokunmaz.
+    # Uydurma bir ölçek yazmaktansa susmak iyidir.
+    check("sayı olmayan 0'a düşer", float(_ondalige_cevir('abc')), 0.0)
+    check("boş değer 0'a düşer", float(_ondalige_cevir('')), 0.0)
+    # Virgüllü ondalık Türkçe klavyede olası bir kaza ve SESSİZ kalmamalı:
+    # 1,5 sayı değil, 1.5 sanılıp gönderilirse ölçek onda bir olur.
+    check("virgüllü ondalık sayı sayılmıyor", float(_ondalige_cevir('1,5')), 0.0)
+
+    # Beş ayarın HEPSİ dönüştürücüden geçmeli: biri atlanırsa o ayarın
+    # ölçümü girildiği gün köprü yine çöker.
+    for _ad in ('TEKERLEK_CEVRE_MM', 'GOSTERGE_DARBE_TUR', 'ENKODER_DISLI_ORANI',
+                'DIREKSIYON_ORANI', 'DIREKSIYON_ISARET'):
+        check(f"{_ad} ondalığa çevriliyor",
+              f'{_ad}=$(_ondalik "${_ad}")' in _BOOT_A, True)
+
+    # Betiğin kendi varsayılanları da geçerli olmalı — asıl çökme buradan
+    # geldi, ölçüm girilmemişken.
+    for _ad in ('TEKERLEK_CEVRE_MM', 'GOSTERGE_DARBE_TUR', 'ENKODER_DISLI_ORANI',
+                'DIREKSIYON_ORANI', 'DIREKSIYON_ISARET'):
+        check(f"{_ad} varsayılanı DOUBLE'a çevriliyor",
+              _ros_tipi(_ondalige_cevir(_VARSAYILAN.get(_ad, ''))), 'float')
+
+    # Dönüştürücü ÇAĞRILDIĞI yerden önce tanımlı olmalı: bash fonksiyonu
+    # kullanımından sonra tanımlanırsa "command not found" ile boş döner ve
+    # parametre boş dizge olarak gider.
+    check("dönüştürücü ilk kullanımından önce tanımlı",
+          _BOOT_A.index('_ondalik() {')
+          < _BOOT_A.index('TEKERLEK_CEVRE_MM=$(_ondalik'), True)
+
+
 # Dördünün varsayılanı 0 olmalı: sıfır "ölçülmedi" demek ve köprü onu
 # göndermiyor. Uydurma bir sayı, kartın bilerek sustuğu alana yanlış ölçek
 # yazmaktır. Çevre ve dişli oranı ayrıca KART TARAFINDA ölçülü ve kart

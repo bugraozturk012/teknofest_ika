@@ -326,6 +326,44 @@ trap temizle TERM INT
 #   ilk denemesi TEKERLEKLER YERDEN KESİK yapılır.
 : "${DIREKSIYON_ISARET:=0}"
 
+# ROS parametre tipi DEĞERİN YAZIMINDAN çıkarılıyor: `-p x:=0` INTEGER,
+# `-p x:=0.0` DOUBLE olarak ayrıştırılıyor. Köprü beşini de DOUBLE ilan
+# ediyor, yani ondalık noktası olmayan bir değer düğümü
+# InvalidParameterTypeException ile ÇÖKERTİR — kart köprüsü hiç ayağa kalkmaz,
+# /odom ve /imu/data boş kalır, kip okunmaz. Sahada tam bu oldu: varsayılan
+# `0`'lar köprüyü açılışta düşürdü ve gözcü onu bilerek yeniden başlatmadığı
+# için arıza bir saat boyunca sessiz kaldı.
+#
+# Tuzak ölçümdeki yazıma bağlı, yani ileride de patlar: belgelenen
+# `DIREKSIYON_ISARET=-1` ve tam sayı çıkan bir çevre (`1842`) aynı hatayı
+# verir. Bu yüzden değerler tek noktada ondalığa çevriliyor.
+# ⚠ Üstel yazım da çökertir: ROS'un ayrıştırıcısı `1e3`'ü de `1.0e3`'ü de
+#   STRING okuyor, DOUBLE değil. Bu yüzden yazıma dokunmak yetmez, sayı
+#   yeniden BİÇİMLENDİRİLİYOR. Sayı olmayan girdi 0'a düşürülür (kart o alana
+#   dokunmaz) ama sessizce değil: uydurma bir ölçek yazmaktansa ölçümün
+#   girilmediğini söylemek iyidir.
+_ondalik() {
+    local _ham="$1" _sonuc
+    _sonuc=$(awk -v v="$_ham" 'BEGIN{
+        gsub(/^[ \t]+|[ \t]+$/, "", v)
+        if (v == "") { printf "0.0"; exit 0 }
+        if (v ~ /^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$/) {
+            printf "%.6f", v + 0; exit 0
+        }
+        exit 1
+    }') || {
+        echo "UYARI: kart ayarı '$_ham' sayı değil — ÖLÇÜLMEDİ (0) sayılıyor." >&2
+        printf '0.0'
+        return
+    }
+    printf '%s' "$_sonuc"
+}
+TEKERLEK_CEVRE_MM=$(_ondalik "$TEKERLEK_CEVRE_MM")
+GOSTERGE_DARBE_TUR=$(_ondalik "$GOSTERGE_DARBE_TUR")
+ENKODER_DISLI_ORANI=$(_ondalik "$ENKODER_DISLI_ORANI")
+DIREKSIYON_ORANI=$(_ondalik "$DIREKSIYON_ORANI")
+DIREKSIYON_ISARET=$(_ondalik "$DIREKSIYON_ISARET")
+
 if [ "$ENKODER_AKTIF" != "1" ]; then
     _TF_SAHIBI=statik
 elif [ "$NAV2_AKTIF" = "1" ]; then
