@@ -31,6 +31,7 @@ Notlar:
 """
 
 import json
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -41,7 +42,7 @@ from std_msgs.msg import String, UInt8
 
 from teknofest_ika.otonomi.topics import (
     YOLO_CLASS_ID_TOPIC, DETECTIONS_TOPIC, YOLO_RAW_TOPIC,
-    YOLO_CONFIDENCE_THRESHOLD,
+    YOLO_CONFIDENCE_THRESHOLD, TABELA_GORUS_ZAMAN_ASIMI_S,
 )
 from teknofest_ika.otonomi.pure_logic import ConsecutiveFrameFilter
 
@@ -101,8 +102,13 @@ class YoloAdapterNode(Node):
         # (SULU_YOL, TASLI_YOL, ...) tek kare ile anında kabul ediliyordu.
         self._stop_filter   = ConsecutiveFrameFilter(
             STOP_CONSECUTIVE_FRAMES, bos_deger=False, sticky=False)
+        # sticky'nin ÖMRÜ sınırlı: tabela TABELA_GORUS_ZAMAN_ASIMI_S boyunca
+        # hiç görülmezse onaylı değer boşa döner ve terrain_adapter normal
+        # profile geçer. Sınırsız sticky'de bir kez görülen tabelanın hız ve
+        # inflation profili koşu boyunca bırakılmıyordu.
         self._tabela_filter = ConsecutiveFrameFilter(
-            TABELA_CONSECUTIVE_FRAMES, bos_deger=NO_DETECTION, sticky=True)
+            TABELA_CONSECUTIVE_FRAMES, bos_deger=NO_DETECTION, sticky=True,
+            sticky_zaman_asimi_s=TABELA_GORUS_ZAMAN_ASIMI_S)
 
         self.create_subscription(
             Detection2DArray,
@@ -178,7 +184,10 @@ class YoloAdapterNode(Node):
                 throttle_duration_sec=1.0,
             )
 
-        tabela_confirmed = self._tabela_filter.isle(tabela_id)
+        # Saat monotonik: Jetson'ın RTC'si ölü ve bir ağ bağlantısı belirince
+        # sistem saati günlerce ileri sıçrıyor; duvar saatiyle ölçülen bir
+        # zaman aşımı o sıçramada anında dolar.
+        tabela_confirmed = self._tabela_filter.isle(tabela_id, time.monotonic())
 
         payload = {
             "tabela":           tabela_confirmed,

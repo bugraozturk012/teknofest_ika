@@ -475,18 +475,40 @@ class ConsecutiveFrameFilter:
         düşer düşmez confirmed de ANINDA `bos_deger`'e döner — STOP
         tabelası görüş alanından çıktığında "durma" durumunun hemen
         sona ermesi gerekir, sticky davranış aracı sonsuza dek durdurur.
+
+    sticky_zaman_asimi_s: sticky'nin ÖMRÜ. Sınırsız sticky, onaylanan değeri
+        koşunun sonuna kadar tutar: aday boşa düştüğünde sayaç sıfırlanır,
+        eşik hiç dolmaz ve confirmed asla boşa dönemez. Parkur tabelalarında
+        bunun sonucu, bir kez görülen tabelanın arazi profilinin (hız +
+        inflation) bir daha bırakılmamasıdır — araç 0,65 yerine 0,45-0,50 ile
+        koşuyu bitirir. Zaman aşımı "tek kare kaybını yut" ile "bölümü
+        sonsuza kadar sürdür" arasını ayırıyor.
+        None → sınırsız (eski davranış). Süre ölçülmüyor, `isle`'ye DIŞARIDAN
+        veriliyor: sınıfın saati yok, çağıran hangi saati kullanacağına
+        kendisi karar veriyor (araçta monotonik — Jetson'ın RTC'si sıçrıyor).
     """
 
-    def __init__(self, gerekli_frame: int, bos_deger=None, sticky: bool = True):
+    def __init__(self, gerekli_frame: int, bos_deger=None, sticky: bool = True,
+                 sticky_zaman_asimi_s=None):
         self._gerekli = gerekli_frame
         self._bos = bos_deger
         self._sticky = sticky
+        self._zaman_asimi = sticky_zaman_asimi_s
         self._son_aday = bos_deger
         self._sayac = 0
         self._confirmed = bos_deger
+        self._son_gercek_t = None   # aday'ın son kez boş OLMADIĞI an
 
-    def isle(self, aday):
-        """Yeni aday değeri işler, güncel onaylı değeri döndürür."""
+    def isle(self, aday, simdi=None):
+        """
+        Yeni aday değeri işler, güncel onaylı değeri döndürür.
+
+        `simdi` yalnız sticky_zaman_asimi_s verildiğinde anlamlı; verilmezse
+        zaman aşımı hiç işlemez ve davranış sınırsız sticky'dir.
+        """
+        if aday != self._bos and simdi is not None:
+            self._son_gercek_t = simdi
+
         if aday != self._bos and aday == self._son_aday:
             self._sayac += 1
         else:
@@ -496,6 +518,11 @@ class ConsecutiveFrameFilter:
         if self._sayac >= self._gerekli:
             self._confirmed = aday
         elif not self._sticky:
+            self._confirmed = self._bos
+        elif (self._zaman_asimi is not None and simdi is not None
+                and self._son_gercek_t is not None
+                and simdi - self._son_gercek_t >= self._zaman_asimi):
+            # Aday bu kadar süredir boş: tabela görüş alanında değil.
             self._confirmed = self._bos
 
         return self._confirmed

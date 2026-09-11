@@ -385,6 +385,17 @@ YOLO_CONFIDENCE_THRESHOLD = 0.75
 # Kaç ardışık frame sonra FSM tetiklenir
 YOLO_CONSECUTIVE_FRAMES = 3
 
+# Tabela görüş alanından çıktıktan sonra arazi profilinin normale dönmesi için
+# beklenen süre. Sınırsız sticky, bir kez görülen tabelanın profilini koşunun
+# sonuna kadar tutuyordu; 11 aşamanın yalnız birinin (Tabela_11_son) bitiş
+# tabelası var, yani "sonraki tabelaya kadar sürsün" kuralı diğer onunda
+# bölümü hiç bitirmiyor.
+# 3 s, iki şeyin arasında seçildi: tabelanın yanından geçerken kameradan
+# çıkması (kısa, tek kare kayıplarını zaten 2 karelik onay yutuyor) ve aynı
+# bölüm içinde tabelayı bir süre görememek. Kart/kamera tarafında değil
+# köprüde: ölçüt kare değil SÜRE, kamera hızı değişirse kural değişmesin.
+TABELA_GORUS_ZAMAN_ASIMI_S = 3.0   # [s]
+
 # ── Nişan halkası HSV kalibrasyonu ───────────────────────────────────────────
 # 2026-07-19, kapalı alanda nişan kamerasıyla ölçüldü. Halka bu kamerada
 # H=165-169 okunuyor; turuncu bant sahte tespit ürettiği için üst sınır 4'te

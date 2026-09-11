@@ -71,6 +71,7 @@ from teknofest_ika.otonomi.topics import (  # noqa: E402
     KART_HIZ_TAVAN, KART_HIZ_TABAN, KART_HIZ_OLU_BOLGE,
     DRM_KESME, HATA_GAZ_YOK,
     BMS_YAS_ESIK_S, BMS_HUCRE_DIP_MV, BMS_HUCRE_UYARI_MV, BMS_HUCRE_SAYISI,
+    TABELA_GORUS_ZAMAN_ASIMI_S,
 )
 
 PASS = 0
@@ -780,6 +781,96 @@ check("tek kare kaybı confirmed'i bozmaz (sticky)",
 check("yeni aday 1. kare → hâlâ önceki onaylı",
       f.isle(7), 5)
 check("yeni aday 2. kare → yeni onay",         f.isle(7), 7)
+
+# ── sticky'nin ÖMRÜ ────────────────────────────────────────────────────────
+# 🔴 Sınırsız sticky, onaylanan değeri KOŞU SONUNA KADAR tutuyordu: aday boşa
+# düşünce sayaç sıfırlanıyor, eşik hiç dolmuyor ve confirmed asla boşa
+# dönemiyor. Sonucu, bir kez görülen tabelanın arazi profilinin (hız +
+# inflation) bir daha bırakılmamasıydı — araç 0,65 yerine 0,45-0,50 ile
+# koşuyu bitirir. 11 aşamanın yalnız birinin bitiş tabelası var, yani
+# "sonraki tabelaya kadar sürsün" kuralı diğer onunda bölümü hiç bitirmiyor.
+_TO = TABELA_GORUS_ZAMAN_ASIMI_S
+g = ConsecutiveFrameFilter(2, bos_deger=NO_DETECTION, sticky=True,
+                           sticky_zaman_asimi_s=_TO)
+check("zaman aşımlı: 2 karede onay", [g.isle(5, 0.0), g.isle(5, 0.03)][-1], 5)
+# Süre SON GERÇEK TESPİTTEN sayılıyor, onaydan değil.
+check("eşiğin hemen altında hâlâ onaylı", g.isle(NO_DETECTION, 0.03 + _TO - 0.01), 5)
+check("eşikte boşa dönüyor",              g.isle(NO_DETECTION, 0.03 + _TO), NO_DETECTION)
+check("boşta kalmaya devam",              g.isle(NO_DETECTION, 0.03 + _TO + 5.0), NO_DETECTION)
+# Aynı tabela geri gelirse normal onay süreci işliyor.
+check("geri gelen tabela 1. kare", g.isle(5, 10.0), NO_DETECTION)
+check("geri gelen tabela 2. kare", g.isle(5, 10.03), 5)
+
+# Eşiğin ALTINDAKİ görüş kaybı profili DÜŞÜRMEMELİ — yoksa bölüm ortasında
+# tabelayı bir saniye görememek aracı yanlış profile atar.
+h = ConsecutiveFrameFilter(2, bos_deger=NO_DETECTION, sticky=True,
+                           sticky_zaman_asimi_s=_TO)
+h.isle(5, 0.0); h.isle(5, 0.03)
+check("kısa görüş kaybı (eşiğin yarısı) profili düşürmüyor",
+      h.isle(NO_DETECTION, 0.03 + _TO / 2.0), 5)
+
+# `simdi` verilmezse zaman aşımı HİÇ işlemez: STOP filtresi gibi zamansız
+# çağıranların davranışı değişmemeli.
+k = ConsecutiveFrameFilter(2, bos_deger=NO_DETECTION, sticky=True,
+                           sticky_zaman_asimi_s=_TO)
+k.isle(5); k.isle(5)
+check("simdi yoksa sınırsız sticky (eski davranış)",
+      [k.isle(NO_DETECTION) for _ in range(200)][-1], 5)
+
+# sticky=False olan STOP filtresi zaman aşımından etkilenmemeli.
+m = ConsecutiveFrameFilter(2, bos_deger=False, sticky=False)
+check("STOP filtresi: aday düşünce ANINDA boş",
+      [m.isle(True, 0.0), m.isle(True, 0.03), m.isle(False, 0.06)][-1], False)
+
+# Zaman aşımı değeri: kamera hızı değişse de kural değişmesin diye SÜRE
+# cinsinden; kullanıcı kararı 3 saniye.
+check("tabela görüş zaman aşımı 3 s", TABELA_GORUS_ZAMAN_ASIMI_S, 3.0)
+
+# Zincirin öteki ucu: terrain_adapter boş değeri 'normal'e eşlemek zorunda,
+# yoksa zaman aşımı dolar ama profil düşmez.
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       'teknofest_ika/otonomi/terrain_adapter.py'),
+          encoding='utf-8') as _f:
+    _TA = _f.read()
+check("terrain_adapter boş tespiti normal'e eşliyor",
+      "NO_DETECTION: 'normal'" in _TA, True)
+
+# Mantığı test etmek yetmiyor: DÜĞÜMÜN onu gerçekten kullandığı da
+# denetlenmeli. İki bağlantı noktası var ve ikisi de sessizce koparılabilir —
+# zaman argümanını düşürmek ya da sabiti None yapmak, testleri yeşil bırakıp
+# zaman aşımını tamamen devre dışı bırakıyordu (mutasyonla bulundu).
+# Denetim AST üzerinden: metin arama biçim değişince yanılır.
+import ast as _ast_ya
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       'teknofest_ika/gorsel/yolo_adapter_node.py'),
+          encoding='utf-8') as _f:
+    _YA = _ast_ya.parse(_f.read())
+
+_isle_cagri = [
+    n for n in _ast_ya.walk(_YA)
+    if isinstance(n, _ast_ya.Call)
+    and isinstance(n.func, _ast_ya.Attribute) and n.func.attr == 'isle'
+    and isinstance(n.func.value, _ast_ya.Attribute)
+    and n.func.value.attr == '_tabela_filter'
+]
+check("tabela filtresi tek yerden çağrılıyor", len(_isle_cagri), 1)
+check("çağrıya ZAMAN da geçiriliyor",
+      len(_isle_cagri[0].args) if _isle_cagri else 0, 2)
+
+_kur = [
+    n for n in _ast_ya.walk(_YA)
+    if isinstance(n, _ast_ya.Call)
+    and isinstance(n.func, _ast_ya.Name) and n.func.id == 'ConsecutiveFrameFilter'
+    and any(k.arg == 'sticky_zaman_asimi_s' for k in n.keywords)
+]
+check("zaman aşımlı tek filtre kuruluyor", len(_kur), 1)
+if _kur:
+    _deger = [k.value for k in _kur[0].keywords if k.arg == 'sticky_zaman_asimi_s'][0]
+    check("zaman aşımı None'a sabitlenmemiş",
+          isinstance(_deger, _ast_ya.Constant) and _deger.value is None, False)
+    check("zaman aşımı sabitten geliyor",
+          isinstance(_deger, _ast_ya.Name)
+          and _deger.id == 'TABELA_GORUS_ZAMAN_ASIMI_S', True)
 
 # ─── 12. FSM §6.10 STOP Cooldown Mantığı (misyon_fsm.NavigateState) ─────────
 print("\n=== 12. FSM §6.10 STOP Cooldown ===")
