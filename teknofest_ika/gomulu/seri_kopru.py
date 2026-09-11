@@ -24,7 +24,7 @@ KARTTAN GELEN — 0x30 bloğu (100 Hz; 0x3A 10 Hz, 0x3B 5 sn, 0x3C 1 Hz)
   0x30 PKT_F7_ENK        enkoder sayımı, int32 (v0 üst, v1 alt)
   0x31 PKT_F7_HIZ        ileri hız [mm/s] işaretli   | gösterge (hat iptal)
   0x32 PKT_F7_IMU_ACI    yaw x10 [derece]            | roll x10
-  0x33 PKT_F7_IMU_PITCH  pitch x10 [derece]          | kalibrasyon sys<<4|gyr
+  0x33 PKT_F7_IMU_PITCH  pitch x10 [derece]          | CALIB_STAT (sys/gyr/acc/mag)
   0x34 PKT_F7_ESTOP      basılı (0/1)                | uyuşmazlık (0/1)
   0x35 PKT_F7_SAGLIK     HATA_* bayrakları           | çalışma süresi [sn]
   0x36 PKT_F7_RC         gaz [binde, işaretli]       | DRM_* bayrakları
@@ -127,6 +127,7 @@ from teknofest_ika.otonomi.pure_logic import (
     rc_dizisi, surum_uyumlu, enkoder_sessiz, yaw_kovaryansi,
     ayar_ham, ayar_deger, ayar_gonderilecek,
     lazer_sonmeli,
+    calib_stat_coz,
     AYAR_CEVRE_MM, AYAR_DISLI_ORANI, AYAR_DIREKSIYON, AYAR_DARBE_TUR,
     AYAR_DIR_ISARET,
     RC_US_MIN, RC_US_NEUTRAL,
@@ -934,9 +935,17 @@ class SeriKopru(Node):
                      roll_deg: float, kalib: int):
         """
         Kart ZYX Euler açılarını derece olarak veriyor: q = Rz(ψ)·Ry(θ)·Rx(φ).
-        Kalibrasyon baytı sys<<4 | gyr; sistem kalibrasyonu kartın eşiğinin
-        altındayken yön güvenilmez ve kovaryans gevşetilir. ksys 3 iken
-        manyetometrenin 0 kalması normaldir, kalibrasyon ayrı ilerliyor.
+
+        Kalibrasyon baytı çipin `CALIB_STAT`'ı: bit 7-6 sys, 5-4 gyr, 3-2 acc,
+        1-0 mag. Sistem kalibrasyonu kartın eşiğinin altındayken yön güvenilmez
+        ve kovaryans gevşetilir. sys 3 iken manyetometrenin 0 kalması normaldir,
+        kalibrasyon ayrı ilerliyor.
+
+        ⚠️ YAW İŞARETİ ÇEVRİLMİYOR: kartın verdiği açı olduğu gibi kuaterniyona
+        giriyor. ROS yaw'ı SOLA doğru artar (REP-103); BNO055'in kendi yönü
+        saat yönündedir. Kartın çevirip çevirmediği SAHADA DOĞRULANMADI —
+        otonoma alıp aracı elle sola çevirince yaw artmalı. Yanlışsa yön tutan
+        her denetleyici pozitif geri beslemeye döner.
         """
         φ = math.radians(roll_deg)
         θ = math.radians(pitch_deg)
@@ -954,7 +963,7 @@ class SeriKopru(Node):
         msg.orientation.y = cφ * sθ * cψ + sφ * cθ * sψ
         msg.orientation.z = cφ * cθ * sψ - sφ * sθ * cψ
 
-        sys_kalib = (kalib >> 4) & 0x0F
+        sys_kalib, _gyr, _acc, _mag = calib_stat_coz(kalib)
         yaw_var   = yaw_kovaryansi(sys_kalib)
         msg.orientation_covariance[0] = 0.005   # roll  σ² [rad²]
         msg.orientation_covariance[4] = 0.005   # pitch σ²

@@ -95,9 +95,13 @@ BATARYA_TOPICLERI = {
     BATTERY_TOPIC:           ('Batarya',        5.0),
 }
 
-# Sürüş kartı IMU paketlerini (0x32/0x33) yalnız BNO055 bulunduğunda basıyor;
-# çip takılı değilken hiç akmaz ve susması arıza değildir. Modül monte edilip
-# yönü doğrulanana kadar izlemek kalıcı sahte alarm demek.
+# Sürüş kartı IMU paketlerini (0x32/0x33) yalnız BNO055 bulunduğunda basıyor.
+# Çip takılıyken sessizlik GERÇEK bir arızadır ve kendiliğinden düzelmez:
+# kart BNO'yu bir kez bulduktan sonra kablo koparsa yeniden ARAMIYOR, kartın
+# yeniden başlatılması gerekiyor. Yani susmayı görmezsek koşu, yön kaynağı
+# olmadan sessizce devam eder.
+# Varsayılan yine kapalı: çip sökülüyken izlemek kalıcı sahte alarm demek.
+# Açılış betiği BNO takılıyken `imu_izle:=true` geçiyor.
 IMU_TOPICLERI = {
     IMU_TOPIC:               ('IMU',            1.0),
 }

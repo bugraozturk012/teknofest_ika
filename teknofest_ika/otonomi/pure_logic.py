@@ -355,6 +355,21 @@ def ayar_gonderilecek(deger: float) -> bool:
     return abs(deger) > 1e-9
 
 
+def calib_stat_coz(bayt: int):
+    """
+    BNO055 `CALIB_STAT` baytını dört alana ayırır. Dönüş: `(sys, gyr, acc, mag)`,
+    her biri 0–3.
+
+        bit 7-6: sys   bit 5-4: gyr   bit 3-2: acc   bit 1-0: mag
+
+    🔴 Bayt `sys<<4 | gyr` DEĞİL. Öyle okunursa `(bayt >> 4) & 0x0F` sys yerine
+    `sys<<2 | gyr` verir ve sonuç gyr yüksekken sistem kalibre olmuş gibi
+    görünür: çipin tipik açılış durumu olan sys=0, gyr=3'te okuma 3 çıkar,
+    yani kalibrasyonu HİÇ olmayan bir yön EKF'e tam ağırlıkla girer.
+    """
+    return ((bayt >> 6) & 3, (bayt >> 4) & 3, (bayt >> 2) & 3, bayt & 3)
+
+
 def yaw_kovaryansi(sys_kalib: int, esik: int = 3,
                    guvenilir: float = 0.02, supheli: float = 0.30) -> float:
     """

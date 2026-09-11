@@ -39,6 +39,7 @@ from teknofest_ika.otonomi.pure_logic import (  # noqa: E402
     surum_uyumlu,
     yaw_kovaryansi,
     ayar_ham,
+    calib_stat_coz,
     ayar_deger,
     ayar_gonderilecek,
     enkoder_sessiz,
@@ -3786,6 +3787,58 @@ check("symlink dalı yalnız setup.py'ye bakıyor",
       '$WS/setup.py" -newer' in _TAZE, True)
 check("kopya dalı tüm .py'lere bakıyor",
       "'*.py' -newer" in _TAZE, True)
+
+
+
+# ─── 25. BNO055 kalibrasyon baytı ve IMU izleme ────────────────────────────
+print("\n=== 25. CALIB_STAT ve IMU izleme ===")
+
+# 🔴 Bayt çipin CALIB_STAT'ı: bit 7-6 sys, 5-4 gyr, 3-2 acc, 1-0 mag.
+# `sys<<4 | gyr` diye okunursa `(bayt >> 4) & 0x0F` sys yerine `sys<<2 | gyr`
+# verir. Çipin tipik açılış durumu sys=0, gyr=3'te bu 3 çıkar — yani
+# kalibrasyonu HİÇ olmayan bir yön EKF'e TAM AĞIRLIKLA girer.
+check("sys=0 gyr=3 acc=0 mag=0", calib_stat_coz(0b00_11_00_00), (0, 3, 0, 0))
+check("hepsi 3",                 calib_stat_coz(0b11_11_11_11), (3, 3, 3, 3))
+check("hepsi 0",                 calib_stat_coz(0b00_00_00_00), (0, 0, 0, 0))
+check("yalnız sys",              calib_stat_coz(0b11_00_00_00), (3, 0, 0, 0))
+check("yalnız mag",              calib_stat_coz(0b00_00_00_11), (0, 0, 0, 3))
+check("acc ve gyr karışmıyor",   calib_stat_coz(0b00_10_01_00), (0, 2, 1, 0))
+# Dört alan da 0-3 aralığında kalmalı: kayma varsa burada taşar.
+for _b in range(256):
+    _p = calib_stat_coz(_b)
+    if not all(0 <= v <= 3 for v in _p) or len(_p) != 4:
+        check(f"CALIB_STAT {_b} aralık dışı", _p, "0-3 dörtlüsü")
+        break
+else:
+    check("256 baytın hepsi 0-3 dörtlüsü", True, True)
+# Yeniden kurulabilmeli: dört alandan bayt geri üretilince aynı değer çıkmalı.
+check("çözüm tersine çevrilebilir",
+      all(calib_stat_coz((a << 6) | (b << 4) | (c << 2) | d) == (a, b, c, d)
+          for a in range(4) for b in range(4) for c in range(4) for d in range(4)),
+      True)
+
+# Asıl sonuç: yanlış çözüm EKF'e verilen yaw güvenini 15 kat şişiriyordu.
+_B = 0b00_11_00_00          # sys=0, gyr=3 — 11 Eylül'de araçtaki durum
+check("doğru çözümde yaw şüpheli", yaw_kovaryansi(calib_stat_coz(_B)[0]), 0.30)
+check("eski çözüm güvenilir sanıyordu", yaw_kovaryansi((_B >> 4) & 0x0F), 0.02)
+
+_SK25 = _kaynak('teknofest_ika/gomulu/seri_kopru.py')
+check("köprü çözücüyü kullanıyor", 'calib_stat_coz(kalib)' in _SK25, True)
+check("elle bit kaydırma kalmadı", '(kalib >> 4) & 0x0F' in _SK25, False)
+check("bayat 'sys<<4' yorumu kalmadı", 'sys<<4' in _SK25, False)
+
+# IMU izleme: çip takılıyken sessizlik gerçek arıza ve KENDİLİĞİNDEN DÜZELMEZ
+# (kart BNO'yu bir kez bulduktan sonra kablo koparsa yeniden aramıyor).
+_ST25 = _kaynak('scripts/lydia_startup.sh')
+check("BNO_TAKILI anahtarı var", ': "${BNO_TAKILI:=1}"' in _ST25, True)
+check("watchdog'a imu_izle geçiliyor", '-p imu_izle:=' in _ST25, True)
+check("imu_izle BNO_TAKILI'ya bağlı",
+      '-p imu_izle:="$([ "$BNO_TAKILI" = "1" ]' in _ST25, True)
+# 🔑 IMU_GUVENLIK_AKTIF ayrı kalmalı: o düğüm roll eşiğine göre aracı
+# durduruyor ve eşiği IMU'nun MONTAJ YÖNÜNE güveniyor — yön sahada
+# doğrulanmadı. "Veri akıyor mu" ile "yönüne güvenilir mi" aynı şey değil.
+check("imu güvenlik hâlâ varsayılan kapalı",
+      ': "${IMU_GUVENLIK_AKTIF:=0}"' in _ST25, True)
 
 
 # ─── Sonuç ───────────────────────────────────────────────────────────────────

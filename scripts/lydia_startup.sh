@@ -135,6 +135,13 @@ trap temizle TERM INT
 # E-STOP basar. Açmadan önce araç düz dururken /imu/data'nın roll ve pitch'i
 # ~0 okumalı (gerekirse IMU_ROLL/PITCH/YAW_RAD ile düzelt).
 : "${IMU_GUVENLIK_AKTIF:=0}"
+
+# BNO_TAKILI: BNO055 karta bağlı mı. 11 Eylül'de takıldı ve /imu/data 50 Hz
+# akıyor, bu yüzden varsayılan 1. Watchdog'un IMU izlemesini bu açıyor.
+# ⚠️ IMU_GUVENLIK_AKTIF'ten AYRI: o düğüm roll eşiğine göre aracı durduruyor
+# ve eşiği IMU'nun MONTAJ YÖNÜNE güveniyor; yön sahada doğrulanana kadar
+# kapalı kalmalı. Burada yalnız "veri akıyor mu" izleniyor.
+: "${BNO_TAKILI:=1}"
 # SLAM_SCAN_TOPIC: SLAM'in okuduğu tarama. Varsayılan filtrelenmiş tarama —
 # ham /scan aracın arkasındaki gövde dönüşlerini de taşıyor ve o dönüşler araç
 # çerçevesinde sabit durduğu için eşleştiriciyi yanıltıp haritaya leke basıyor.
@@ -851,9 +858,15 @@ fi
 # başlıyor. Sessizlik gerçek bir arızadır — BLE servisi düşmüş ya da hattı
 # başka bir istemci kapmıştır — ve /sensor/fault yalnız panoya gidiyor, hiçbir
 # kilit buna bağlı değil.
+# imu_izle: BNO055 karta takılı ve /imu/data 50 Hz akıyor. Çip takılıyken
+# sessizlik gerçek arızadır ve KENDİLİĞİNDEN DÜZELMEZ — kart BNO'yu bir kez
+# bulduktan sonra kablo koparsa yeniden aramıyor, kartın yeniden başlatılması
+# gerekiyor. Görülmezse koşu yön kaynağı olmadan sürer. Çip sökülürse
+# BNO_TAKILI=0 ile kapatılır, yoksa kalıcı sahte alarm olur.
 ros2 run teknofest_ika watchdog --ros-args \
     -p nav2_aktif:="$([ "$NAV2_AKTIF" = "1" ] && echo true || echo false)" \
     -p batarya_izle:=true \
+    -p imu_izle:="$([ "$BNO_TAKILI" = "1" ] && echo true || echo false)" \
     -p ham_tarama_topic:=/scan          > "$LOG/watchdog.log" 2>&1 &
 sleep 2
 # Batarya: gerilim seri hattan gelmiyor, elektrik tarafının BLE servisi
