@@ -138,6 +138,19 @@ trap temizle TERM INT
 # waypoints.yaml'daki `hedefleme_modu` geçerli olur. Değerler ve ne zaman
 # hangisinin seçileceği Nav2 bloğunun içinde, düğüm başlatılan yerde yazılı.
 : "${HEDEFLEME_MODU:=}"
+# DUZ_BASLANGIC_M: otonom başlar başlamaz LiDAR'sız sürülecek ilk bacak [m].
+# Yön IMU'dan, yol enkoderden; tarama, Nav2 ve kayan hedef bu bacakta hiç
+# çalışmaz. 0 = kapalı, normal akış baştan sürer.
+#
+# 20 m düz şeridin içinde kalıyor: CAD'de istasyon 1·2·3 hepsi y=0 / yaw=-pi
+# ve ilk viraj istasyon 4'te, istasyon 3'e kümülatif mesafe 22,2 m.
+# Kat edilen yol aşama çizelgesinden DÜŞÜLÜR, eklenmez — eklemek rampayı,
+# atışı ve hızlanmayı 20 m ileri kaydırırdı.
+#
+# ⚠️ Bacak SULU_YOL ve TASLI_YOL'un üzerinden geçer ve o aşamalara bağlı
+#    arazi profili uygulanmaz; hız bu yüzden sulu yola göre seçilir.
+: "${DUZ_BASLANGIC_M:=20.0}"
+: "${DUZ_BASLANGIC_HIZ:=0.50}"
 # IMU_GUVENLIK_AKTIF: yatış açısına göre /speed_limit yayınlar ve 15°'de
 # E-STOP zorlar. Kapalı çünkü eşiği IMU'nun montaj yönüne güveniyor: BMI160
 # karta dönük lehimliyse araç düz dururken bile devrilmiş sanılır ve sürekli
@@ -868,12 +881,16 @@ if [ "$NAV2_AKTIF" = "1" ]; then
         #           waypoint koordinatına da ihtiyaç yok, aşamalar mesafe_m
         #           kadar yol kat edilince biter.
         #   oto     waypoint'ler doluysa harita, hepsi (0,0) ise kayan.
+        # Düz başlangıç her zaman geçirilir; hedefleme modu yalnız verilmişse.
+        # Boş bir `-p hedefleme_modu:=` parametreyi boş dizgeye ayarlar ve
+        # waypoints.yaml'daki değerin geçerli olmasını engeller.
+        _FSM_ARG="-p duz_baslangic_m:=$DUZ_BASLANGIC_M"
+        _FSM_ARG="$_FSM_ARG -p duz_baslangic_hiz:=$DUZ_BASLANGIC_HIZ"
         if [ -n "$HEDEFLEME_MODU" ]; then
-            ros2 run teknofest_ika misyon_fsm --ros-args \
-                -p hedefleme_modu:="$HEDEFLEME_MODU" > "$LOG/misyon_fsm.log" 2>&1 &
-        else
-            ros2 run teknofest_ika misyon_fsm         > "$LOG/misyon_fsm.log" 2>&1 &
+            _FSM_ARG="$_FSM_ARG -p hedefleme_modu:=$HEDEFLEME_MODU"
         fi
+        ros2 run teknofest_ika misyon_fsm --ros-args $_FSM_ARG \
+            > "$LOG/misyon_fsm.log" 2>&1 &
         sleep 2
         echo "Nav2 yolu başlatıldı (tabela → terrain_adapter → controller)"
     fi

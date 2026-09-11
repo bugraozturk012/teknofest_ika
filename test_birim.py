@@ -1218,6 +1218,203 @@ from teknofest_ika.otonomi.misyon_fsm import load_waypoints  # noqa: E402
 _WP  = load_waypoints(_WP_YOLU)[0]
 _TIP = {w['label']: w['type'] for w in _WP}
 
+# ─── 12c. Düz başlangıç — LiDAR'sız ilk bacak ───────────────────────────────
+print("\n=== 12c. Düz başlangıç (IMU + enkoder) ===")
+
+from teknofest_ika.otonomi.pure_logic import (  # noqa: E402
+    duz_git_omega, duz_baslangic_tuketimi, duz_bacak_iptal,
+)
+from teknofest_ika.otonomi.topics import (  # noqa: E402
+    DUZ_BASLANGIC_MESAFE_M, DUZ_BASLANGIC_HIZ_MS, DUZ_BASLANGIC_KP,
+    DUZ_DIREKSIYON_PAYI, DUZ_IMU_BAYATLAMA_S, PLANLAYICI_DONUS_YARICAPI_M,
+)
+
+_KL = DUZ_DIREKSIYON_PAYI / PLANLAYICI_DONUS_YARICAPI_M
+
+# Sapma yoksa düzeltme de yok: küçük bir kalıcı ω düz şeritte 20 m boyunca
+# birikir ve aracı duvara götürür.
+check("sapma yok → ω sıfır", duz_git_omega(0.0, 0.0, 0.5, 1.0, _KL), 0.0)
+# İŞARET: sola sapınca (yaw +) sağa düzeltilmeli (ω −). Ters olursa düzeltme
+# hatayı büyütür ve araç ilk metrelerde şeritten çıkar.
+check("sola sapma → sağa düzeltme",
+      duz_git_omega(math.radians(2), 0.0, 0.5, 1.0, _KL) < 0.0, True)
+check("sağa sapma → sola düzeltme",
+      duz_git_omega(math.radians(-2), 0.0, 0.5, 1.0, _KL) > 0.0, True)
+# Orantılılık: 2° hatası 1°'nin iki katı düzeltme ister (kelepçenin altında).
+check("düzeltme hataya oranlı",
+      round(duz_git_omega(math.radians(2), 0.0, 0.5, 1.0, _KL)
+            / duz_git_omega(math.radians(1), 0.0, 0.5, 1.0, _KL), 3), 2.0)
+# Kelepçe eğrilik cinsinden: büyük hatada ω = v × κ_limit'te durur.
+check("büyük sapma kelepçede durur",
+      round(duz_git_omega(math.radians(45), 0.0, 0.5, 1.0, _KL), 6),
+      round(-0.5 * _KL, 6))
+# Kelepçe HIZA göre ölçeklenir. Sabit bir ω tavanı yavaşken daha büyük bir
+# direksiyon açısına karşılık gelir ve araç yılankavi sürer.
+check("kelepçe hızla ölçekleniyor",
+      round(duz_git_omega(math.radians(45), 0.0, 1.0, 1.0, _KL)
+            / duz_git_omega(math.radians(45), 0.0, 0.5, 1.0, _KL), 3), 2.0)
+# Duruyorken direksiyon kırmak aracı döndürmez, yalnız kalkışta baş açısını
+# referanstan uzağa atar.
+check("v≈0 → ω sıfır", duz_git_omega(math.radians(45), 0.0, 0.0, 1.0, _KL), 0.0)
+# Açı sarması: -179° başlık ile +179° referans arasındaki fark 2°, 358° değil.
+# Araç referanstan 2° SOLA dönmüş sayılır, düzeltme de 2° sapmayla aynı olmalı.
+# Sarma olmazsa fark 358° okunur, düzeltme ters işaretli ve kelepçede çıkar.
+check("açı sarması kısa yoldan",
+      round(duz_git_omega(math.radians(-179), math.radians(179), 0.5, 1.0, _KL), 6),
+      round(duz_git_omega(math.radians(2), 0.0, 0.5, 1.0, _KL), 6))
+# Kelepçenin karşılığı teker açısı: tam kilit (30°) düz giden araçta salınım
+# üretir, pay bunu çeyreğe indiriyor.
+check("kelepçe ≈ 8° teker açısı",
+      round(math.degrees(math.atan(_KL * 1.44)), 1), 8.2)
+
+# ── Çizelge tüketimi ────────────────────────────────────────────────────────
+# Kayan modda aşamalar KAT EDİLEN YOLA bakıyor: düz bacağı çizelgeye eklemek
+# rampayı, atışı ve hızlanmayı bacak boyu kadar ileri kaydırır. Bu yüzden
+# düşülüyor ve bu fonksiyon nereden devam edileceğini söylüyor.
+_MES = [float(w.get('mesafe_m', 0.0)) for w in _WP]
+check("tüketim yok → baştan, tam mesafe", duz_baslangic_tuketimi(_MES, 0.0),
+      (0, _MES[0]))
+check("ilk aşamanın yarısı", duz_baslangic_tuketimi(_MES, _MES[0] / 2.0),
+      (0, _MES[0] / 2.0))
+# Tam sınırda: ilk aşama bitti, ikincisi tam mesafesiyle başlar. Sınırı
+# yanlış tarafa koymak bitmiş bir aşamayı 0 m mesafeyle sürdürür ve o aşama
+# anında biter — parkurda bir istasyon sessizce atlanır.
+_ITB = duz_baslangic_tuketimi(_MES, _MES[0])
+check("ilk aşama tam bitti", (_ITB[0], round(_ITB[1], 6)),
+      (1, round(_MES[1], 6)))
+# 20 m gerçek çizelgede: aşama 1 ve 2 tamamen, 3'ün içinde kalan.
+_I20, _K20 = duz_baslangic_tuketimi(_MES, 20.0)
+check("20 m → 3. aşamadan devam", _I20, 2)
+check("20 m → kalan doğru", round(_K20, 3),
+      round(sum(_MES[:3]) - 20.0, 3))
+check("20 m'nin bittiği aşama YAN_EGIM", _WP[_I20]['label'], 'YAN_EGIM')
+# Düşülen + kalan = çizelgenin o noktasına kadarki toplam. Muhasebe bozulursa
+# koşu ya erken ya geç biter ve sapma her aşamada birikir.
+check("muhasebe kapanıyor", round(20.0 + _K20, 3), round(sum(_MES[:3]), 3))
+# Çizelgeden uzun bacak: parkur bitti demek, sessizce son aşamayı sürmek değil.
+check("çizelgeden uzun → aşama kalmadı",
+      duz_baslangic_tuketimi(_MES, sum(_MES) + 5.0), (len(_MES), 0.0))
+check("tam toplam → aşama kalmadı",
+      duz_baslangic_tuketimi(_MES, sum(_MES)), (len(_MES), 0.0))
+# Mesafesi olmayan aşama çizelgede yer tutmaz: "kalanı" da yoktur.
+check("mesafesiz aşama atlanıyor", duz_baslangic_tuketimi([0.0, 5.0], 0.0),
+      (1, 5.0))
+# Negatif mesafe çizelgeyi GERİ SARMAMALI. Eksi bir sayı toplamı düşürürse
+# sonraki aşama olduğundan yakın görünür: bacak onu yemiş sayılır ve parkurda
+# bir istasyon sessizce atlanır. yaml'a elle girilen bir eksi işareti bunu
+# tek başına yapar.
+check("negatif mesafe geri sarmıyor",
+      duz_baslangic_tuketimi([-5.0, 5.0], 0.0), (1, 5.0))
+check("negatif mesafe araya girse de toplam korunur",
+      duz_baslangic_tuketimi([10.0, -3.0, 5.0], 10.0), (2, 5.0))
+
+# Varsayılan bacak düz şeridin İÇİNDE kalmalı: istasyon 3'e kümülatif mesafe
+# kadar yol düz, sonrası viraj. Bacak oradan uzun olursa araç virajı LiDAR'sız
+# ve baş açısını sabit tutarak girer, yani duvara sürer.
+_DUZ_SERIT_M = sum(_MES[:3])
+check("varsayılan bacak düz şeridin içinde",
+      DUZ_BASLANGIC_MESAFE_M <= _DUZ_SERIT_M, True)
+# İlk üç istasyon gerçekten düz mü — bacağın dayanağı bu. CAD'de üçü de aynı
+# y'de ve aynı yönde; biri kayarsa sabit baş açısı şeridi takip etmeyi bırakır.
+with open(_WP_YOLU, encoding='utf-8') as _f:
+    _WP_HAM = yaml.safe_load(_f)
+_CAD3 = [a.get('waypoint_cad', {}) for a in _WP_HAM['asamalar'][:3]]
+check("ilk üç istasyon aynı y'de",
+      all(abs(float(c.get('y', 99))) < 0.01 for c in _CAD3), True)
+check("ilk üç istasyon aynı yönde",
+      all(abs(abs(float(c.get('yaw', 0))) - math.pi) < 0.01 for c in _CAD3), True)
+# İlk viraj bacağın DIŞINDA kalmalı.
+check("4. istasyon virajda (bacağın dışında)",
+      abs(float(_WP_HAM['asamalar'][3]['waypoint_cad']['y'])) > 1.0, True)
+
+# ── İptal kapıları ──────────────────────────────────────────────────────────
+# Bacağın iki girdisi var ve ikisi de susabiliyor. Kapılar eskiden execute()
+# içindeydi ve kaldırılmaları hiçbir testi düşürmüyordu — mutasyon bunu
+# yakaladı, karar buraya taşındı.
+_KAPI = dict(odom_bayatlama_s=1.0, imu_bayatlama_s=0.5, ilerleme_s=4.0,
+             ilerleme_m=0.20, sapma_sinir=math.radians(6.0))
+
+check("sağlıklı durumda sürmeye devam",
+      duz_bacak_iptal(0.1, 0.1, True, 5.0, 10.0, 0.0, **_KAPI), None)
+# /odom bayatsa yol ölçülemiyor: bacak mesafeyi bilmeden sürerdi ve aşama
+# çizelgesinden ne düşüleceği de bilinmezdi.
+check("odom bayat → failed",
+      duz_bacak_iptal(1.5, 0.1, True, 5.0, 10.0, 0.0, **_KAPI),
+      ('odom_bayat', 'failed'))
+# IMU bu bacağın TEK geri beslemesi. Tolere etmek "düz gittiğini varsayarak
+# 20 m sür" demek; 1° sapma 0,35 m, payı 0,915 m.
+check("IMU bayat → failed",
+      duz_bacak_iptal(0.1, 0.9, True, 5.0, 10.0, 0.0, **_KAPI),
+      ('imu_bayat', 'failed'))
+check("yaw hiç gelmedi → failed",
+      duz_bacak_iptal(0.1, 0.1, False, 5.0, 10.0, 0.0, **_KAPI),
+      ('imu_bayat', 'failed'))
+# Sınırda tolere edilir, aşınca değil: eşiği yanlış tarafa koymak 50 Hz'lik
+# bir akışta her örnekte sahte iptal üretir.
+check("IMU tam eşikte tolere",
+      duz_bacak_iptal(0.1, 0.5, True, 5.0, 10.0, 0.0, **_KAPI), None)
+check("odom tam eşikte tolere",
+      duz_bacak_iptal(1.0, 0.1, True, 5.0, 10.0, 0.0, **_KAPI), None)
+# Komut verildi ama araç kımıldamıyor.
+check("ilerleme yok → failed",
+      duz_bacak_iptal(0.1, 0.1, True, 0.05, 5.0, 0.0, **_KAPI),
+      ('ilerleme_yok', 'failed'))
+# Kalkış sürtünmesi ve kartın kalkış darbesi ilk saniyelerde yolu 0'da tutuyor;
+# kapı o pencerede bakmamalı yoksa her koşu kalkışta iptal olur.
+check("kalkış penceresinde ilerleme aranmıyor",
+      duz_bacak_iptal(0.1, 0.1, True, 0.0, 2.0, 0.0, **_KAPI), None)
+# Sapma sınırı aşılınca bacak BIRAKILIR, kurtarmaya gidilmez: araç sağlam,
+# yalnız bu bacak işini yapamadı. failed demek kurtarma denemesi harcamaktır.
+check("sapma aşıldı → bırak (kurtarma değil)",
+      duz_bacak_iptal(0.1, 0.1, True, 5.0, 10.0, math.radians(7), **_KAPI),
+      ('sapma_asildi', 'birak'))
+check("sapma işaretten bağımsız",
+      duz_bacak_iptal(0.1, 0.1, True, 5.0, 10.0, math.radians(-7), **_KAPI),
+      ('sapma_asildi', 'birak'))
+check("sapma sınır içinde tolere",
+      duz_bacak_iptal(0.1, 0.1, True, 5.0, 10.0, math.radians(5.9), **_KAPI), None)
+# Sensör kapıları sapma kapısından ÖNCE: bayat yaw ile hesaplanan sapma
+# gerçeği değil son bilinen değeri ölçer, yani araç dönerken "sapma yok" der.
+check("bayat sensör sapmadan önce gelir",
+      duz_bacak_iptal(1.5, 0.1, True, 5.0, 10.0, math.radians(7), **_KAPI),
+      ('odom_bayat', 'failed'))
+check("bayat IMU sapmadan önce gelir",
+      duz_bacak_iptal(0.1, 0.9, True, 5.0, 10.0, math.radians(7), **_KAPI),
+      ('imu_bayat', 'failed'))
+# Donmuş odometride yol hep 0'dır; onu "ilerleme yok" saymak yanlış teşhistir.
+check("bayat odom ilerleme yokluğundan önce gelir",
+      duz_bacak_iptal(1.5, 0.1, True, 0.0, 10.0, 0.0, **_KAPI),
+      ('odom_bayat', 'failed'))
+
+# Sebep kodlarının tamamının sahada okunacak bir metni olmalı: eşlemede
+# olmayan bir kod log satırını KeyError ile düşürür ve bacak orada patlar.
+_IPTAL_KODLARI = {'odom_bayat', 'imu_bayat', 'ilerleme_yok', 'sapma_asildi'}
+with open(os.path.join(_KOK, 'teknofest_ika', 'otonomi', 'misyon_fsm.py'),
+          encoding='utf-8') as _f:
+    _FSM_DUZ = _f.read()
+_M_METIN = re.search(r'_IPTAL_METNI = \{(.*?)\n    \}', _FSM_DUZ, flags=re.S)
+check("iptal metni eşlemesi bulundu", _M_METIN is not None, True)
+check("her sebebin metni var",
+      set(re.findall(r"'(\w+)':", _M_METIN.group(1))) if _M_METIN else set(),
+      _IPTAL_KODLARI)
+
+# Hız sulu yola göre seçiliyor ve kartın etkili tabanının üstünde olmalı:
+# altındaki komutlar kartta tabana YÜKSELTİLİYOR, yani yazılan sayı sahada
+# geçerli olmaz.
+check("düz bacak hızı kart tabanının üstünde", DUZ_BASLANGIC_HIZ_MS >= 0.20, True)
+check("düz bacak hızı kart tavanının altında",
+      DUZ_BASLANGIC_HIZ_MS <= KART_HIZ_TAVAN, True)
+# IMU 50 Hz; bayatlama eşiği birkaç örneğe pay bırakmalı ama bacağın açık
+# döngüye düşmesine izin verecek kadar uzun olmamalı.
+check("IMU bayatlama eşiği makul",
+      0.1 <= DUZ_IMU_BAYATLAMA_S <= 1.0, True)
+check("kazanç pozitif", DUZ_BASLANGIC_KP > 0.0, True)
+# Pay tam kilidi kullanmamalı: 1,0 düz giderken direksiyonu sonuna dayandırır.
+check("direksiyon payı tam kilidin altında",
+      0.0 < DUZ_DIREKSIYON_PAYI < 1.0, True)
+
+
+
 # Nav2'yi baypas eden üç yol. Eşleme koparsa aşama sıradan bir navigasyon
 # hedefine dönüşür ve bunu söyleyen hiçbir log yoktur.
 check("ATIS_BOLGESI shoot durumuna gidiyor",       _TIP.get('ATIS_BOLGESI'), 'shoot')
@@ -1311,6 +1508,20 @@ def _smach_uyusmazliklari():
     """
     import ast
     agac = ast.parse(_FSM)
+
+    def _sabitler(dugum):
+        """Geçiş hedefindeki dizge sabitleri.
+
+        Hedef koşullu olabilir (`'A' if kapi else 'B'`): iki dal da sahada
+        gerçekleşen bir hedeftir ve ikisi de bilinen bir duruma bağlanmalı.
+        Yalnız `Constant` okumak koşulun bir dalını denetimsiz bırakırdı.
+        """
+        if isinstance(dugum, ast.Constant):
+            return {dugum.value}
+        if isinstance(dugum, ast.IfExp):
+            return _sabitler(dugum.body) | _sabitler(dugum.orelse)
+        return set()
+
     ciktilar = {}
     for d in ast.walk(agac):
         if isinstance(d, ast.ClassDef):
@@ -1334,7 +1545,9 @@ def _smach_uyusmazliklari():
             for kw in n.keywords:
                 if kw.arg == 'transitions' and isinstance(kw.value, ast.Dict):
                     gecis = {k.value for k in kw.value.keys}
-                    hedef = {v.value for v in kw.value.values}
+                    hedef = set()
+                    for v in kw.value.values:
+                        hedef |= _sabitler(v)
             durumlar.add(n.args[0].value)
             eklemeler.append((n.args[0].value, sinif, gecis, hedef))
     bilinen = durumlar | {'GOREV_TAMAMLANDI', 'GOREV_IPTAL'}
@@ -1349,6 +1562,176 @@ def _smach_uyusmazliklari():
 
 
 check("smach çıktı/geçiş uyuşmazlığı yok", _smach_uyusmazliklari(), [])
+
+
+# ─── Düz başlangıcın FSM'e bağlanması ───────────────────────────────────────
+print("\n=== Düz başlangıç FSM'e bağlı mı ===")
+
+
+def _sinif_dugumu(ad):
+    import ast
+    for d in ast.walk(ast.parse(_FSM)):
+        if isinstance(d, ast.ClassDef) and d.name == ad:
+            return d
+    return None
+
+
+_DUZ_SINIF = _sinif_dugumu('DuzBaslangicState')
+check("DuzBaslangicState var", _DUZ_SINIF is not None, True)
+
+
+def _abone_konulari(sinif):
+    """Sınıfın create_subscription ile abone olduğu konu adları."""
+    import ast
+    adlar = set()
+    for n in ast.walk(sinif):
+        if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == 'create_subscription' and len(n.args) >= 2):
+            hedef = n.args[1]
+            if isinstance(hedef, ast.Name):
+                adlar.add(hedef.id)
+            elif isinstance(hedef, ast.Constant):
+                adlar.add(hedef.value)
+    return adlar
+
+
+if _DUZ_SINIF is not None:
+    _DUZ_KONU = _abone_konulari(_DUZ_SINIF)
+    # Bacağın varlık sebebi taramaya BAKMAMAK: tarama gelmiyorken ya da açısı
+    # kalibre değilken Nav2 ve kayan hedef ikisi de çalışmıyor. Buraya bir
+    # tarama aboneliği sızarsa bacak sessizce aynı bağımlılığı edinir.
+    check("düz bacak taramaya abone DEĞİL",
+          sorted(k for k in _DUZ_KONU if 'SCAN' in k or 'scan' in k), [])
+    # İki girdisi zorunlu: yön IMU'dan, yol enkoder odometrisinden.
+    check("düz bacak IMU'ya abone", 'IMU_TOPIC' in _DUZ_KONU, True)
+    check("düz bacak odometriye abone", 'ODOM_TOPIC' in _DUZ_KONU, True)
+    # Yol ölçümü KART odometrisinden gelmeli. /odometry/filtered EKF çıkışı ve
+    # EKF yaw'ı aynı IMU'dan alıyor; ikisini aynı döngüde kullanmak düzeltmeyi
+    # kendi etkisiyle besler.
+    check("düz bacak EKF çıkışını kullanmıyor",
+          'EKF_ODOM_TOPIC' in _DUZ_KONU, False)
+    # Saf kontrolcü çağrılıyor mu — ω'yı state içinde yeniden hesaplamak
+    # testsiz bir ikinci kopya demek.
+    _DUZ_KAYNAK = _FSM[_FSM.index('class DuzBaslangicState'):]
+    _DUZ_KAYNAK = _DUZ_KAYNAK[:_DUZ_KAYNAK.index('\nclass ')]
+    check("ω saf fonksiyondan geliyor", 'duz_git_omega(' in _DUZ_KAYNAK, True)
+    check("çizelge saf fonksiyonla düşülüyor",
+          'duz_baslangic_tuketimi(' in _DUZ_KAYNAK, True)
+    # Bacak yarıda kesilse de kat edilen yol çizelgeden düşülmeli: düşülmezse
+    # normal sistem aşamaları o kadar geç bitirir ve sapma parkur boyu birikir.
+    check("çıkışta çizelge her hâlde düşülüyor",
+          _DUZ_KAYNAK.count('_cizelgeyi_dus(userdata'), 1)
+
+
+def _durum_eklemeleri():
+    """ad → (sınıf, geçiş hedefleri) — durum makinesine eklenen her durum."""
+    import ast
+    sonuc = {}
+    for n in ast.walk(ast.parse(_FSM)):
+        if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == 'add' and len(n.args) >= 2
+                and isinstance(n.args[0], ast.Constant)):
+            sinif = (n.args[1].func.id if isinstance(n.args[1], ast.Call)
+                     and isinstance(n.args[1].func, ast.Name) else None)
+            hedef = {}
+            for kw in n.keywords:
+                if kw.arg == 'transitions' and isinstance(kw.value, ast.Dict):
+                    for k, v in zip(kw.value.keys, kw.value.values):
+                        hedef[k.value] = _sabit_kume(v)
+            sonuc[n.args[0].value] = (sinif, hedef)
+    return sonuc
+
+
+def _sabit_kume(dugum):
+    import ast
+    if isinstance(dugum, ast.Constant):
+        return {dugum.value}
+    if isinstance(dugum, ast.IfExp):
+        return _sabit_kume(dugum.body) | _sabit_kume(dugum.orelse)
+    return set()
+
+
+_EKLEME = _durum_eklemeleri()
+check("DUZ_BASLANGIC durum makinesinde", 'DUZ_BASLANGIC' in _EKLEME, True)
+check("DUZ_BASLANGIC doğru sınıfla eklenmiş",
+      _EKLEME.get('DUZ_BASLANGIC', (None, {}))[0], 'DuzBaslangicState')
+# IDLE'ın hedefi KOŞULLU: kapı açıkken düz bacak, kapalıyken eski akış. İki
+# dalın ikisi de denetlenmeli — birini kaybetmek ya bacağı hiç çalıştırmamak
+# ya da kapatılamaz hâle getirmek olurdu.
+check("IDLE düz bacağa da doğrudan NAVIGATE'e de çıkabiliyor",
+      _EKLEME.get('IDLE', (None, {}))[1].get('started'),
+      {'DUZ_BASLANGIC', 'NAVIGATE'})
+# Bacak bittiğinde normal sisteme dönülmeli; hata kurtarmaya, E-STOP iptale.
+_DUZ_GECIS = _EKLEME.get('DUZ_BASLANGIC', (None, {}))[1]
+check("düz bacak tamamlanınca NAVIGATE", _DUZ_GECIS.get('completed'), {'NAVIGATE'})
+check("düz bacak hatada kurtarmaya", _DUZ_GECIS.get('failed'), {'ERROR_RECOVERY'})
+check("düz bacak E-STOP'ta iptale", _DUZ_GECIS.get('e_stop'), {'MISSION_ABORT'})
+
+# Parametre açılış betiğinden geçmeli: betik launch dosyası kullanmıyor, yani
+# yalnız düğüm varsayılanında değiştirilen bir değer sahaya hiç ulaşmaz.
+with open(os.path.join(_KOK, 'scripts', 'lydia_startup.sh'),
+          encoding='utf-8') as _f:
+    _BOOT_DUZ = _f.read()
+_DUZ_VARSAYILAN = dict(re.findall(r'^:\s*"\$\{([A-Z0-9_]+):=([^}]*)\}"',
+                                  _BOOT_DUZ, flags=re.M))
+# Argümanlar bir DEĞİŞKENDE birikiyor, çağrı satırında literal durmuyorlar:
+# dizge aramak `$_FSM_ARG`'ı görür ve içinde ne olduğunu söylemez. Bu yüzden
+# satırlar çıkarılıp KOŞTURULUYOR ve düğüme gerçekte ne gittiği ölçülüyor.
+_M_FSM = re.search(r'(\s*_FSM_ARG="-p duz_baslangic_m.*?2>&1 &\n)',
+                   _BOOT_DUZ, flags=re.S)
+check("misyon_fsm çağrı bloğu bulundu", _M_FSM is not None, True)
+
+if _M_FSM:
+    import subprocess as _sp
+    import tempfile as _tf
+    import textwrap as _tw
+
+    def _fsm_argumanlari(mesafe, hiz, mod):
+        with _tf.TemporaryDirectory() as _t:
+            betik = (
+                f'LOG={_t}\nDUZ_BASLANGIC_M={mesafe}\n'
+                f'DUZ_BASLANGIC_HIZ={hiz}\nHEDEFLEME_MODU={mod}\n'
+                f'IZ={_t}/iz\n'
+                # Çağrılan satır çıktısını log dosyasına yönlendiriyor, yani
+                # shim'in stdout'u yutulur; iz ayrı dosyaya yazılıyor.
+                'ros2() { echo "$*" >> "$IZ"; }\n'
+                + _tw.dedent(_M_FSM.group(1)) + 'wait\n')
+            _sp.run(['bash', '-c', betik], capture_output=True, text=True)
+            try:
+                with open(os.path.join(_t, 'iz'), encoding='utf-8') as f:
+                    return f.read()
+            except FileNotFoundError:
+                return ''
+
+    _ARG = _fsm_argumanlari('20.0', '0.50', '')
+    check("duz_baslangic_m düğüme geçiriliyor",
+          '-p duz_baslangic_m:=20.0' in _ARG, True)
+    check("duz_baslangic_hiz düğüme geçiriliyor",
+          '-p duz_baslangic_hiz:=0.50' in _ARG, True)
+    # Boş HEDEFLEME_MODU parametre olarak GEÇMEMELİ: boş dizgeye ayarlamak
+    # waypoints.yaml'daki değerin geçerli olmasını engeller ve mod sessizce
+    # geçersiz olur.
+    check("boş hedefleme modu geçirilmiyor",
+          'hedefleme_modu' in _ARG, False)
+    _ARG_K = _fsm_argumanlari('20.0', '0.50', 'kayan')
+    check("verilen hedefleme modu geçiriliyor",
+          '-p hedefleme_modu:=kayan' in _ARG_K, True)
+    check("mod verilince düz bacak yine geçiyor",
+          '-p duz_baslangic_m:=20.0' in _ARG_K, True)
+    # Kapatma yolu: 0 geçirilebilmeli, yoksa sahada bacağı kapatmanın yolu
+    # betiği düzenlemekten geçer.
+    check("bacak kapatılabiliyor",
+          '-p duz_baslangic_m:=0' in _fsm_argumanlari('0', '0.50', ''), True)
+check("misyon_fsm duz_baslangic_m tanımlıyor",
+      "declare_parameter('duz_baslangic_m'" in _FSM, True)
+check("misyon_fsm duz_baslangic_hiz tanımlıyor",
+      "declare_parameter('duz_baslangic_hiz'" in _FSM, True)
+# Betikteki varsayılan sabitle aynı olmalı; ayrışırlarsa sahada hangisinin
+# geçerli olduğu çağrı sırasına kalır.
+check("betik varsayılanı sabitle aynı",
+      float(_DUZ_VARSAYILAN.get('DUZ_BASLANGIC_M', -1)), DUZ_BASLANGIC_MESAFE_M)
+check("betik hız varsayılanı sabitle aynı",
+      float(_DUZ_VARSAYILAN.get('DUZ_BASLANGIC_HIZ', -1)), DUZ_BASLANGIC_HIZ_MS)
 
 
 # ─── İstasyon başına süre bütçesi ────────────────────────────────────────────
