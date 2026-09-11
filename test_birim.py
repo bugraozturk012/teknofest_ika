@@ -1222,11 +1222,12 @@ _TIP = {w['label']: w['type'] for w in _WP}
 print("\n=== 12c. Düz başlangıç (IMU + enkoder) ===")
 
 from teknofest_ika.otonomi.pure_logic import (  # noqa: E402
-    duz_git_omega, duz_baslangic_tuketimi, duz_bacak_iptal,
+    duz_git_omega, duz_baslangic_tuketimi, duz_bacak_iptal, duz_yaw_donmus,
 )
 from teknofest_ika.otonomi.topics import (  # noqa: E402
     DUZ_BASLANGIC_MESAFE_M, DUZ_BASLANGIC_HIZ_MS, DUZ_BASLANGIC_KP,
     DUZ_DIREKSIYON_PAYI, DUZ_IMU_BAYATLAMA_S, PLANLAYICI_DONUS_YARICAPI_M,
+    DUZ_YAW_DONMUS_S, DUZ_YAW_DONMUS_M,
 )
 
 _KL = DUZ_DIREKSIYON_PAYI / PLANLAYICI_DONUS_YARICAPI_M
@@ -1386,9 +1387,53 @@ check("bayat odom ilerleme yokluğundan önce gelir",
       duz_bacak_iptal(1.5, 0.1, True, 0.0, 10.0, 0.0, **_KAPI),
       ('odom_bayat', 'failed'))
 
+# ── Donmuş yaw: bayatlık kapısının GÖRMEDİĞİ arıza ──────────────────────────
+# 11 Eylül'de araçta yaw 2031 örneğin hepsinde tam 0,000 okundu. Araç durduğu
+# için meşru olabilir, ama hareket hâlinde aynısı olursa paketler 50 Hz akarken
+# değer kıpırdamaz: bayatlık kapısı ateşlenmez, bacak sapmayı hep 0 görür ve
+# 20 m'yi açık döngüde sürer.
+check("süre ve mesafe birlikte aşılınca donmuş",
+      duz_yaw_donmus(5.0, 3.0, DUZ_YAW_DONMUS_S, DUZ_YAW_DONMUS_M), True)
+# Duran araçta yaw'ın sabit kalması NORMAL — süre tek başına karar vermemeli,
+# yoksa her kırmızı ışıkta, her manuel duraklamada sahte alarm çıkar.
+check("süre aşıldı ama araç ilerlemedi → normal",
+      duz_yaw_donmus(5.0, 0.5, DUZ_YAW_DONMUS_S, DUZ_YAW_DONMUS_M), False)
+# Kart açıyı 0,1° adımlarla gönderiyor: kısa bir düzlükte aynı basamakta
+# kalmak da normal — mesafe tek başına da karar vermemeli.
+check("mesafe aşıldı ama süre kısa → normal",
+      duz_yaw_donmus(2.0, 3.0, DUZ_YAW_DONMUS_S, DUZ_YAW_DONMUS_M), False)
+check("ikisi de eşiğin altında → normal",
+      duz_yaw_donmus(2.0, 1.0, DUZ_YAW_DONMUS_S, DUZ_YAW_DONMUS_M), False)
+# Tam eşikte tolere edilir, aşınca ateşlenir.
+check("tam eşikte tolere",
+      duz_yaw_donmus(DUZ_YAW_DONMUS_S, DUZ_YAW_DONMUS_M,
+                     DUZ_YAW_DONMUS_S, DUZ_YAW_DONMUS_M), False)
+# Eşikler birbirine tutarlı olmalı: bacak hızında mesafe eşiği süre eşiğinden
+# ÖNCE dolmamalı, yoksa mesafe kapısı fiilen devre dışı kalır ve süre tek
+# başına karar verir.
+check("eşikler bacak hızıyla tutarlı",
+      DUZ_YAW_DONMUS_M / DUZ_BASLANGIC_HIZ_MS >= DUZ_YAW_DONMUS_S, True)
+# Kapı bacağın kendi içinde KULLANILMALI; saf fonksiyonun var olması
+# çağrıldığını göstermez.
+with open(os.path.join(_KOK, 'teknofest_ika', 'otonomi', 'misyon_fsm.py'),
+          encoding='utf-8') as _f:
+    _FSM_HAM = _f.read()
+_DUZ_SINIF_KAYNAK = (
+    _FSM_HAM[_FSM_HAM.index('class DuzBaslangicState'):].split('\nclass ')[0]
+    if 'class DuzBaslangicState' in _FSM_HAM else '')
+check("bacak kaynağı bulundu", len(_DUZ_SINIF_KAYNAK) > 0, True)
+if _DUZ_SINIF_KAYNAK:
+    check("donmuş yaw kapısı bacakta kullanılıyor",
+          'duz_yaw_donmus(' in _DUZ_SINIF_KAYNAK, True)
+    # Çapa yaw DEĞİŞTİĞİNDE yenilenmeli: yenilenmezse ilk örnekten sonra
+    # sayaç hiç sıfırlanmaz ve sağlıklı bir koşu 4 s sonra iptal edilir.
+    check("yaw değişince çapa yenileniyor",
+          'capa_yaw, capa_zaman, capa_yol = yaw,' in _DUZ_SINIF_KAYNAK, True)
+
 # Sebep kodlarının tamamının sahada okunacak bir metni olmalı: eşlemede
 # olmayan bir kod log satırını KeyError ile düşürür ve bacak orada patlar.
-_IPTAL_KODLARI = {'odom_bayat', 'imu_bayat', 'ilerleme_yok', 'sapma_asildi'}
+_IPTAL_KODLARI = {'odom_bayat', 'imu_bayat', 'ilerleme_yok', 'sapma_asildi',
+                  'yaw_donmus'}
 with open(os.path.join(_KOK, 'teknofest_ika', 'otonomi', 'misyon_fsm.py'),
           encoding='utf-8') as _f:
     _FSM_DUZ = _f.read()

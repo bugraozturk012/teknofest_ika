@@ -933,3 +933,11 @@ DUZ_DIREKSIYON_PAYI = 0.25
 # IMU 50 Hz; bu süre gelmezse baş açısı bilinmiyor demektir ve bacağın tek
 # geri beslemesi odur — açık döngüde 20 m sürmek aracı duvara yazar.
 DUZ_IMU_BAYATLAMA_S = 0.5       # [s]
+# Bayatlık kapısının görmediği arıza: paket akarken İÇİNDEKİ açının donması.
+# 11 Eylül'de araçta yaw 2031 örneğin hepsinde tam 0,000 okundu — araç durduğu
+# için meşru da olabilir, ama hareket hâlinde aynısı olursa bacak sapmayı hep
+# 0 görür ve düzeltme yapmadan sürer. İki eşik BİRLİKTE aranıyor: duruyorken
+# sabit yaw normaldir, kart 0,1° adımlarla gönderdiği için kısa bir düzlükte
+# aynı basamakta kalmak da normaldir.
+DUZ_YAW_DONMUS_S = 4.0          # [s]
+DUZ_YAW_DONMUS_M = 2.0          # [m]

@@ -1584,3 +1584,24 @@ def duz_bacak_iptal(odom_yas: float, imu_yas: float, yaw_biliniyor: bool,
     if abs(sapma) > sapma_sinir:
         return 'sapma_asildi', 'birak'
     return None
+
+
+def duz_yaw_donmus(ayni_sure_s: float, ayni_mesafe_m: float,
+                   sure_esik_s: float, mesafe_esik_m: float) -> bool:
+    """
+    Yaw değeri hareket hâlindeyken kıpırdamıyorsa True.
+
+    Bayatlık kapısının GÖRMEDİĞİ arıza: kart paketi 50 Hz basmaya devam
+    ederken içindeki açı sabit kalabilir (BNO kalibre olmamış, eksen ölü,
+    kart alanı sıfır basıyor). O hâlde düz bacak sapmayı hep 0 okur, hiç
+    düzeltme yapmaz ve 20 m'yi açık döngüde sürer — bacağın var olma sebebi
+    tam olarak bunu yapmamak.
+
+    İki eşik birlikte aranır, çünkü tek başına ikisi de yanlış alarm verir:
+    araç duruyorken yaw'ın sabit kalması NORMAL (süre tek başına yetmez) ve
+    kart açıyı 0,1° adımlarla gönderdiği için kısa bir düzlükte aynı basamakta
+    kalmak da normal (mesafe tek başına yetmez). Hem birkaç saniye hem birkaç
+    metre boyunca BİT OLARAK aynı kalması, yol gürültüsü altında
+    açıklanamayacak kadar düzdür.
+    """
+    return ayni_sure_s > sure_esik_s and ayni_mesafe_m > mesafe_esik_m

@@ -143,6 +143,7 @@ from teknofest_ika.otonomi.topics import (
     KAYAN_ODOM_BAYATLAMA_S, LIDAR_MONTAJ_YAW_RAD,
     DUZ_BASLANGIC_MESAFE_M, DUZ_BASLANGIC_HIZ_MS, DUZ_BASLANGIC_KP,
     DUZ_DIREKSIYON_PAYI, DUZ_IMU_BAYATLAMA_S,
+    DUZ_YAW_DONMUS_S, DUZ_YAW_DONMUS_M,
 )
 from teknofest_ika.otonomi.pure_logic import (
     DetectionsStore, stop_check as _stop_check_pure, hizlanma_hiz_profili,
@@ -157,6 +158,7 @@ from teknofest_ika.otonomi.pure_logic import (
     hedef_ulasilabilir_mi,
     quat_yaw, arac_hedefini_odoma_tasi,
     duz_git_omega, duz_baslangic_tuketimi, duz_bacak_iptal,
+    duz_yaw_donmus,
 )
 
 # §6.10: dik eğim çıkış/iniş noktalarında STOP tabelası kaçırılsa bile
@@ -1879,6 +1881,8 @@ class DuzBaslangicState(smach.State):
                         'da araç hareket etmiyor',
         'sapma_asildi': 'baş açısı sınırı aştı, bacak bırakılıyor ve taramalı '
                         'sisteme dönülüyor',
+        'yaw_donmus':   'yaw paketi akıyor ama DEĞERİ kıpırdamıyor — bacağın '
+                        'geri beslemesi ölü, açık döngüde sürülmez',
     }
 
     def __init__(self, node: Node, det_store: DetectionsStore,
@@ -2012,6 +2016,9 @@ class DuzBaslangicState(smach.State):
         deadline = baslama + self._mesafe / max(1e-3, self._hiz * self.TIMEOUT_PAYI)
         sonuc    = 'completed'
         yol      = 0.0
+        # Yaw'ın kaç saniye ve kaç metre boyunca BİT OLARAK aynı kaldığını
+        # izlemek için çapa. Değer değişince yenilenir.
+        capa_yaw, capa_zaman, capa_yol = yaw_ref, baslama, 0.0
 
         while rclpy.ok():
             if durdurma_gerekli(self.det_store):
@@ -2060,6 +2067,16 @@ class DuzBaslangicState(smach.State):
                 self.ODOM_BAYATLAMA_S, DUZ_IMU_BAYATLAMA_S,
                 self.ODOM_ILERLEME_S, self.ODOM_ILERLEME_M,
                 self.SAPMA_SINIR_RAD)
+            # Yaw değişmediği sürece çapa duruyor; değişince yenilenir.
+            # Karşılaştırma ham değerle: kart 0,1° adımlarla gönderiyor, yani
+            # "aynı" burada gerçekten bit olarak aynı demek.
+            if yaw is not None and yaw != capa_yaw:
+                capa_yaw, capa_zaman, capa_yol = yaw, time.monotonic(), yol
+            elif iptal is None and duz_yaw_donmus(
+                    time.monotonic() - capa_zaman, yol - capa_yol,
+                    DUZ_YAW_DONMUS_S, DUZ_YAW_DONMUS_M):
+                iptal = ('yaw_donmus', 'failed')
+
             if iptal is not None:
                 sebep, karar = iptal
                 self.node.get_logger().error(
