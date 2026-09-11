@@ -596,6 +596,16 @@ KAYAN_HEDEF_PERIYOT_S  = 1.5    # [s] yeniden hedefleme periyodu (~0,67 Hz)
 # asla varılmaz. odom sürüklenir ama sıçramaz; hedefin ömrü zaten bir
 # periyot (1,5 s) olduğu için sürüklenme ölçülemeyecek kadar küçük kalır.
 KAYAN_HEDEF_FRAME      = "odom"
+
+# Nav2'nin GLOBAL ÇERÇEVESİ. Hedef hangi çerçevede gönderilirse gönderilsin
+# bt_navigator onu buna dönüştürmek zorunda; dönüşüm yoksa hedef sessizce
+# reddedilir ve log'da yalnız bir TF hatası kalır.
+#
+# ⚠️ nav2_params.yaml'daki `bt_navigator.global_frame` ile AYNI olmak zorunda.
+#    SLAM kapalı olduğu için orada `odom` yazıyor ve `map` çerçevesini basan
+#    HİÇ KİMSE YOK: `map`'te doğan bir hedef hiçbir zaman çözülemez.
+#    test_birim.py iki dosyayı karşılaştırıyor.
+NAV2_GLOBAL_FRAME      = "odom"
 KAYAN_HEDEF_YOK_SINIR  = 8      # ardışık bu kadar döngüde hedef üretilemezse aşama başarısız
 # Hedef bu kadar kaymadıysa YENİDEN GÖNDERİLMEZ.
 #

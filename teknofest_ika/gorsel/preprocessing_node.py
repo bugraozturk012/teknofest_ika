@@ -21,6 +21,7 @@ from cv_bridge import CvBridge
 import struct
 
 from teknofest_ika.otonomi.pure_logic import tarama_kirpma_penceresi
+from teknofest_ika.otonomi.pure_logic import yagmur_lekeleri
 from teknofest_ika.otonomi.topics import (
     SCAN_LIDAR_TOPIC, LIDAR_MONTAJ_YAW_RAD,
     SCAN_FILTERED_TOPIC,
@@ -45,6 +46,10 @@ class PreprocessingNode(Node):
         self.declare_parameter("enable_rain_inpaint", True)
         self.declare_parameter("rain_inpaint_radius", 3)
         self.declare_parameter("rain_blob_max_area_px", 120)
+        # Bir karede kaç küçük parlak lekeye kadar "yağmur" sayılacağı.
+        # Gerçek damla sayısı onlarla ölçülür; yüzlerce leke sahnenin
+        # kendi dokusudur ve onarmaya çalışmak hem yanlış hem pahalıdır.
+        self.declare_parameter("rain_max_blob_count", 80)
         # ⚠️ Bu pencere ARAÇ çerçevesinde tanımlıdır (0° = ileri), tarama
         # çerçevesinde değil. LiDAR gövdeye 93,3° dönük monte olduğu için ikisi
         # aynı şey değil: pencere tarama açılarına doğrudan uygulandığında
@@ -72,6 +77,7 @@ class PreprocessingNode(Node):
         self.enable_rain = self.get_parameter("enable_rain_inpaint").value
         self.rain_radius = self.get_parameter("rain_inpaint_radius").value
         self.rain_blob_max_area = self.get_parameter("rain_blob_max_area_px").value
+        self.rain_max_blob_count = self.get_parameter("rain_max_blob_count").value
         self.lidar_angle_min = math.radians(self.get_parameter("lidar_angle_min_deg").value)
         self.lidar_angle_max = math.radians(self.get_parameter("lidar_angle_max_deg").value)
         self.lidar_ma_window = self.get_parameter("lidar_ma_window").value
@@ -170,6 +176,13 @@ class PreprocessingNode(Node):
         return img
 
     def _remove_rain(self, img: np.ndarray) -> np.ndarray:
+        """
+        Lens üzerindeki yağmur damlalarını doldurur.
+
+        🔴 BU YOL AÇIK ARAZİDE CPU'YU DOLDURABİLİR ve iki kapı onu sınırlıyor;
+        ikisi de kaldırılırsa düğüm gerçek zamanın gerisine düşer, /scan
+        filtresi ve nişan görüntüsü birlikte gecikir.
+        """
         # Detect small bright spots (rain drops) using threshold + morphology
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         _, bright_mask = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY)
@@ -182,17 +195,28 @@ class PreprocessingNode(Node):
         # bunlar büyük/bitişik alanlar oluşturur — sadece küçük bağlı
         # bileşenler (rain_blob_max_area_px altı) inpaint maskesine alınır,
         # böylece gerçek nesneler yanlışlıkla bozulmaz.
+        #
+        # 🔑 Maske TEK SEFERDE kuruluyor. Bileşen başına `labels == id`
+        # yazmak her bileşen için TAM GÖRÜNTÜ taraması demek: 640×480'de
+        # 376 bileşenli parlak bir sahnede kare başına ~16 ms, yani iki
+        # kamerada 30 Hz'de tek başına bir çekirdek. np.isin aynı maskeyi
+        # ~0,7 ms'de kuruyor (çıktı birebir aynı, ölçüldü).
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
             bright_mask, connectivity=8)
-        filtered_mask = np.zeros_like(bright_mask)
-        for label_id in range(1, num_labels):  # 0 = arka plan
-            area = stats[label_id, cv2.CC_STAT_AREA]
-            if area <= self.rain_blob_max_area:
-                filtered_mask[labels == label_id] = 255
+        kucuk, sebep = yagmur_lekeleri(
+            stats[:, cv2.CC_STAT_AREA].tolist(),
+            self.rain_blob_max_area, self.rain_max_blob_count)
+        if sebep != 'onar':
+            if sebep == 'cok_leke':
+                self.get_logger().debug(
+                    'Yağmur onarımı atlandı: parlak leke sayısı sınırın '
+                    f'({self.rain_max_blob_count}) üstünde — sahne dokusu, '
+                    'yağmur değil.', throttle_duration_sec=10.0)
+            return img
 
-        if np.count_nonzero(filtered_mask) > 0:
-            img = cv2.inpaint(img, filtered_mask, self.rain_radius, cv2.INPAINT_TELEA)
-        return img
+        filtered_mask = np.where(
+            np.isin(labels, np.asarray(kucuk)), 255, 0).astype(np.uint8)
+        return cv2.inpaint(img, filtered_mask, self.rain_radius, cv2.INPAINT_TELEA)
 
     # ------------------------------------------------------------------
     # LiDAR callback

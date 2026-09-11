@@ -1327,7 +1327,7 @@ from teknofest_ika.otonomi.pure_logic import (  # noqa: E402
     hedefleme_modu_sec, kayan_hedef_karari, quat_yaw, arac_hedefini_odoma_tasi,
 )
 from teknofest_ika.otonomi.topics import (  # noqa: E402
-    KAYAN_HEDEF_FRAME, KAYAN_HEDEF_PERIYOT_S,
+    KAYAN_HEDEF_FRAME, KAYAN_HEDEF_PERIYOT_S, NAV2_GLOBAL_FRAME,
 )
 
 # Waypoint'ler doluyken 'oto' harita yolunu seçer, boşken kayan hedefe geçer.
@@ -3475,6 +3475,75 @@ check("telemetri varsayılanı kapalı", ': "${F767_TELEMETRI_AKTIF:=0}"' in _ST
 check("nav2 lifecycle doğrulaması var", '_nav2_aktif_mi' in _ST, True)
 check("nav2 doğrulaması bt_navigator'a bakıyor",
       'bt_navigator controller_server' in _ST, True)
+
+
+
+# ─── 22. Görev tetiği, çerçeve ve yağmur onarımı ───────────────────────────
+print("\n=== 22. Tetik, çerçeve, yağmur ===")
+
+_FSM22 = _kaynak('teknofest_ika/otonomi/misyon_fsm.py')
+_PRE22 = _kaynak('teknofest_ika/gorsel/preprocessing_node.py')
+from teknofest_ika.otonomi.pure_logic import yagmur_lekeleri  # noqa: E402
+
+# ① IDLE SEVİYE TETİĞİ. /mission_start tek atışlık bir kenar ve VOLATILE:
+# mod_yoneticisi açılış betiğinde misyon_fsm'den dakikalarca önce başlıyor,
+# yani SwC açılışta otonomdaysa kenar bu düğüm doğmadan çıkıp kayboluyor ve
+# FSM sonsuza kadar IDLE'da bekliyor. /mod/aktif 1 Hz tekrarlanan bir SEVİYE
+# sinyali; doğuş anından bağımsız olarak geçerli kipi veriyor.
+_IDLE = _FSM22.split('class IdleState')[1].split('\nclass ')[0]
+check("IdleState /mod/aktif dinliyor", 'MOD_AKTIF_TOPIC' in _IDLE, True)
+check("IdleState seviye tetiğiyle çıkıyor", '_mod_otonom' in _IDLE, True)
+check("bekleme koşulu iki tetiği de içeriyor",
+      '(self._start_received or self._mod_otonom)' in _IDLE, True)
+# Kip HİÇ görülmemişken çıkmamalı: "manuel değil" ile "otonom" aynı şey değil.
+check("kip görülmeden başlangıç yok", 'self._mod_otonom     = False' in _IDLE, True)
+check("tetik FULL_AUTO ile karşılaştırılıyor", 'MOD_FULL_AUTO' in _IDLE, True)
+# Elle tetik yolu korunuyor (pano/terminal/test).
+check("elle tetik duruyor", 'MISSION_START_TOPIC' in _IDLE, True)
+
+# ⑥ HEDEF ÇERÇEVESİ. bt_navigator hedefi kendi global çerçevesine çevirmek
+# zorunda; SLAM kapalıyken `map`'i basan kimse yok, yani orada doğan bir
+# hedef hiçbir zaman çözülemez ve yalnız bir TF hatası bırakır.
+check("Nav2 global çerçevesi nav2_params ile aynı",
+      NAV2_GLOBAL_FRAME, _nav2_params()['bt_navigator']['ros__parameters']['global_frame'])
+check("kayan hedef çerçevesi de çözülebilir",
+      KAYAN_HEDEF_FRAME in (NAV2_GLOBAL_FRAME, 'odom'), True)
+check("hedef kurucusunda elle yazılmış 'map' yok",
+      "frame_id: str = 'map'" in _FSM22, False)
+
+# ③ YAĞMUR ONARIMI. Maske bileşen başına TAM GÖRÜNTÜ taramasıyla kurulursa
+# parlak bir sahnede kare başına ~16 ms eder (640×480, 376 bileşen); iki
+# kamerada 30 Hz'de tek başına bir çekirdek. inpaint'in kendisi de leke
+# sayısıyla büyüyor, o yüzden çok lekeli sahnede hiç çağrılmamalı.
+check("bileşen başına tam görüntü taraması kalmadı",
+      'labels == label_id' in _PRE22, False)
+check("seçim pure_logic'te", 'yagmur_lekeleri(' in _PRE22, True)
+# Kararı pure_logic veriyor ama uygulayan düğüm: 'onar' dışındaki her
+# sebepte görüntüye DOKUNULMADAN dönülmeli, yoksa kapı süslemeye dönüşür.
+_RR = _PRE22.split('def _remove_rain')[1].split('\n    def ')[0]
+check("düğüm sebebi uyguluyor", "if sebep != 'onar':" in _RR, True)
+check("onarım sebep kapısından SONRA",
+      "sebep != 'onar'" in _RR
+      and _RR.index("sebep != 'onar'") < _RR.index('cv2.inpaint'), True)
+
+# Seçim mantığı DAVRANIŞLA sınanıyor; kaynakta ad aramak, kapının gerçekten
+# işlediğini göstermiyor. alanlar[0] arka plandır ve asla seçilmemeli.
+#                         arka  küçük  büyük  küçük
+_ALANLAR = [500, 50, 300, 10]
+check("küçük lekeler seçiliyor",
+      yagmur_lekeleri(_ALANLAR, 120, 80), ([1, 3], 'onar'))
+check("arka plan hiç seçilmiyor",
+      0 in yagmur_lekeleri(_ALANLAR, 10**9, 80)[0], False)
+check("büyük leke elenir (gerçek nesne bozulmasın)",
+      yagmur_lekeleri([0, 300], 120, 80), ([], 'leke_yok'))
+# Adet kapısı: sınırın üstünde HİÇBİR şey onarılmıyor — onarımın maliyeti
+# leke sayısıyla büyüdüğü için en pahalı durum tam da yağmur OLMAYAN sahne.
+check("sınırdaki adet onarılıyor",
+      yagmur_lekeleri([0] + [5] * 80, 120, 80)[1], 'onar')
+check("sınırın üstü tamamen atlanıyor",
+      yagmur_lekeleri([0] + [5] * 81, 120, 80), ([], 'cok_leke'))
+check("çok lekede hiçbir kimlik dönmüyor",
+      yagmur_lekeleri([0] + [5] * 400, 120, 80)[0], [])
 
 
 # ─── Sonuç ───────────────────────────────────────────────────────────────────

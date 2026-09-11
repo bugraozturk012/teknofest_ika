@@ -119,7 +119,7 @@ import smach
 
 from teknofest_ika.otonomi.topics import (
     FSM_STATE_TOPIC, DETECTIONS_TOPIC,
-    MOVING_OBS_DIR_TOPIC, E_STOP_TOPIC, MOD_AKTIF_TOPIC,
+    MOVING_OBS_DIR_TOPIC, E_STOP_TOPIC, MOD_AKTIF_TOPIC, MOD_FULL_AUTO,
     MISSION_START_TOPIC, MISYON_AKTIF_TOPIC,
     TARGETING_ENABLE_TOPIC, TARGETING_STATUS_TOPIC,
     SHOOT_CMD_TOPIC, SHOOT_RESULT_TOPIC, LASER_FIRE_DURATION,
@@ -135,6 +135,7 @@ from teknofest_ika.otonomi.topics import (
     IMU_TOPIC, IMU_PITCH_RAMP_THRESHOLD,
     KORIDOR_SAPMA_UYARI_M, KORIDOR_TOPLAM_TOLERANS, KORIDOR_PENCERE_RAD,
     KAYAN_HEDEF_PERIYOT_S, KAYAN_HEDEF_FRAME, KAYAN_HEDEF_YOK_SINIR,
+    NAV2_GLOBAL_FRAME,
     KAYAN_TARAMA_BAYATLAMA_S, KAYAN_YOL_TABAN_HIZ_MS,
     KAYAN_HEDEF_OLU_BANT_M, KAYAN_HEDEF_MIN_ILERI_M,
     IC_DUVAR_MIN_ILERI_M,
@@ -372,10 +373,12 @@ class Nav2Client:
         Kayan hedef sürüşü için: hedef sürekli yenilendiği için `go_to`'nun
         "gönder ve sonucu bekle" akışı burada kullanılamaz.
 
-        `frame_id` varsayılan olarak araç çerçevesidir. Hedef taramadan
-        üretildiği için araç çerçevesinde doğar; Nav2 kabul anında TF ile
-        global çerçeveye çevirir. Böylece `map` çerçevesinin kayması hedefe
-        birikmez — her döngüde hedef zaten yeniden doğuyor.
+        `frame_id` varsayılan olarak KAYAN_HEDEF_FRAME, yani odom'dur.
+        Hedef taramadan araç çerçevesinde doğar ama çağıran onu odom'a
+        taşıyarak verir: araç çerçevesindeki bir hedefi Nav2 her yeniden
+        planlamada o anki poza göre çözer, yani hedef araçla birlikte kayar
+        ve asla varılmaz. odom sürüklenir ama sıçramaz ve hedefin ömrü
+        zaten bir periyot olduğu için sürüklenme ölçülemeyecek kadar kalır.
         """
         if not self._client.server_is_ready():
             if not self._client.wait_for_server(timeout_sec=2.0):
@@ -458,7 +461,7 @@ class Nav2Client:
                 self.node.get_logger().warn(f'Nav2 hedef iptali başarısız: {e}')
 
     def _build_pose(self, x: float, y: float, yaw: float,
-                    frame_id: str = 'map') -> PoseStamped:
+                    frame_id: str = NAV2_GLOBAL_FRAME) -> PoseStamped:
         pose = PoseStamped()
         pose.header.frame_id = frame_id
         pose.header.stamp    = self.node.get_clock().now().to_msg()
@@ -558,8 +561,27 @@ class MisyonSaati:
 
 class IdleState(smach.State):
     """
-    Başlangıç durumu. /mission_start → True gelince çıkar.
-    Araç güçlenince hemen hareket etmemesi için bu bekleme zorunludur.
+    Başlangıç durumu. İki tetikten biriyle çıkar:
+
+      · `/mod/aktif` == FULL_AUTO — ASIL YOL. Kip kararı sürüş kartında
+        (SwC) ve konu SEVİYE sinyali: 1 Hz tekrarlanıyor, yani bu düğüm ne
+        zaman doğarsa doğsun geçerli kipi görüyor.
+      · `/mission_start` == True — elle tetik (test, pano, terminal).
+
+    🔴 SEVİYE TETİĞİ ZORUNLU, kolaylık değil. `/mission_start` tek atışlık
+    bir KENAR sinyali: mod_yoneticisi FULL_AUTO'ya ilk geçişte bir kez
+    basıyor ve mandalı ancak FULL_AUTO'dan çıkılınca düşüyor. Açılış
+    betiğinde mod_yoneticisi bu düğümden dakikalarca önce başlıyor (arada
+    LiDAR, SLAM ve Nav2 bekleme süreleri var), yani SwC açılışta otonomdaysa
+    kenar burası doğmadan çıkar ve KAYBOLUR — konu VOLATILE, latch yok.
+    Sonuç: kart otonom derken FSM sonsuza kadar IDLE'da bekler ve tek çıkış
+    yolu SwC'yi manuele alıp geri atmaktır. Seviye tetiği bu yarışı kapatıyor.
+
+    ⚠ Kip HİÇ görülmemişse çıkılmaz. "Manuel değil" ile "otonom" aynı şey
+    değil: varsayılanı otonom saymak, kip konusu hiç akmazken aracı
+    yürütmeye çalışmak olurdu.
+
+    Araç güçlenince hemen hareket etmemesi için `baslangic_bekleme` duruyor.
 
     Geçişler: 'started' → NavigateState
     """
@@ -570,26 +592,38 @@ class IdleState(smach.State):
         self.node = node
         self.saat = saat
         self._start_received = False
+        self._mod_otonom     = False   # kip görülmeden False: bkz. docstring
         self._baslangic_bekleme = baslangic_bekleme
 
         self.node.create_subscription(
             Bool, MISSION_START_TOPIC, self._on_start, 10
         )
+        self.node.create_subscription(
+            UInt8, MOD_AKTIF_TOPIC, self._on_mod_aktif, 10
+        )
         # Veri paketi kaydedici için misyon aktif yayıncısı
         self._misyon_pub = self.node.create_publisher(Bool, MISYON_AKTIF_TOPIC, 10)
-        self.node.get_logger().info('[IDLE] Hazır. /mission_start bekleniyor...')
+        self.node.get_logger().info(
+            '[IDLE] Hazır. /mod/aktif=FULL_AUTO ya da /mission_start bekleniyor...')
 
     def _on_start(self, msg: Bool):
         if msg.data:
             self._start_received = True
+
+    def _on_mod_aktif(self, msg: UInt8):
+        self._mod_otonom = (int(msg.data) == MOD_FULL_AUTO)
 
     def execute(self, userdata):
         self._start_received = False
         if hasattr(self.node, '_fsm_state_pub'):
             self.node._fsm_state_pub.publish(String(data='IDLE'))
         rate = self.node.create_rate(10)
-        while rclpy.ok() and not self._start_received:
+        while rclpy.ok() and not (self._start_received or self._mod_otonom):
             rate.sleep()
+        self.node.get_logger().info(
+            '[IDLE] Tetik: '
+            + ('/mission_start' if self._start_received else '/mod/aktif=FULL_AUTO')
+        )
         # Saat /mission_start ile başlar, başlangıç beklemesinden ÖNCE:
         # o 3 saniye de hakem kronometresinde işliyor (§6.12).
         self.saat.baslat()

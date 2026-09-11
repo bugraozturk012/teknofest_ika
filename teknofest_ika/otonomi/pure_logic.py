@@ -538,6 +538,36 @@ def hizlanma_hiz_profili(dist: float, max_hiz: float,
     return max_hiz if dist < olcum_mesafe else 0.0
 
 
+def yagmur_lekeleri(alanlar, maks_alan: int, maks_adet: int):
+    """
+    Bağlı bileşen alanlarından hangilerinin yağmur damlası sayılacağını seçer.
+    `alanlar[0]` arka plandır ve hiçbir zaman seçilmez.
+
+    Dönüş: `(kimlikler, sebep)` — sebep 'onar' değilse kimlikler boştur ve
+    görüntüye dokunulmaz.
+
+    İKİ KAPI, ikisi de gerekli:
+
+    · **alan** — yağmur damlası küçük ve izole bir lekedir. Şerit çizgisi,
+      koninin beyaz bandı ya da atış hedefinin halkaları da parlaklık eşiğini
+      geçer ama büyük/bitişik alanlar üretir; onları onarmak gerçek nesneyi
+      bozmak olur.
+
+    · **adet** — yüzlerce küçük leke YAĞMUR DEĞİLDİR, sahnenin kendi
+      dokusudur (güneşli asfalt, çakıl, parlayan metal). Onarım maliyeti leke
+      sayısıyla hızla büyüdüğü için bu durum tam da onarılacak bir şey
+      olmadığı anda en pahalı hâle gelir: 640×480'de 350 leke kare başına
+      ~25 ms, iki kamerada 30 Hz'de bir buçuk çekirdek. Sınırın üstünde
+      görüntüye hiç dokunulmuyor.
+    """
+    kimlikler = [i for i in range(1, len(alanlar)) if alanlar[i] <= maks_alan]
+    if not kimlikler:
+        return [], 'leke_yok'
+    if len(kimlikler) > maks_adet:
+        return [], 'cok_leke'
+    return kimlikler, 'onar'
+
+
 def aci_sarmala(aci: float) -> float:
     """Açıyı (-pi, pi] aralığına indirir."""
     return math.atan2(math.sin(aci), math.cos(aci))
