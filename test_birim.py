@@ -3546,6 +3546,70 @@ check("çok lekede hiçbir kimlik dönmüyor",
       yagmur_lekeleri([0] + [5] * 400, 120, 80)[0], [])
 
 
+
+# ─── 23. Atış kip kapısı ve LiDAR ön koşulu ────────────────────────────────
+print("\n=== 23. Atış kapısı, LiDAR ön koşulu ===")
+
+_SERI23 = _kaynak('teknofest_ika/gomulu/seri_kopru.py')
+_FSM23  = _kaynak('teknofest_ika/otonomi/misyon_fsm.py')
+_ST23   = _kaynak('scripts/lydia_startup.sh')
+from teknofest_ika.otonomi.pure_logic import lazer_sonmeli  # noqa: E402
+
+# ④ LAZER KAPISI. Kart manuelde yalnız SÜRÜŞ komutlarını yok sayıyor; lazeri
+# de yok sayıp saymadığı bilinmiyor. Kapı köprüde çünkü karta açılan tek kapı
+# orası — /shoot_command'a basan her yayıncıyı birlikte kapsıyor.
+_SHOOT_CB = _SERI23.split('def _shoot_cb')[1].split('\n    def ')[0]
+check("açma otonom kiple sınırlı", 'KART_KIP_OTONOM' in _SHOOT_CB, True)
+check("reddetme paket göndermeden dönüyor",
+      _SHOOT_CB.index('return') < _SHOOT_CB.index('PKT_J_LAZER'), True)
+# Kapatma HER kipte geçmeli: ters kurmak, kip atış sırasında değişince
+# lazeri açık bırakırdı.
+check("kapatma kipe bağlı değil",
+      'if msg.data and self._kip != KART_KIP_OTONOM:' in _SHOOT_CB, True)
+
+# Giriş kapısı tek başına yetmez: istek tek bir True ile açılıp saniyelerce
+# açık kalıyor, o pencerede kip değişirse _shoot_cb bir daha çağrılmıyor.
+_KIP_DEN = _SERI23.split('def _lazer_kip_denetle')[1].split('\n    def ')[0]
+check("periyodik kip denetimi var", 'def _lazer_kip_denetle' in _SERI23, True)
+check("denetim lazeri söndürüyor", 'PKT_J_LAZER, 0, 0' in _KIP_DEN, True)
+check("karar pure_logic'te", 'lazer_sonmeli(' in _KIP_DEN, True)
+
+# Söndürme kararı DAVRANIŞLA sınanıyor. Kip None olabilir (kart henüz
+# bildirmemiştir) ve bilinmeyen kip otonom SAYILMAMALI: ateş yetkisini
+# varsayıma dayandırmak, kapının hiç olmamasıyla aynı yere çıkar.
+check("otonomda yanan lazere dokunulmuyor", lazer_sonmeli(True,  2, 2), False)
+check("manuelde yanan lazer söndürülüyor",  lazer_sonmeli(True,  0, 2), True)
+check("boş/dur kipinde de söndürülüyor",    lazer_sonmeli(True,  1, 2), True)
+check("kip bilinmiyorsa söndürülüyor",      lazer_sonmeli(True, None, 2), True)
+check("zaten sönükse iş yok",               lazer_sonmeli(False, 0, 2), False)
+check("denetim güvenlik döngüsüne bağlı",
+      'self._lazer_kip_denetle()' in _SERI23.split('def _guvenlik_kontrol')[1][:300], True)
+
+# ShootState kapalı kapıya karşı denemesini yakmamalı: istek basılsaydı onay
+# hiç gelmez ve üç hakkın biri 8 s'lik timeout'a giderdi.
+_SHOOT_ST = _FSM23.split('class ShootState')[1].split('\nclass ')[0]
+check("ShootState manuel kipi görüyor", 'manual_mod' in _SHOOT_ST, True)
+check("manuel dalı isteği kapatıyor",
+      "Bool(data=False)" in _SHOOT_ST.split('manual_mod')[1][:400], True)
+
+# ⑧ LIDAR ÖN KOŞULU. Cihazın yokluğu zaten yazılıyordu ama satır Nav2
+# kararından dakikalarca önce akıp gidiyor; sürücünün üç denemede de
+# açılamaması ise hiç iz bırakmıyordu.
+check("lidar bayrağı kuruluyor", '_LIDAR_VAR=0' in _ST23, True)
+check("bayrak sürücü log'undan doğrulanıyor",
+      'grep -q "Lidar has started" "$LOG/lidar.log" && _LIDAR_VAR=1' in _ST23, True)
+check("üç deneme de başarısızsa uyarı var",
+      'LiDAR sürücüsü üç denemede de açılmadı' in _ST23, True)
+check("nav2 kapısı bayrağa bakıyor",
+      'if [ "$_LIDAR_VAR" != "1" ]; then' in _ST23, True)
+# Uyarı Nav2 blokunun İÇİNDE olmalı; dışında kalırsa Nav2 kapalıyken de basar.
+_NAV_BLOK = _ST23.split('if [ "$NAV2_AKTIF" = "1" ]; then')[1]
+check("uyarı Nav2 blokunun içinde", '_LIDAR_VAR' in _NAV_BLOK, True)
+# Bayat ön koşul yorumu: kayan modda waypoint koordinatları hiç okunmuyor.
+check("waypoint ön koşulu harita moduna daraltıldı",
+      'YALNIZ `harita` modunda' in _ST23, True)
+
+
 # ─── Sonuç ───────────────────────────────────────────────────────────────────
 print(f"\n{'='*45}")
 print(f"  TOPLAM: {PASS+FAIL} test | {PASS} GEÇTI | {FAIL} BAŞARISIZ")

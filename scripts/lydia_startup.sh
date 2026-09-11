@@ -316,6 +316,11 @@ sleep 8
 # çalışıyor, gerçek tarama 400-642 nokta geldiği için /scan hiç yayınlanmıyordu.
 # 🔴 3 Eylül 2026: cihaz yokken bu döngü 3×22 sn boşa harcıyordu (LiDAR
 # sökülü). Kontrol symlink üzerinden: udev kuralı 99-ika.rules'ta.
+# _LIDAR_VAR: taramanın gerçekten aktığı aşağıdaki Nav2 kapısında da
+# bilinmek zorunda. Cihazın yokluğu burada zaten yazılıyordu ama satır,
+# Nav2 kararından dakikalarca önce ekrandan akıp gidiyor ve sürücünün üç
+# denemede de açılamaması hiçbir iz bırakmıyordu.
+_LIDAR_VAR=0
 if [ ! -e /dev/lidar ]; then
     echo "UYARI: LiDAR (/dev/lidar) bulunamadı — 66 sn'lik açılış denemesi ATLANDI"
 else
@@ -335,6 +340,10 @@ for _deneme in 1 2 3; do
     pkill -f static_tf_pub_laser 2>/dev/null
     sleep 8
 done
+# Son denemenin log'u bakılıyor: başarıda döngü break ile çıkıyor ve log o
+# denemeye ait, başarısızlıkta da son denemeye.
+grep -q "Lidar has started" "$LOG/lidar.log" && _LIDAR_VAR=1
+[ "$_LIDAR_VAR" = "1" ] || echo "UYARI: LiDAR sürücüsü üç denemede de açılmadı"
 fi
 
 # ydlidar_launch.py kendi base_link→laser_frame dönüşümünü de basıyor:
@@ -613,8 +622,15 @@ fi
 #   1) ENKODER_AKTIF=1 ve enkoder ölçümü doğrulanmış olmalı — Nav2 konumu
 #      /odometry/filtered'dan alır, o da enkoder odometrisinden türer.
 #   2) LIDAR_YAW_RAD gerçek montaj açısına ayarlanmış olmalı (bkz. yukarısı).
-#   3) config/waypoints.yaml'daki koordinatlar doldurulmuş olmalı; hepsi 0.0
-#      iken misyon_fsm her istasyonu aynı noktaya gönderir.
+#   3) LiDAR AKIYOR olmalı. Kayan hedef tek girdisini taramadan alıyor ve
+#      /scan/filtered yoksa ilk döngüde `failed` dönüyor (olcum_bayat_mi
+#      "hiç gelmedi"yi bayatla aynı sınıfa koyuyor), yani 11 aşama saniyeler
+#      içinde tükenip koşu MISSION_ABORT'la biter. İki costmap'in tek duvar
+#      kaynağı da `scan`.
+#   4) YALNIZ `harita` modunda: config/waypoints.yaml'daki koordinatlar
+#      doldurulmuş olmalı; hepsi 0.0 iken misyon_fsm her istasyonu aynı
+#      noktaya gönderir. `kayan` modda bu dosyadan yalnız `mesafe_m`
+#      okunuyor, koordinatlar hiç kullanılmıyor.
 if [ "$NAV2_AKTIF" = "1" ]; then
     # Atış aşaması (waypoints.yaml type: shoot) targeting_node'a bağlı. Taret
     # kapalıyken misyon_fsm o istasyona girer, 15 s timeout'a düşer, üç deneme
@@ -622,6 +638,26 @@ if [ "$NAV2_AKTIF" = "1" ]; then
     if [ "$TARET_AKTIF" != "1" ]; then
         echo "UYARI: NAV2_AKTIF=1 ama TARET_AKTIF=0 — atış aşaması (§6.10)" \
              "boşa yanacak, koşu süresinden ~30-60 s gider."
+    fi
+    # LiDAR kararın verildiği YERDE söyleniyor. Cihazın yokluğu yukarıda da
+    # yazılıyor ama o satır burayla arasındaki bekleme sürelerinde ekrandan
+    # akıp gidiyor ve operatör otonomu başlatana kadar sorunu görmüyor.
+    # Nav2 yine de başlatılıyor: tarama olmadan koşmak faydasız ama zararlı
+    # değil ve yığını teşhis için ayağa kaldırmak gerekebiliyor.
+    if [ "$_LIDAR_VAR" != "1" ]; then
+        echo "🔴 UYARI: NAV2_AKTIF=1 ama LiDAR AKMIYOR."
+        case "$HEDEFLEME_MODU" in
+            kayan|"" |oto)
+                echo "   Kayan hedef tek girdisini taramadan alıyor:" \
+                     "her aşama ilk döngüde 'failed' döner ve koşu" \
+                     "saniyeler içinde MISSION_ABORT'la biter."
+                ;;
+            *)
+                echo "   Costmap'lerin tek duvar kaynağı 'scan':" \
+                     "Nav2 bariyerleri hiç görmez."
+                ;;
+        esac
+        echo "   LiDAR'ı takıp yığını yeniden başlatın."
     fi
     if [ "$ENKODER_AKTIF" != "1" ]; then
         echo "UYARI: NAV2_AKTIF=1 ama ENKODER_AKTIF=0 — Nav2 sabit odometriyle" \

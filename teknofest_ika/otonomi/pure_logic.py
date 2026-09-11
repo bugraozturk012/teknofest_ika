@@ -538,6 +538,23 @@ def hizlanma_hiz_profili(dist: float, max_hiz: float,
     return max_hiz if dist < olcum_mesafe else 0.0
 
 
+def lazer_sonmeli(lazer_aktif: bool, kip, otonom_kip: int) -> bool:
+    """
+    Yanan lazerin söndürülmesi gerekiyor mu.
+
+    Atış isteği tek bir True ile açılıp saniyelerce açık kalıyor; giriş kapısı
+    (isteği karta ileten geri çağırma) yalnız mesaj geldiğinde işliyor. O
+    pencerede operatör kip anahtarını otonomdan çıkarırsa giriş kapısı bir
+    daha çağrılmaz ve lazer yanmaya devam eder — kapının periyodik bir eşi
+    olmak zorunda.
+
+    `kip` None olabilir: kart henüz kip bildirmemiştir. Bilinmeyen kip otonom
+    SAYILMAZ, yani lazer söndürülür — ateş yetkisini varsayıma dayandırmak,
+    kapının olmamasıyla aynı kapıya çıkar.
+    """
+    return lazer_aktif and kip != otonom_kip
+
+
 def yagmur_lekeleri(alanlar, maks_alan: int, maks_adet: int):
     """
     Bağlı bileşen alanlarından hangilerinin yağmur damlası sayılacağını seçer.

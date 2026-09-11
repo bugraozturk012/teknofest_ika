@@ -1474,6 +1474,27 @@ class ShootState(smach.State):
                 self._shoot_pub.publish(Bool(data=False))
                 return 'e_stop'
 
+            # Operatör kumandayı devraldıysa ateş edilmez. Sert kapı köprüde
+            # (seri_kopru._shoot_cb otonom dışında LAZER=1 göndermiyor); bu
+            # kontrol denemenin BOŞA YANMASINI engelliyor. Kapı kapalıyken
+            # istek basılsaydı onay hiç gelmez, deneme 8 saniyelik timeout'a
+            # düşer ve üç hakkın biri hiç ateş edilmeden harcanırdı.
+            # Beklemek doğru davranış: kip geri otonoma alınınca aynı deneme
+            # kaldığı yerden sürüyor (görev kaldığı yerden devam eder kuralı).
+            if self.det_store.get_field('manual_mod', False):
+                self._shoot_pub.publish(Bool(data=False))
+                self.node.get_logger().warn(
+                    f'[SHOOT] Deneme {deneme}: manuel mod — RC devraldı, '
+                    'ateş edilmiyor, bekleniyor.'
+                )
+                while rclpy.ok() and self.det_store.get_field('manual_mod', False):
+                    if durdurma_gerekli(self.det_store):
+                        self.node.get_logger().error(
+                            '[SHOOT] E-STOP — manuel mod bekleme iptal.')
+                        return 'e_stop'
+                    time.sleep(0.2)
+                self.node.get_logger().info('[SHOOT] Tam otonoma dönüldü.')
+
             # Koşu saati yalnız denemeler ARASINDA bakılır: başlamış bir atış
             # yarıda kesilemez, §6.10 lazerin en az 1 s aktif kalmasını ve o
             # süre boyunca araca hareket verilmemesini şart koşuyor.

@@ -126,6 +126,7 @@ from teknofest_ika.otonomi.pure_logic import (
     paket_v0_i, paket_v1_i, paket_v0_u, paket_v1_u, paket_int32,
     rc_dizisi, surum_uyumlu, enkoder_sessiz, yaw_kovaryansi,
     ayar_ham, ayar_deger, ayar_gonderilecek,
+    lazer_sonmeli,
     AYAR_CEVRE_MM, AYAR_DISLI_ORANI, AYAR_DIREKSIYON, AYAR_DARBE_TUR,
     AYAR_DIR_ISARET,
     RC_US_MIN, RC_US_NEUTRAL,
@@ -428,6 +429,26 @@ class SeriKopru(Node):
         self._paket_gonder(PKT_J_FREN, max(0, min(MAX_FREN_BINDE, int(msg.data))), 0)
 
     def _shoot_cb(self, msg: Bool):
+        """
+        Atış isteğini karta iletir.
+
+        🔴 AÇMA yalnız OTONOM kipte. Kip anahtarı operatörün elinde ve
+        kural şu: SwC otonom dışındayken otonomi susar. Kart manuelde
+        yalnız SÜRÜŞ komutlarını yok sayıyor; lazeri de yok sayıp saymadığı
+        bilinmiyor, yani kapı burada olmazsa operatör kumandayı devraldıktan
+        sonra ateş edilip edilmeyeceği karta kalıyor.
+        Kapı köprüde çünkü karta açılan tek kapı burası: /shoot_command'a
+        basan bugünkü ve gelecekteki her yayıncıyı birlikte kapsıyor.
+
+        KAPATMA her kipte geçer. Ters kurmak, kip atış sırasında değişince
+        lazeri açık bırakırdı.
+        """
+        if msg.data and self._kip != KART_KIP_OTONOM:
+            self.get_logger().warn(
+                f'Atış isteği reddedildi — kart otonom kipte değil '
+                f'(kip={self._kip}). Lazer açılmadı.',
+                throttle_duration_sec=2.0)
+            return
         if msg.data and not self._lazer_aktif:
             self._lazer_zaman = self.get_clock().now()
         self._lazer_aktif = msg.data
@@ -435,6 +456,24 @@ class SeriKopru(Node):
         self.get_logger().info(
             'Lazer AÇIK — hareket kilitlendi.' if msg.data
             else 'Lazer KAPALI — hareket serbest.')
+
+    def _lazer_kip_denetle(self):
+        """
+        Kip otonomdan çıkarsa yanan lazeri söndürür.
+
+        `_shoot_cb` yalnız mesaj geldiğinde işliyor; atış isteği tek bir True
+        ile açılıp saniyelerce açık kalıyor. O pencerede operatör SwC'yi
+        manuele alırsa giriş kapısı bir daha çağrılmaz ve lazer yanmaya devam
+        eder — kapının periyodik bir eşi olmak zorunda.
+        """
+        if not lazer_sonmeli(self._lazer_aktif, self._kip, KART_KIP_OTONOM):
+            return
+        self._lazer_aktif = False
+        self._lazer_zaman = None
+        self._paket_gonder(PKT_J_LAZER, 0, 0)
+        self.get_logger().warn(
+            f'Kip otonomdan çıktı (kip={self._kip}) — lazer söndürüldü, '
+            'hareket kilidi açıldı.')
 
     def _e_stop_cb(self, msg: Bool):
         onceki = self._e_stop_aktif
@@ -1019,6 +1058,7 @@ class SeriKopru(Node):
             'hiç gelmedi; yayınlayan düğüm ölmüş olabilir.')
 
     def _guvenlik_kontrol(self):
+        self._lazer_kip_denetle()
         self._atis_kilidi_denetle()
         # E-STOP gerçek bir acil durum: taretin sönmesi ve merkeze dönmesi
         # istenen sonuçtur, PKT_J_DUR burada doğru pakettir.
