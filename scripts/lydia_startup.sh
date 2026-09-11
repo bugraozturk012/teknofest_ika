@@ -211,6 +211,12 @@ trap temizle TERM INT
 # Ayrı bir komut hattı çekilirse: SERI_PORT=/dev/f767_komut ver, gerisi aynı.
 : "${SERI_PORT:=/dev/f767}"
 
+# LIDAR_PORT: sürücünün açacağı cihaz. Ham düğüm (/dev/ttyUSB0) DEĞİL udev
+# symlink'i kullanılıyor — ST-LINK ile LiDAR aynı hub'ın arkasında ve ttyUSB
+# numarası açılışlar arasında kayabiliyor. Symlink yoksa kural oturmamıştır;
+# ham düğüme elle bağlanmak yanlış cihazı açma riski taşır.
+: "${LIDAR_PORT:=/dev/lidar}"
+
 # F767 TELEMETRİ: ST-LINK USB'sinden akan ASCII teşhis satırını JSON'a çevirip
 # panoya besler. ⚠ Komut yolu DEĞİL — tek yönlü, yalnız dinler.
 #
@@ -367,9 +373,28 @@ _LIDAR_VAR=0
 if [ ! -e /dev/lidar ]; then
     echo "UYARI: LiDAR (/dev/lidar) bulunamadı — 66 sn'lik açılış denemesi ATLANDI"
 else
+# 🔴 Sürücü portu KENDİ yaml'ından okuyor ve orada ham düğüm yazılı
+# (`port: /dev/ttyUSB0`). Yukarıdaki kontrol symlink'e bakıyor, sürücü başka
+# bir şeye: ikisi ayrışabilir. ST-LINK ile LiDAR aynı hub'a bağlandığından
+# sıralama artık açılışlar arasında sabit değil, ve ttyUSB numarası kayarsa
+# sürücü yanlış cihazı açar ya da hiç açamaz — belirti "Lidar has started"
+# satırının gelmemesi olur, sebebi hiçbir yerde yazmaz.
+# Çözüm SLAM parametrelerindeki desenin aynısı: çalışma anı kopyası üretilip
+# port udev symlink'ine çevriliyor. Depodaki yaml değil Jetson'daki dosya
+# kaynak olduğu için kopya log dizinine yazılıyor; dosya yoksa özgün yola
+# düşülüyor (o hâlde davranış eskisi gibi).
+_LIDAR_YAML=/home/lydia/lydia_ortam/tmini_pro.yaml
+if [ -f "$_LIDAR_YAML" ]; then
+    _LIDAR_PARAMS="$LOG/tmini_pro.runtime.yaml"
+    sed "s|^\( *port: *\).*|\1$LIDAR_PORT|" "$_LIDAR_YAML" > "$_LIDAR_PARAMS"
+    echo "[LiDAR] port → $LIDAR_PORT (çalışma anı kopyası)"
+else
+    _LIDAR_PARAMS="$_LIDAR_YAML"
+    echo "UYARI: $_LIDAR_YAML yok — sürücü kendi varsayılanıyla açılacak"
+fi
 for _deneme in 1 2 3; do
     ros2 launch ydlidar_ros2_driver ydlidar_launch.py \
-        params_file:=/home/lydia/lydia_ortam/tmini_pro.yaml \
+        params_file:="$_LIDAR_PARAMS" \
         > "$LOG/lidar.log" 2>&1 &
     sleep 14
     grep -q "Lidar has started" "$LOG/lidar.log" && break

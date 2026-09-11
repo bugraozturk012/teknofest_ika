@@ -3841,6 +3841,54 @@ check("imu güvenlik hâlâ varsayılan kapalı",
       ': "${IMU_GUVENLIK_AKTIF:=0}"' in _ST25, True)
 
 
+
+# ─── 26. LiDAR portu udev symlink'inde ─────────────────────────────────────
+print("\n=== 26. LiDAR portu ===")
+
+_ST26 = _kaynak('scripts/lydia_startup.sh')
+
+# 🔴 ydlidar sürücüsü portu KENDİ yaml'ından okuyor ve orada ham düğüm yazılı
+# (`port: /dev/ttyUSB0`). Betiğin `[ -e /dev/lidar ]` kontrolü symlink'e,
+# sürücü başka bir şeye bakıyor: ikisi ayrışabilir. ST-LINK ile LiDAR aynı
+# hub'ın arkasında olduğundan ttyUSB numarası açılışlar arasında kayabiliyor
+# ve sürücü yanlış cihazı açar — belirti yalnız "Lidar has started"ın
+# gelmemesi olur, sebebi hiçbir log satırında yazmaz.
+check("LIDAR_PORT anahtarı var", ': "${LIDAR_PORT:=/dev/lidar}"' in _ST26, True)
+check("varsayılan ham düğüm DEĞİL", 'LIDAR_PORT:=/dev/ttyUSB' in _ST26, False)
+check("çalışma anı kopyası üretiliyor",
+      'tmini_pro.runtime.yaml' in _ST26, True)
+check("kopya LIDAR_PORT ile yazılıyor",
+      '\\1$LIDAR_PORT' in _ST26, True)
+check("sürücü kopyayı alıyor",
+      'params_file:="$_LIDAR_PARAMS"' in _ST26, True)
+check("özgün yol doğrudan verilmiyor",
+      'params_file:=/home/lydia/lydia_ortam/tmini_pro.yaml' in _ST26, False)
+# Dosya yoksa özgün yola düşülmeli: o hâlde davranış eskisi gibi olur,
+# betik sessizce portsuz bir kopya üretmemeli.
+check("yaml yokken özgün yola düşülüyor",
+      '_LIDAR_PARAMS="$_LIDAR_YAML"' in _ST26, True)
+
+# sed deseni yalnız `port:` satırını değiştirmeli; baudrate ve frame_id
+# bozulursa sürücü hiç açılmaz ya da TF zinciri kopar.
+import re as _re26
+_ORNEK = (
+    "ydlidar_ros2_driver_node:\n"
+    "  ros__parameters:\n"
+    "    port: /dev/ttyUSB0\n"
+    "    frame_id: laser_frame\n"
+    "    baudrate: 230400\n"
+    "    fixed_resolution: false\n"
+)
+_SONUC = _re26.sub(r'^( *port: *).*', r'\g<1>/dev/lidar', _ORNEK, flags=_re26.M)
+check("sed: port değişti",        '    port: /dev/lidar' in _SONUC, True)
+check("sed: frame_id bozulmadı",  'frame_id: laser_frame' in _SONUC, True)
+check("sed: baudrate bozulmadı",  'baudrate: 230400' in _SONUC, True)
+check("sed: başka satır değişmedi",
+      _SONUC.count('\n'), _ORNEK.count('\n'))
+# frame_id, betiğin bastığı statik TF'in child'ıyla aynı olmak zorunda.
+check("frame_id statik TF ile aynı", 'base_link laser_frame' in _ST26, True)
+
+
 # ─── Sonuç ───────────────────────────────────────────────────────────────────
 print(f"\n{'='*45}")
 print(f"  TOPLAM: {PASS+FAIL} test | {PASS} GEÇTI | {FAIL} BAŞARISIZ")
