@@ -633,8 +633,15 @@ ros2 run tf2_ros static_transform_publisher \
 # Mezürle ölçülüp (ön aks merkezi x=+0.70 referans) iki yer birlikte
 # güncellenmeli: burası ve urdf'teki lidar_joint.
 : "${LIDAR_YAW_RAD:=1.6284}"   # 93.3° — huni_reaktif aci_offset_deg ile aynı
-: "${LIDAR_Z_M:=0.55}"         # zeminden tarama düzlemine, ölçüldü
-ros2 run tf2_ros static_transform_publisher 0 0 "$LIDAR_Z_M" "$LIDAR_YAW_RAD" 0 0 \
+# 🔴 LIDAR_Z_M ZEMİNDEN ölçülüyor (mezür yere dayanır), ama TF base_link'e
+# göre yayınlanıyor ve base_link zeminden BASE_LINK_Z_M yukarıda. Fark burada
+# alınıyor. Önceden ölçülen sayı doğrudan base_link'e konuyordu, yani tarama
+# düzlemi TF'te zeminden 0,28 m fazla yükseğe yerleşiyordu.
+: "${BASE_LINK_Z_M:=0.28}"     # urdf/arac.urdf base_joint ile AYNI olmalı
+: "${LIDAR_Z_M:=0.60}"         # ZEMİNDEN tarama düzlemine, mezürle ölçüldü
+_LIDAR_Z_BASE=$(awk "BEGIN{printf \"%.4f\", $LIDAR_Z_M - $BASE_LINK_Z_M}")
+echo "[LiDAR] zeminden $LIDAR_Z_M m → base_link'e göre $_LIDAR_Z_BASE m"
+ros2 run tf2_ros static_transform_publisher 0 0 "$_LIDAR_Z_BASE" "$LIDAR_YAW_RAD" 0 0 \
     base_link laser_frame > "$LOG/tf_laser.log" 2>&1 &
 # OS30A derinlik kamerası ayrı bir TF adasında duruyor: kendi launch'ı
 # dm_base_frame → {points_frame, depth_frame, ...} dönüşümlerini basıyor ama

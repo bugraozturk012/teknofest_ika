@@ -502,6 +502,11 @@ for _dosya, _anahtar in (
 # sayılar metin olarak değil URDF'ten ÇÖZÜLÜP aritmetikle doğrulanıyor.
 # Bir sayı elle değiştirilip ötekiler unutulursa kutu havada kalır ya da
 # tekerlek yere gömülür — ikisi de yalnız rviz'de gözle görülür.
+def _kaynak_ham(yol):
+    with open(os.path.join(_KOK, yol), encoding='utf-8') as f:
+        return f.read()
+
+
 import xml.etree.ElementTree as _ET25
 _U25_ROOT = _ET25.parse(os.path.join(_KOK, 'urdf/arac.urdf')).getroot()
 
@@ -543,6 +548,30 @@ check("ön tekerler +x",
       all(o[0] > 0 for a, o in _u25_tekerler.items() if '_on_' in a), True)
 check("arka tekerler -x",
       all(o[0] < 0 for a, o in _u25_tekerler.items() if '_arka_' in a), True)
+
+# ── LiDAR yüksekliği ZEMİNDEN ölçülür, TF base_link'e göre yayınlanır ─────
+# 🔴 Ölçülen sayı doğrudan TF'e konursa tarama düzlemi base_link'in yüksekliği
+# kadar (0,28 m) fazla yükseğe yerleşir. İki yer de aynı ZEMİN yüksekliğini
+# vermeli: urdf lidar_joint (base_link göreli) ve açılış betiği (zeminden
+# ölçüp farkı düşüyor).
+_U25_LIDAR_ZEMIN = 0.60          # mezürle ölçüldü
+_u25_lj = [j for j in _U25_ROOT.iter('joint') if j.get('name') == 'lidar_joint'][0]
+_u25_lidar_z = _u25_xyz(_u25_lj.find('origin'))[2]
+check("urdf lidar_joint parent base_link",
+      _u25_lj.find('parent').get('link'), 'base_link')
+check("urdf: base_link + lidar_joint = zemin yüksekliği",
+      round(_U25_BASE_Z + _u25_lidar_z, 4), _U25_LIDAR_ZEMIN)
+
+_u25_st = _kaynak_ham('scripts/lydia_startup.sh')
+check("betikte LIDAR_Z_M zeminden", ': "${LIDAR_Z_M:=0.60}"' in _u25_st, True)
+check("betik base_link farkını düşüyor",
+      '$LIDAR_Z_M - $BASE_LINK_Z_M' in _u25_st, True)
+check("betikteki base_link yüksekliği urdf ile aynı",
+      ': "${BASE_LINK_Z_M:=0.28}"' in _u25_st, True)
+check("urdf base_joint da 0.28", _U25_BASE_Z, 0.28)
+# Ham sayı doğrudan TF'e verilmemeli.
+check("TF'e ham LIDAR_Z_M verilmiyor",
+      'static_transform_publisher 0 0 "$LIDAR_Z_M"' in _u25_st, False)
 
 
 
@@ -1711,10 +1740,14 @@ def _derece(r):
 # Sabit urdf lidar_joint ile aynı sayı olmak zorunda: TF bir açıyı, tarama
 # indeksleme başka bir açıyı kullanırsa engeller iki ayrı yere düşer.
 def _urdf_lidar_yaw():
+    """lidar_joint'in yaw'ı. XML AYRIŞTIRILARAK okunuyor: metin deseni,
+    joint'in içine bir yorum eklendiğinde sessizce None dönüyordu."""
+    import xml.etree.ElementTree as _ET
     yol = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'urdf', 'arac.urdf')
-    with open(yol, encoding='utf-8') as f:
-        m = re.search(r'<child link="laser_frame"/>\s*<origin[^>]*rpy="0 0 ([0-9.]+)"', f.read())
-    return float(m.group(1)) if m else None
+    for j in _ET.parse(yol).getroot().iter('joint'):
+        if j.get('name') == 'lidar_joint':
+            return float(j.find('origin').get('rpy').split()[2])
+    return None
 
 
 check("montaj açısı urdf ile aynı",       _urdf_lidar_yaw(), LIDAR_MONTAJ_YAW_RAD)

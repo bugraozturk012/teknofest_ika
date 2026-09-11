@@ -261,7 +261,16 @@
   <joint name="lidar_joint" type="fixed">
     <parent link="base_link"/>
     <child link="laser_frame"/>
-    <origin xyz="0.0 0 0.55" rpy="0 0 1.6284"/>
+    <!--
+      Z = 0.32: tarama düzlemi ZEMİNDEN 0,60 m (mezürle ölçüldü), base_link
+      ise zeminden 0,28 m yukarıda → 0,60 - 0,28 = 0,32.
+      ⚠️ Ölçülen sayı doğrudan buraya yazılmaz; zeminden ölçülüp base_link
+      farkı düşülür. lydia_startup.sh aynı hesabı yapıyor (LIDAR_Z_M eksi
+      BASE_LINK_Z_M) ve test_birim.py ikisinin aynı zemin yüksekliğini
+      verdiğini doğruluyor.
+      Y açısı (yaw) montaj açısı — sahada lidar_aci_kalibre.py ile bulunur.
+    -->
+    <origin xyz="0.0 0 0.32" rpy="0 0 1.6284"/>
   </joint>
 
   <!-- ═══════════════════════════════════════════════
