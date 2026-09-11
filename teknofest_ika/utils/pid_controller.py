@@ -3,7 +3,9 @@
 pid_controller.py — Generic PID Controller for Turret & Motion Control
 """
 
-import time
+import time   # süre ölçümleri time.monotonic() ile: Jetson'ın RTC'si ölü ve
+             # saat düzeltmesi sıçradığında time.time() aralıkları
+             # milyonlarca saniye okunur (ayrıntı: misyon_fsm.py)
 
 
 class PIDController:
@@ -18,7 +20,7 @@ class PIDController:
 
         self._integral = 0.0
         self._prev_error = 0.0
-        self._prev_time = time.time()
+        self._prev_time = time.monotonic()
         self._first_run = True
 
     def reset(self):
@@ -27,7 +29,7 @@ class PIDController:
         self._first_run = True
 
     def compute(self, error: float) -> float:
-        now = time.time()
+        now = time.monotonic()
         dt = now - self._prev_time
         self._prev_time = now
 

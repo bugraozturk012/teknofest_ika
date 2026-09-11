@@ -228,7 +228,7 @@ def generate_launch_description():
     ackermann = Node(
         package='teknofest_ika', executable='ackermann_converter',
         name='ackermann_converter', output='screen',
-        parameters=[{'use_sim_time': False, 'wheelbase': 1.40,
+        parameters=[{'use_sim_time': False, 'wheelbase': 1.44,
                      # max_speed burada verilmiyor: düğümün varsayılanı
                      # KART_HIZ_TAVAN'a bağlı ve kart zaten orada kırpıyor.
                      'max_steering_angle': 0.5236}]
@@ -322,10 +322,10 @@ def generate_launch_description():
     )
 
     # ── Görüntü Ön İşleme ─────────────────────────────────────────────────────
-    # preprocessing_node artık topics.py sabitleriyle doğrudan /camera/image_raw,
-    # /camera/front/image_raw ve /camera/taret/image_raw'a abone olur — remap
-    # gerekmez (önceki remap-bağımlı tasarım, nişan kamerasının hiç remap
-    # edilmemesi nedeniyle hiç işlenmemesine yol açmıştı).
+    # preprocessing_node topics.py sabitleriyle doğrudan /camera/image_raw ve
+    # /camera/taret/image_raw'a abone olur — remap gerekmez (remap-bağımlı bir
+    # tasarım, nişan kamerasının hiç remap edilmemesi nedeniyle hiç
+    # işlenmemesine yol açmıştı).
     # /depth/points → OS30A derinlik kamerasından (/apc/points/data_raw)
     # /scan_lidar → preprocessing_node.py SCAN_LIDAR_TOPIC ile direkt abone, remap gerekmez
     preprocessing = Node(
@@ -472,8 +472,8 @@ def generate_launch_description():
     # açmaya çalışması cihaz çakışmasına yol açıyordu (sahada doğrulandı,
     # 2026-07-15: ikinci usb_cam_node_exe "terminate called after throwing an
     # instance of 'char*'" ile çöktü). Ön kamera görüntüsüne ihtiyaç duyan
-    # tüketiciler (dashboard, veri_paketi) artık CAMERA_FRONT_TOPIC yerine
-    # doğrudan CAMERA_IMAGE_TOPIC'e (kamera_ana'nın çıktısı) abone.
+    # tüketiciler (dashboard, veri_paketi) doğrudan CAMERA_IMAGE_TOPIC'e
+    # (kamera_ana'nın çıktısı) abone.
 
     # Arka kamera — geri sürüş görüntüsü (§6.12 zorunlu)
     webcam_geri = Node(
@@ -493,8 +493,8 @@ def generate_launch_description():
             'autoexposure':       True,
         }],
         remappings=[
-            ('image_raw',   '/camera/rear/image_raw'),
-            ('camera_info', '/camera/rear/camera_info'),
+            ('image_raw',   '/camera/arka/image_raw'),
+            ('camera_info', '/camera/arka/camera_info'),
         ]
     )
 

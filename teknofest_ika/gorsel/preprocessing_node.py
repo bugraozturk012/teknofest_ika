@@ -26,7 +26,6 @@ from teknofest_ika.otonomi.topics import (
     SCAN_FILTERED_TOPIC,
     CAMERA_PROCESSED_TOPIC,
     CAMERA_IMAGE_TOPIC,
-    CAMERA_FRONT_TOPIC,
     CAMERA_TARET_TOPIC,
     CAMERA_TARET_PROCESSED_TOPIC,
 )
@@ -40,7 +39,6 @@ class PreprocessingNode(Node):
         # Kameralar araca ters monte edilebiliyor; görüntü kaynakta çevrilir ki
         # hem YOLO hem panel düz görsün (model düz görüntüyle eğitildi).
         self.declare_parameter("flip_ana", False)
-        self.declare_parameter("flip_yardimci", False)
         self.declare_parameter("flip_taret", False)
         self.declare_parameter("gaussian_kernel", 5)
         self.declare_parameter("temporal_alpha", 0.3)
@@ -67,7 +65,6 @@ class PreprocessingNode(Node):
         self.declare_parameter("derinlik_isle", False)
 
         self._flip_ana = bool(self.get_parameter("flip_ana").value)
-        self._flip_aux = bool(self.get_parameter("flip_yardimci").value)
         self._flip_taret = bool(self.get_parameter("flip_taret").value)
 
         self.gaussian_kernel = self.get_parameter("gaussian_kernel").value
@@ -91,13 +88,11 @@ class PreprocessingNode(Node):
 
         self.bridge = CvBridge()
         self.ema_main = None
-        self.ema_aux = None
         self.ema_taret = None
         self.lidar_buffer = []
 
         # Publishers
         self.pub_main = self.create_publisher(Image, CAMERA_PROCESSED_TOPIC, 10)
-        self.pub_aux = self.create_publisher(Image, "/camera_aux/image_processed", 10)
         # Nişan kamerası (taret üzeri) — şartname §6.10/§6.14: atış/veri paketi
         # için ayrı bir nişan kamerası gerekli; targeting_node bu çıkışı okur.
         self.pub_taret = self.create_publisher(Image, CAMERA_TARET_PROCESSED_TOPIC, 10)
@@ -112,14 +107,6 @@ class PreprocessingNode(Node):
         self.sub_main = self.create_subscription(
             Image, CAMERA_IMAGE_TOPIC,
             self.cb_main_camera, qos_profile_sensor_data)
-        # NOT: CAMERA_FRONT_TOPIC'e artık hiçbir node yayın yapmıyor (ön kamera
-        # ile ana kamera aynı fiziksel cihaza indirgendi, cihaz çakışması
-        # nedeniyle — bkz. gercek_arac.launch.py). Bu abonelik zararsız
-        # şekilde beslenmeden kalır, kaldırılmadı çünkü CAMERA_FRONT_TOPIC
-        # ayrı bir kamera eklenirse yeniden kullanılabilir.
-        self.sub_aux = self.create_subscription(
-            Image, CAMERA_FRONT_TOPIC,
-            self.cb_aux_camera, qos_profile_sensor_data)
         self.sub_taret = self.create_subscription(
             Image, CAMERA_TARET_TOPIC,
             self.cb_taret_camera, qos_profile_sensor_data)
@@ -147,14 +134,6 @@ class PreprocessingNode(Node):
         out = self._process_image(cv_img, self.ema_main)
         self.ema_main = out.astype(np.float32)
         self.pub_main.publish(self._msg_yap(out, msg))
-
-    def cb_aux_camera(self, msg: Image):
-        cv_img = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-        if self._flip_aux:
-            cv_img = cv2.flip(cv_img, -1)
-        out = self._process_image(cv_img, self.ema_aux)
-        self.ema_aux = out.astype(np.float32)
-        self.pub_aux.publish(self._msg_yap(out, msg))
 
     def cb_taret_camera(self, msg: Image):
         cv_img = self.bridge.imgmsg_to_cv2(msg, "bgr8")

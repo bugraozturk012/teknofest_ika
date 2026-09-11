@@ -28,7 +28,7 @@
 # bloğu hiç yüklenmez ve EKF sensörsüz varsayılanlarla sessizce koşar.
 #
 # Araç parametreleri:
-#   Dingil arası : 1.40 m   🔴 ÖLÇÜLMEDİ — yer tutucu. Ackermann
+#   Dingil arası : 1.44 m   (mezürle ölçüldü, kart ekibiyle teyitli). Ackermann
 #                          kinematiğinin tek girdisi; yanlışsa her
 #                          direksiyon komutu yanlış. Elektrik tarafındaki
 #                          değer de aynı varsayımdan geliyor.
@@ -61,7 +61,8 @@ ekf_filter_node:
     # tutulur.
     sensor_timeout: 0.2        # Sensör sessiz kalırsa [s] — zaman damgası güncellenir
     transform_time_offset: 0.0
-    transform_timeout: 0.2     # SLAM'in map→odom yayını Jetson yükünde gecikebilir
+    transform_timeout: 0.2     # TF aramaları Jetson yükünde gecikebilir; sıfır
+                               # bırakmak ölçümü ilk gecikmede düşürür
     predict_to_current_time: true  # tahmini son sensör anına değil şimdiye taşı
 
     # ── Frame tanımları ───────────────────────────────────────────────────

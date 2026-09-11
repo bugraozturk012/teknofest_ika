@@ -41,13 +41,13 @@ import threading
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String, Bool
+from std_msgs.msg import String, Bool, Int16MultiArray
 from sensor_msgs.msg import LaserScan, Imu, BatteryState, Image
 from nav_msgs.msg import Odometry
 from vision_msgs.msg import Detection2DArray
 
 from teknofest_ika.otonomi.topics import (
-    SCAN_TOPIC, SCAN_FILTERED_TOPIC, ODOM_TOPIC, IMU_TOPIC,
+    SCAN_TOPIC, SCAN_FILTERED_TOPIC, ODOM_TOPIC, IMU_TOPIC, KART_SURUS_TOPIC,
     BATTERY_TOPIC, EKF_ODOM_TOPIC, CAMERA_PROCESSED_TOPIC,
     YOLO_RAW_TOPIC, DETECTIONS_TOPIC, E_STOP_TOPIC, SENSOR_FAULT_TOPIC,
 )
@@ -74,6 +74,12 @@ TEMEL_TOPICLER = {
     # bu yayın kesilirse mod_yoneticisi/seri_kopru "son bilinen False" ile
     # sessizce çalışmaya devam edebilir — watchdog bunu /sensor/fault ile açığa çıkarır.
     E_STOP_TOPIC:            ('EStopNode',      0.5),
+    # Sürüş kartının canlılığı. Ölçüt /kart/durum, /kart/hata ya da /kart/kip
+    # DEĞİL: köprü o üçünü önbellekten 1 Hz tekrarlıyor, yani hat çöp okurken
+    # bile akmaya devam ediyorlar ve taşıdıkları değer donmuş oluyor. Konunun
+    # akması verinin taze olduğunu göstermez. /kart/surus (0x37) yalnız gerçek
+    # bir çerçeve çözüldüğünde yayınlanıyor ve ~15 Hz geliyor.
+    KART_SURUS_TOPIC:        ('SurusKarti',     1.0),
     # CONE_FUSION_CLOUD_TOPIC KASITLI OLARAK ÇIKARILDI:
     # cone_fusion_node yalnızca koni tespit edilince yayın yapar.
     # Parkurun büyük bölümünde koni yok → sürekli yanlış alarm üretir.
@@ -117,6 +123,7 @@ _TOPIC_MSG_TYPE = {
     YOLO_RAW_TOPIC:         Detection2DArray,
     DETECTIONS_TOPIC:       String,
     E_STOP_TOPIC:           Bool,
+    KART_SURUS_TOPIC:       Int16MultiArray,
 }
 
 STARTUP_GRACE_S = 30.0   # YOLO TensorRT engine yükleme süresi (~5-10s) dahil

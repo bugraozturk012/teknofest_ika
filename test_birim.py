@@ -91,7 +91,7 @@ def check(desc, got, expected, tol=0.01):
 
 # ─── 1. Ackermann Kinematik (ackermann_converter.py) ────────────────────────
 print("=== 1. Ackermann Kinematik ===")
-L = 1.40
+L = 1.44
 DELTA_MAX = 0.5236  # 30°
 
 
@@ -110,7 +110,7 @@ check("geri düz",       math.degrees(ackermann(-1.0, 0.0)), 0.0)
 check("geri sola dön",  ackermann(-1.0, 0.5) < 0, True)   # geri giderken sol dönüş → negatif direksiyon
 check("geri sağa dön",  ackermann(-1.0, -0.5) > 0, True)
 
-# Eğrilik kırpması — R_min = L/tan(δ_max) = 1.40/tan(30°) = 2.425 m
+# Eğrilik kırpması — R_min = L/tan(δ_max) = 1.44/tan(30°) = 2.494 m
 TABAN = 0.45
 R_MIN = L / math.tan(DELTA_MAX)
 
@@ -479,17 +479,28 @@ with open(os.path.join(_KOK, 'teknofest_ika/otonomi/mod_yoneticisi.py'),
 check("mod yöneticisi aux alanını okumuyor", 'msg.data[3]' in _MOD, False)
 check("mod yöneticisi lazer yayınlamıyor", 'SHOOT_CMD_TOPIC' in _MOD, False)
 
-# DİNGİL ARASI ÖLÇÜLMEDİ. Değer beş yere yansıyor ve Ackermann kinematiğinin
-# tek girdisi; "araçtan ölçüldü" diye yazmak sahada kimsenin mezürü
-# çıkarmamasına yol açar. Elektrik tarafı da ölçülmediğini doğruladı.
-# Denetim dingil arasına daraltılır: aracın GÖVDE ölçüleri (1,90 × 1,16 m)
-# gerçekten ölçüldü ve öyle yazması doğru.
-for _dosya in ('config/ekf.yaml', 'config/nav2_params.yaml',
-               'teknofest_ika/otonomi/ackermann_converter.py'):
+# DİNGİL ARASI beş ayrı yerde yaşıyor ve Ackermann kinematiğinin tek girdisi.
+# Tek kaynağa indirmek ayrı bir iş; o zamana kadar denetim beşinin AYNI sayıyı
+# taşıdığını doğruluyor. Bir yerde güncellenip ötekilerde unutulması, sahada
+# yalnız "araç virajı geniş/dar alıyor" diye görünür ve hiçbir logda çıkmaz.
+_L_BEKLENEN = '1.44'
+for _dosya, _anahtar in (
+        ('config/ekf.yaml',                             'Dingil arası'),
+        ('config/nav2_params.yaml',                     'Dingil arası'),
+        ('teknofest_ika/otonomi/ackermann_converter.py', "declare_parameter('wheelbase'"),
+        ('launch/gercek_arac.launch.py',                "'wheelbase':"),
+):
     with open(os.path.join(_KOK, _dosya), encoding='utf-8') as f:
-        _SATIRLAR = [l for l in f if 'Dingil arası' in l or 'wheelbase' in l]
-    check(f"{_dosya}: dingil arası ölçüldü demiyor",
-          any('ölçüldü' in l for l in _SATIRLAR), False)
+        _SATIRLAR = [l for l in f if _anahtar in l]
+    check(f"{_dosya}: dingil arası {_L_BEKLENEN}",
+          bool(_SATIRLAR) and any(_L_BEKLENEN in l for l in _SATIRLAR), True)
+
+# URDF teker joint'leri dingil arasının yarısında durmalı: L/2 = 0.72.
+with open(os.path.join(_KOK, 'urdf/arac.urdf'), encoding='utf-8') as f:
+    _URDF = f.read()
+check("urdf ön teker x = +0.72",  '"0.72 -0.335' in _URDF and '"0.72 0.335'  in _URDF, True)
+check("urdf arka teker x = -0.72", '"-0.72 0.335' in _URDF and '"-0.72 -0.335' in _URDF, True)
+
 
 # ─── 5c. Kart Hız Kısıtları ve Enkoder Sessizliği ───────────────────────────
 print("\n=== 5c. Kart kısıtları ===")
@@ -1020,32 +1031,63 @@ check("fren komutu 0-1000'e kırpılıyor",
 check("fren üst sınırı binde 1000",  'MAX_FREN_BINDE = 1000' in _SK3, True)
 
 
-# ─── waypoints.yaml: FSM'i dallandıran `type` alanı ─────────────────────────
-# misyon_fsm NavigateState'ten yalnız wp.get('type') ile dallanıyor. Alan
-# sessizce düşerse ShootApproach/Shoot ve Hizlanma durumlarına HİÇ girilmez;
-# hiçbir hata basılmaz, yalnız puan gider. Bir kez böyle oldu.
-def _waypoint_tipleri():
-    yol = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                       'config', 'waypoints.yaml')
-    with open(yol, encoding='utf-8') as f:
-        return {a['isim']: a.get('type') for a in yaml.safe_load(f)['asamalar']}
+# ─── Aşama → durum eşlemesi: YÜKLEYİCİNİN ÇIKTISI ──────────────────────────
+# 🔑 Bu test bir kez TERS yazılmıştı ve iki yönde birden yanılttı: waypoints.yaml'daki
+# `type:` alanına bakıyordu, oysa o alan HİÇ OKUNMUYOR — load_waypoints eşlemeyi
+# `isim`den türetiyor. Sonucu:
+#   · dekoratif alanı silmek testi düşürüyordu       → sahte alarm
+#   · gerçek türetmeyi bozmak testten geçiyordu      → sahte güvence
+# İkincisi tam olarak korunmak istenen olaydı: ATIS_BOLGESI `shoot`u kaybederse
+# atış durumuna hiç girilmez, hata basılmaz, 50 puan sessizce gider.
+# O yüzden artık YÜKLEYİCİ ÇALIŞTIRILIYOR ve ürettiği tip okunuyor.
+_WP_YOLU = os.path.join(_KOK, 'config', 'waypoints.yaml')
+from teknofest_ika.otonomi.misyon_fsm import load_waypoints  # noqa: E402
 
+_WP  = load_waypoints(_WP_YOLU)[0]
+_TIP = {w['label']: w['type'] for w in _WP}
 
-_TIP = _waypoint_tipleri()
-check("ATIS_BOLGESI type=shoot",          _TIP.get('ATIS_BOLGESI'), 'shoot')
-check("HIZLANMA_PARKURU type=hizlanma",   _TIP.get('HIZLANMA_PARKURU'), 'hizlanma')
+# Nav2'yi baypas eden üç yol. Eşleme koparsa aşama sıradan bir navigasyon
+# hedefine dönüşür ve bunu söyleyen hiçbir log yoktur.
+check("ATIS_BOLGESI shoot durumuna gidiyor",       _TIP.get('ATIS_BOLGESI'), 'shoot')
+check("HIZLANMA_PARKURU hizlanma durumuna gidiyor", _TIP.get('HIZLANMA_PARKURU'), 'hizlanma')
+# Rampa baypası hiç test edilmemişti; ben de bu yüzden "RampaState ölü kod"
+# sonucuna vardım. §6.10'da 2B tarama eğimi DUVAR okuduğu için baypas şart.
+check("DIK_EGIM_GIRIS rampa durumuna gidiyor",     _TIP.get('DIK_EGIM_GIRIS'), 'rampa')
+check("DIK_EGIM_CIKIS rampa durumuna gidiyor",     _TIP.get('DIK_EGIM_CIKIS'), 'rampa')
+
+# Ters yön de kilitli: fazladan bir aşamanın baypasa düşmesi, o istasyonda
+# Nav2'nin engel kaçınmasını sessizce kapatırdı.
+check("yalnız dört aşama Nav2'yi baypas ediyor",
+      sorted(a for a, t in _TIP.items() if t != 'nav'),
+      ['ATIS_BOLGESI', 'DIK_EGIM_CIKIS', 'DIK_EGIM_GIRIS', 'HIZLANMA_PARKURU'])
+
+# Üretilen her tipin FSM'de bir dalı olmalı. Yükleyiciye yeni bir tip eklenip
+# dallandırma unutulursa aşama sessizce sıradan navigasyona düşer.
+import ast as _ASTM  # noqa: E402
+
+with open(os.path.join(_KOK, 'teknofest_ika', 'otonomi', 'misyon_fsm.py'),
+          encoding='utf-8') as _f:
+    _FSM_AGACI = _ASTM.parse(_f.read())
+_DALLAR = set()
+for _n in _ASTM.walk(_FSM_AGACI):
+    if not isinstance(_n, _ASTM.Compare) or len(_n.comparators) != 1:
+        continue
+    _sol = _n.left
+    if not (isinstance(_sol, _ASTM.Call)
+            and getattr(_sol.func, 'attr', '') == 'get'
+            and _sol.args and getattr(_sol.args[0], 'value', None) == 'type'):
+        continue
+    _sag = _n.comparators[0]
+    if isinstance(_sag, _ASTM.Constant) and isinstance(_sag.value, str):
+        _DALLAR.add(_sag.value)
+check("FSM'de tip dalları bulundu", len(_DALLAR) >= 3, True)
+check("üretilen her özel tipin FSM'de dalı var",
+      sorted({t for t in _TIP.values() if t != 'nav'} - _DALLAR), [])
 
 # Fiziksel sıra: atış rampanın ORTASINDA. Şartname §6.10 hedefi "minimum 10
 # metre" uzağa koyuyor; rampa çıkışından hedefe 8,18 m var, yani atış orada
 # yapılamaz. Liste sırası FSM'in sürüş sırasıdır.
-def _asama_sirasi():
-    yol = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                       'config', 'waypoints.yaml')
-    with open(yol, encoding='utf-8') as f:
-        return [a['isim'] for a in yaml.safe_load(f)['asamalar']]
-
-
-_SIRA = _asama_sirasi()
+_SIRA = [w['label'] for w in _WP]
 check("atış rampa girişinden sonra",      _SIRA.index('ATIS_BOLGESI') > _SIRA.index('DIK_EGIM_GIRIS'), True)
 check("atış rampa çıkışından önce",       _SIRA.index('ATIS_BOLGESI') < _SIRA.index('DIK_EGIM_CIKIS'), True)
 
@@ -1616,7 +1658,8 @@ check("misyon_fsm sabiti elle yazmaz",    '1.6284' in _fsm_kaynak(), False)
 from teknofest_ika.otonomi.topics import NAV2_CMD_BAYATLAMA_S  # noqa: E402
 
 _MOD_KAYNAK = _kaynak('teknofest_ika/otonomi/mod_yoneticisi.py')
-check("mux komut zamanı tutuluyor",       'self._nav2_son   = time.time()' in _MOD_KAYNAK, True)
+check("mux komut zamanı tutuluyor",
+      'self._nav2_son   = time.monotonic()' in _MOD_KAYNAK, True)
 check("mux bayat komutu sıfırlar",        'nav2_gecmis > NAV2_CMD_BAYATLAMA_S' in _MOD_KAYNAK, True)
 check("bayatlık sınırı ackermann ile aynı", NAV2_CMD_BAYATLAMA_S, 0.5)
 
@@ -1665,7 +1708,7 @@ def _nav2_params():
 
 
 _FP = _nav2_params()['controller_server']['ros__parameters']['FollowPath']
-_R_MIN = 1.40 / math.tan(0.5236)          # L / tan(δ_max) — ackermann_converter ile aynı
+_R_MIN = 1.44 / math.tan(0.5236)          # L / tan(δ_max) — ackermann_converter ile aynı
 check("kısma eşiği R_min üstünde",        _FP['regulated_linear_scaling_min_radius'] > _R_MIN, True)
 # Kısma sonrası hız kalkış sürtünmesi tabanının altına düşmemeli, yoksa araç
 # viraj ortasında yerinden kalkamaz.
@@ -2311,6 +2354,1127 @@ check("except demeti bulundu", _m_exc is not None, True)
 check("TypeError except demetinde",
       'TypeError' in (_m_exc.group(1) if _m_exc else ''), True)
 check("hata sonrası port kapatılıyor", '_port_kapat()' in _GONDER, True)
+
+
+# ─── Derinlik kaynağı: costmap ve açılış betiği aynı şeyi söylemeli ─────────
+print("\n=== Derinlik kamerası kapalılığı ===")
+
+# Derinlik bulutu Nav2'ye ölçülmemiş bir dönüşümün arkasından giriyordu:
+# base_link → dm_base_frame'in üç sayısı tahmin. Yükseklik yanlışsa bulut
+# düşeyde kayar, zemin min_obstacle_height'ın üstüne çıkar ve ENGEL olarak
+# işaretlenir — araç kendini duvarla çevrili sanıp hiç rota üretmez.
+#
+# Kapatmanın iki yeri var ve ikisi ayrışırsa arıza sessiz: yalnız TF kapalıysa
+# kaynak listede kalır ve costmap "Transform failure" basar; yalnız liste
+# temizse boşa bir kamera ve bir TF yayıncısı koşar.
+_NAV2_D = _nav2_params()
+
+for _ad in ('global_costmap', 'local_costmap'):
+    _ob = _NAV2_D[_ad][_ad]['ros__parameters']['obstacle_layer']
+    # Nav2 tam olarak bu dizgeyi boşluktan bölüp okuyor; kaynağı açan tek şey
+    # adın burada geçmesi, blok tanımının varlığı değil.
+    _kaynaklar = _ob['observation_sources'].split()
+    check(f"{_ad}: derinlik kaynağı listede değil",
+          'os30a_cloud' in _kaynaklar, False)
+    # Ters yön: listede olup bloğu olmayan bir ad Nav2'yi açılışta düşürür.
+    for _k in _kaynaklar:
+        check(f"{_ad}: {_k} kaynağının bloğu var", _k in _ob, True)
+
+# Açılış betiğinin varsayılanları — `: "${AD:=değer}"` biçimindeki atamalar
+# okunuyor, dizge aranmıyor: değer değişirse test düşer.
+_VARSAYILAN = dict(re.findall(r'^:\s*"\$\{([A-Z0-9_]+):=([^}]*)\}"',
+                              _kaynak('scripts/lydia_startup.sh'), flags=re.M))
+check("derinlik kamerası varsayılan kapalı", _VARSAYILAN.get('DERINLIK_AKTIF'), '0')
+# TF'in varsayılanı kameranınkine BAĞLI olmalı; sabit bir 1 yazmak ikisinin
+# sessizce ayrışmasının kendisidir.
+check("OS30A TF'i kameranın anahtarını izliyor",
+      _VARSAYILAN.get('OS30A_TF_AKTIF'), '$DERINLIK_AKTIF')
+
+# Kamera launch'ı gerçekten o anahtarın dalında olmalı — anahtarı tanımlayıp
+# kullanmamak bu depoda daha önce görülen desen.
+_BOOT_D = _kaynak('scripts/lydia_startup.sh')
+_m_dal = re.search(r'if \[ "\$DERINLIK_AKTIF" != "1" \]; then(.*?)\nfi\n',
+                   _BOOT_D, flags=re.S)
+check("derinlik dalı bulundu", _m_dal is not None, True)
+check("OS30A launch'ı o dalın içinde",
+      'ros2 launch ydlidar_os30a' in (_m_dal.group(1) if _m_dal else ''), True)
+# Kamera kapalıyken derinlik bulutunu tüketen başka bir yol açık kalmamalı.
+# Varsayılanın DEĞERİ okunuyor: adın dosyada geçmesi True'ya çevrilmesini
+# engellemez.
+_m_di = re.search(r'declare_parameter\("derinlik_isle",\s*(\w+)\)',
+                  _kaynak('teknofest_ika/gorsel/preprocessing_node.py'))
+check("derinlik_isle varsayılanı okundu", _m_di is not None, True)
+check("preprocessing derinlik işlemesi varsayılan kapalı",
+      _m_di.group(1) if _m_di else None, 'False')
+
+
+# ─── Kart ayarları (0x09) açılış betiğinden geçmeli ────────────────────────
+print("\n=== Kart ayarlarının sahaya ulaşması ===")
+
+# Ayarlar kartın FLASH'ında değil RAM'inde: kalıcılık köprüde ve köprüye
+# değerler yalnız parametreden giriyor. Betikte geçirilmeyen bir ayar sahada
+# HİÇ girilemez — ölçüm yapılır, girildi sanılır, kart eski değerde kalır.
+_SK_AYAR = set(re.findall(
+    r"declare_parameter\('(tekerlek_cevre_mm|gosterge_darbe_tur|"
+    r"enkoder_disli_orani|direksiyon_orani|direksiyon_isaret)'",
+    _kaynak('teknofest_ika/gomulu/seri_kopru.py')))
+check("köprü beş ayarı da tanımlıyor", len(_SK_AYAR), 5)
+
+# Yalnız seri_kopru çağrısına bakılıyor: aynı adın betiğin başka bir yerinde
+# yorum olarak geçmesi ayarı düğüme ulaştırmaz.
+_BOOT_A = _kaynak('scripts/lydia_startup.sh')
+_m_sk = re.search(r'ros2 run teknofest_ika seri_kopru --ros-args(.*?)&\n',
+                  _BOOT_A, flags=re.S)
+check("seri_kopru çağrısı bulundu", _m_sk is not None, True)
+_CAGRI = _m_sk.group(1) if _m_sk else ''
+for _ad in sorted(_SK_AYAR):
+    check(f"{_ad} düğüme geçiriliyor", f'-p {_ad}:=' in _CAGRI, True)
+
+# Varsayılanları 0 olmalı: sıfır "ölçülmedi" demek ve köprü onu göndermiyor.
+# Uydurma bir sayı, kartın bilerek sustuğu alana yanlış ölçek yazmaktır.
+for _ad in ('TEKERLEK_CEVRE_MM', 'GOSTERGE_DARBE_TUR', 'ENKODER_DISLI_ORANI',
+            'DIREKSIYON_ORANI', 'DIREKSIYON_ISARET'):
+    check(f"{_ad} varsayılanı ölçülmedi (0)", _VARSAYILAN.get(_ad), '0')
+
+
+# ─── Seri portu iki okuyucu paylaşamaz ─────────────────────────────────────
+print("\n=== F767 port kavgası ===")
+
+# f767_telemetri ve seri_kopru varsayılan olarak AYNI portu istiyor. İkisi
+# birden açtığında çekirdek "multiple access on port" diyor ve çerçeveler
+# bölünüyor; kimin kazandığı açılış sırasına kalıyor. Telemetri kazanırsa
+# /kart/* konularının TAMAMI boş kalır — odometri, IMU, RC, E-STOP, mod.
+check("iki okuyucu aynı portu istiyor (kapı gerekli)",
+      _VARSAYILAN.get('F767_TELEMETRI_PORT'), _VARSAYILAN.get('SERI_PORT'))
+
+# Kapının kendisi ÇALIŞTIRILARAK denetleniyor: dizge araması "kapı var" der
+# ama koşulu tersine çevrilmiş bir kapıyı da onaylar.
+_m_kapi = re.search(
+    r'(if \[ "\$F767_TELEMETRI_AKTIF" = "1" \] && \[ "\$F767_TELEMETRI_PORT" '
+    r'= "\$SERI_PORT" \]; then.*?\nfi\n)',
+    _kaynak('scripts/lydia_startup.sh'), flags=re.S)
+check("port kavgası kapısı bulundu", _m_kapi is not None, True)
+
+if _m_kapi:
+    import subprocess
+
+    def _kapi_sonucu(telemetri_port, seri_port):
+        betik = (f'F767_TELEMETRI_AKTIF=1\n'
+                 f'F767_TELEMETRI_PORT={telemetri_port}\n'
+                 f'SERI_PORT={seri_port}\n'
+                 + _m_kapi.group(1) +
+                 'echo "SONUC=$F767_TELEMETRI_AKTIF"\n')
+        cikti = subprocess.run(['bash', '-c', betik], capture_output=True,
+                               text=True).stdout
+        return re.search(r'SONUC=(\d)', cikti).group(1)
+
+    # Aynı port → telemetri geri çekilmeli. Hattın sahibi köprü: teşhis
+    # servisi sürüşün kendisinden önce gelemez.
+    check("aynı portta telemetri kapanıyor",
+          _kapi_sonucu('/dev/f767', '/dev/f767'), '0')
+    # Ayrı port → telemetri çalışmaya devam etmeli, yoksa kapı panoyu
+    # gereksiz yere köreltir.
+    check("ayrı portta telemetri açık kalıyor",
+          _kapi_sonucu('/dev/f767_teshis', '/dev/f767'), '1')
+
+
+# ─── SLAM anahtarı ve Nav2'nin çerçevesi ───────────────────────────────────
+print("\n=== SLAM kapalı, Nav2 odom'da ===")
+
+# Haritalama sürüş zincirinin dışında: hedef taramadan doğuyor ve odom'da
+# gönderiliyor. Ama `map` çerçevesini basan tek şey slam_toolbox'tı — SLAM
+# kapatılıp Nav2 `map`'te bırakılırsa bt_navigator ilk tick'te dönüşümü
+# bulamaz ve TEK HEDEF KABUL ETMEZ. Yani anahtar ile çerçeve tek bir karardır;
+# ikisini ayrı ayrı doğru bulmak yetmiyor, birlikte tutarlı olmaları gerekiyor.
+check("SLAM varsayılan kapalı", _VARSAYILAN.get('SLAM_AKTIF'), '0')
+
+_NAV = yaml.safe_load(_kaynak('config/nav2_params.yaml'))
+
+# Yalnız GERÇEKTEN başlatılan sunucular. amcl ve map_server bu depoda ölü
+# yapılandırma (lifecycle_manager node_names'te yoklar), çerçeveleri
+# bağlayıcı değil.
+for _dugum, _yol in [
+    ('bt_navigator',    ['bt_navigator']),
+    ('behavior_server', ['behavior_server']),
+    ('global_costmap',  ['global_costmap', 'global_costmap']),
+    ('local_costmap',   ['local_costmap', 'local_costmap']),
+]:
+    _d = _NAV
+    for _k in _yol:
+        _d = _d[_k]
+    check(f"{_dugum} odom çerçevesinde",
+          _d['ros__parameters']['global_frame'], 'odom')
+
+# Hedefin çerçevesi ile bt_navigator'ın çerçevesi BİRLİKTE değişmeli.
+# Değerin kendisi yukarıda ayrıca kilitli; buradaki kontrol iki DOSYA
+# arasındaki bağı tutuyor: Nav2 map'e taşınırsa hedef odom'da kalır ve
+# aradaki dönüşümü basan kimse olmadığı için her hedef sessizce reddedilir.
+check("hedef çerçevesi bt_navigator'ınkiyle aynı",
+      KAYAN_HEDEF_FRAME,
+      _NAV['bt_navigator']['ros__parameters']['global_frame'])
+
+_GC = _NAV['global_costmap']['global_costmap']['ros__parameters']
+# static_layer'ın tek girdisi /map'ti. Listede kalırsa katman hiç veri almadan
+# her güncellemeye boş bir katman bindirir.
+check("static_layer plugin listesinde değil",
+      'static_layer' in _GC['plugins'], False)
+# static_layer'sız global costmap büyük ölçüde BİLİNMEYEN kalıyor. Planlayıcı
+# bunun içinden plan üretebildiği için kilitlenme olmuyor — o yüzden bu bayrak
+# artık static_layer'ın kaldırılmasının ÖN KOŞULU, keyfî bir ayar değil.
+check("planlayıcı bilinmeyenin içinden plan üretiyor",
+      _NAV['planner_server']['ros__parameters']['GridBased']['allow_unknown'],
+      True)
+
+# Kapılar ÇALIŞTIRILARAK denetleniyor: dizge araması koşulu tersine çevrilmiş
+# bir kapıyı da onaylar (bu depoda üç kez görüldü).
+import subprocess  # noqa: E402
+import tempfile  # noqa: E402
+
+_BOOT_S = _kaynak('scripts/lydia_startup.sh')
+_m_slam = re.search(r'(if \[ "\$SLAM_AKTIF" != "1" \]; then\n.*?\nfi\n)',
+                    _BOOT_S, flags=re.S)
+check("SLAM kapısı bulundu", _m_slam is not None, True)
+
+if _m_slam:
+    def _slam_kalkti_mi(aktif):
+        with tempfile.TemporaryDirectory() as _tmp:
+            # ros2, sed ve sleep gölgeleniyor: kabuk fonksiyonu PATH'ten önce
+            # gelir, yani gerçek bir düğüm başlatılmadan ve 17 saniye
+            # beklenmeden dalın hangisi olduğu ölçülür.
+            #
+            # 🔑 Çağrılan satırlar çıktılarını `> "$LOG/*.log"` ile
+            # yönlendiriyor, yani shim'in stdout'u dalın içinde YUTULUYOR.
+            # İlk yazdığım sürüm bunu görmedi ve SLAM_AKTIF=1'de de boş çıktı
+            # okuyup "başlatmıyor" diyordu. İşaret ayrı bir dosyaya yazılıyor:
+            # fonksiyonun içindeki açık yönlendirme dışarıdakini yener.
+            _iz = os.path.join(_tmp, 'iz.txt')
+            betik = (f'SLAM_AKTIF={aktif}\n'
+                     f'LOG={_tmp}\nWS={_tmp}\nSLAM_SCAN_TOPIC=/scan/filtered\n'
+                     f'IZ={_iz}\n'
+                     'ros2() { echo "ROS2 $*" >> "$IZ"; }\n'
+                     'sed() { :; }\n'
+                     'sleep() { :; }\n'
+                     + _m_slam.group(1))
+            subprocess.run(['bash', '-c', betik], capture_output=True, text=True)
+            if not os.path.exists(_iz):
+                return ''
+            with open(_iz, encoding='utf-8') as f:
+                return f.read()
+
+    _kapali, _acik = _slam_kalkti_mi(0), _slam_kalkti_mi(1)
+    check("SLAM_AKTIF=0 slam_toolbox'ı başlatmıyor",
+          'slam_toolbox' in _kapali, False)
+    check("SLAM_AKTIF=1 slam_toolbox'ı başlatıyor",
+          'slam_toolbox' in _acik, True)
+    # map_image_node'un tek girdisi /map. SLAM'siz başlatmak, hiç kare
+    # üretmeyen bir düğümü açılış doğrulamasında "ayakta" saydırmak olurdu.
+    check("SLAM_AKTIF=0 map_image_node'u başlatmıyor",
+          'map_image_node' in _kapali, False)
+    check("SLAM_AKTIF=1 map_image_node'u başlatıyor",
+          'map_image_node' in _acik, True)
+
+# Açılış doğrulaması SLAM kapalıyken map_image_node'u ARAMAMALI: her açılışta
+# basılan sahte bir "ayağa kalkmadı" uyarısı, kontrolün kendisini değersiz
+# kılar ve gerçek eksik düğümü gizler.
+# Atama çok satırlı; kapı satırı ONDAN SONRA geliyor. Tembel `.*?` ilk
+# satırda durup opsiyonel grubu boş bırakıyordu — yani test kapıyı hiç
+# çalıştırmadan "yok" diyordu. Kapanış tırnağına kadar açıkça eşleştiriliyor.
+_m_bek = re.search(
+    r'(_BEKLENEN="seri_kopru[^"]*"\n'
+    r'\[ "\$SLAM_AKTIF" = "1" \] && _BEKLENEN="\$_BEKLENEN map_image_node"\n)',
+    _BOOT_S, flags=re.S)
+check("beklenen düğüm listesi bulundu", _m_bek is not None, True)
+
+if _m_bek:
+    def _beklenen(aktif):
+        betik = (f'SLAM_AKTIF={aktif}\n' + _m_bek.group(1) +
+                 'echo "LISTE=$_BEKLENEN"\n')
+        return subprocess.run(['bash', '-c', betik], capture_output=True,
+                              text=True).stdout
+
+    check("SLAM kapalıyken map_image_node beklenmiyor",
+          'map_image_node' in _beklenen(0), False)
+    check("SLAM açıkken map_image_node bekleniyor",
+          'map_image_node' in _beklenen(1), True)
+
+
+# ─── Costmap bayatlamasın ──────────────────────────────────────────────────
+print("\n=== Costmap tazeliği ===")
+
+_CM = {
+    'global': _NAV['global_costmap']['global_costmap']['ros__parameters'],
+    'local':  _NAV['local_costmap']['local_costmap']['ros__parameters'],
+}
+
+# ① Kaynak susarsa costmap donuyor. Temizleme de işaretleme de AYNI kaynaktan
+# geldiği için, /scan/filtered kesildiğinde son engeller hiç silinmez ve araç
+# hayalet duvarlardan kaçmaya çalışır. Denetim yalnız taramaya konur; iki
+# bulut kaynağı yalnız görecek şey varken yayın yaptığı için onlara konursa
+# kalıcı sahte alarm olur (② ve ③).
+for _ad, _p in _CM.items():
+    _scan = _p['obstacle_layer']['scan']
+    check(f"{_ad} costmap taramanın tazeliğini denetliyor",
+          _scan.get('expected_update_rate', 0.0) > 0.0, True)
+    # Ölçülen tarama 9.96 Hz. Eşik periyodun altına inerse her açılışta sahte
+    # alarm başlar ve denetim değersizleşir; 5 s üstü ise arızayı geç söyler.
+    check(f"{_ad} tazelik eşiği makul aralıkta",
+          0.3 <= _scan['expected_update_rate'] <= 5.0, True)
+
+# ② Koşullu yayın yapan kaynağa denetim konmaz. Bağ koda dayanıyor: kaynak
+# koşulsuz yayına çevrilirse bu test düşer ve denetimin eklenmesi gündeme
+# gelir — yani karar ikisini birlikte tutuyor.
+check("cone_fusion koni yokken yayın yapmıyor",
+      'if not cone_centers:' in _kaynak('teknofest_ika/gorsel/cone_fusion_node.py'),
+      True)
+check("kayar engel kaynağı engel yokken susuyor",
+      'if not self._engel_aktif:' in
+      _kaynak('teknofest_ika/gorsel/kayar_engel_costmap.py'), True)
+for _ad, _p in _CM.items():
+    for _kaynak_adi in ('yolo_cone_cloud', 'moving_obs_cloud'):
+        check(f"{_ad}/{_kaynak_adi} tazelik denetimi almıyor",
+              'expected_update_rate' in _p['obstacle_layer'][_kaynak_adi], False)
+
+# ③ İşaretleme menzili temizleme menzilini AŞAMAZ. Aşarsa, ışının hiç
+# ulaşamadığı bir hücreye engel basılır ve o hücreyi silebilecek tek mekanizma
+# kalmaz — pencere kayana kadar orada durur. Kaynak başına denetlenir, çünkü
+# menziller kaynak başına ayrı yazılıyor.
+for _ad, _p in _CM.items():
+    for _kn, _ka in _p['obstacle_layer'].items():
+        if not isinstance(_ka, dict) or 'obstacle_max_range' not in _ka:
+            continue
+        if _kn not in _p['obstacle_layer']['observation_sources'].split():
+            continue   # listede olmayan blok okunmuyor
+        check(f"{_ad}/{_kn} temizleme menzili işaretlemeyi kapsıyor",
+              _ka['raytrace_max_range'] >= _ka['obstacle_max_range'], True)
+
+# ④ Temizleme yetkisi olmayan kaynağın bıraktığı işaretin ömrünü SINIRLAYAN
+# tek şey pencerenin kayması. Pencere büyüdükçe hayalet engel koşu boyunca
+# yaşar. Alt sınırı hedefin kendisi belirliyor: en uzak hedef pencerenin
+# içinde kalmazsa planlayıcı hedefi göremez.
+import inspect  # noqa: E402
+from teknofest_ika.otonomi import pure_logic as _pl  # noqa: E402
+_MAKS_ILERI = inspect.signature(_pl.kayan_hedef).parameters['maks_ileri'].default
+_YARI_BOY = 1.90 / 2.0
+# Yalnız global denetleniyor: planlayıcının gördüğü pencere o. Local 8 m,
+# kontrolcünün anlık çevresi ve hedefi kapsamak zorunda değil.
+check("global pencere en uzak hedefi kapsıyor",
+      _CM['global']['width'] / 2.0 >= _MAKS_ILERI + _YARI_BOY, True)
+# Üst sınır: pencere ne kadar büyükse bayat işaret o kadar uzun yaşıyor.
+# 20 m, 8 m'lik hedefe 1.05 m pay bırakan en küçük makul değer.
+check("global pencere gereksiz büyük değil", _CM['global']['width'] <= 24, True)
+check("global ve local pencere karıştırılmamış",
+      _CM['global']['width'] > _CM['local']['width'], True)
+
+
+# ─── Kayan sürüş: kör sürme ve gürültünün yola sayılması ───────────────────
+print("\n=== Kayan sürüş ölçüm kapıları ===")
+
+from teknofest_ika.otonomi.pure_logic import (  # noqa: E402
+    olcum_bayat_mi, yol_artimi,
+)
+from teknofest_ika.otonomi.topics import (  # noqa: E402
+    KAYAN_TARAMA_BAYATLAMA_S, KAYAN_YOL_TABAN_HIZ_MS,
+    KAYAN_ODOM_BAYATLAMA_S, KAYAN_HEDEF_PERIYOT_S,
+)
+
+# ① Bayatlama kapısı. "Hiç gelmedi" (0.0) bayatla aynı sınıf: ikisinde de
+# elde güncel ölçüm yok.
+check("hiç gelmemiş ölçüm bayat sayılıyor", olcum_bayat_mi(0.0, 100.0, 1.0), True)
+# Yukarıdaki tek başına yetmiyor: wall-clock'ta `simdi - 0.0` zaten sınırı
+# aştığı için `== 0.0` dalı silinse de sonuç aynı çıkıyor (mutasyon kaçtı).
+# Ayırt eden durum saatin küçük olduğu hâl — zaman kaynağı bir gün
+# time.monotonic()'e çevrilirse (açılıştan beri geçen saniye) bu dal
+# yük taşımaya başlar ve "hiç gelmedi" sessizce "taze" okunur.
+check("saat küçükken de hiç gelmemiş ölçüm bayat",
+      olcum_bayat_mi(0.0, 0.5, 1.0), True)
+check("taze ölçüm geçiyor",                 olcum_bayat_mi(99.5, 100.0, 1.0), False)
+# Sınırın kendisi HENÜZ bayat değil: eşitlikte düşmek, tam periyotta gelen
+# bir akışı her seferinde arıza saymak olurdu.
+check("sınırdaki ölçüm bayat değil",        olcum_bayat_mi(99.0, 100.0, 1.0), False)
+check("sınırı geçen ölçüm bayat",           olcum_bayat_mi(98.9, 100.0, 1.0), True)
+
+# ② Tarama kapısı ODOMETRİNİNKİYLE aynı sınıfta olmalı. Asimetri tam olarak
+# düzeltilen kusurdu: odometri korunuyordu, tarama korunmuyordu.
+check("tarama ve odometri kapıları aynı sınıfta",
+      KAYAN_TARAMA_BAYATLAMA_S, KAYAN_ODOM_BAYATLAMA_S)
+# Bayatlama sınırı yeniden hedefleme periyodundan kısa olmalı: uzun olsaydı
+# araç, kapı açılmadan önce ölü taramadan üretilmiş bir hedefe sürerdi.
+check("bayatlama sınırı hedef periyodunun altında",
+      KAYAN_TARAMA_BAYATLAMA_S < KAYAN_HEDEF_PERIYOT_S, True)
+
+# ③ İki kapı da TEK fonksiyondan geçmeli. Ayrı ayrı yazılmış iki karşılaştırma
+# bu kusurun ta kendisiydi: biri güncellendi, öteki unutuldu.
+import ast as _ast  # noqa: E402
+_AGAC = _ast.parse(_kaynak('teknofest_ika/otonomi/misyon_fsm.py'))
+
+# Arama SINIF SINIRI tanımak zorunda: `_on_scan` dosyada iki kez geçiyor
+# (KoridorIzleyici ve KayanHedefSurucusu). Sınırsız arama ilkini bulup
+# yanlış sınıfı denetliyordu — bu ders bu depoda daha önce de çıkmıştı.
+_SINIF = next((d for d in _ast.walk(_AGAC)
+               if isinstance(d, _ast.ClassDef) and d.name == 'KayanHedefSurucusu'), None)
+check("KayanHedefSurucusu bulundu", _SINIF is not None, True)
+
+def _uye(ad):
+    if _SINIF is None:
+        return None
+    return next((d for d in _SINIF.body
+                 if isinstance(d, _ast.FunctionDef) and d.name == ad), None)
+
+_sur = _uye('sur')
+check("kayan sürüş döngüsü bulundu", _sur is not None, True)
+if _sur:
+    _cagri = [n for n in _ast.walk(_sur)
+              if isinstance(n, _ast.Call) and getattr(n.func, 'id', '') == 'olcum_bayat_mi']
+    check("sürüş döngüsünde İKİ bayatlama kapısı var", len(_cagri), 2)
+    # Argümanları ayrışmalı: aynı sabiti iki kez geçirmek, iki kapıyı tek
+    # akışa bağlamak olurdu.
+    _sabitler = {getattr(c.args[2], 'id', None) for c in _cagri if len(c.args) == 3}
+    check("iki kapı ayrı sabitlere bağlı",
+          _sabitler, {'KAYAN_ODOM_BAYATLAMA_S', 'KAYAN_TARAMA_BAYATLAMA_S'})
+
+# Kapı, YALNIZ geri çağrının bastığı bir alanı okuyor. Damga basılmazsa alan
+# sonsuza kadar 0.0 kalır ve kapı her aşamada haksız yere kapanır — araç hiç
+# sürmez. Kapının varlığını test etmek, damganın varlığını test etmeden eksik.
+def _damga_basiyor_mu(geri_cagri, alan):
+    _f = _uye(geri_cagri)
+    if _f is None:
+        return False
+    return any(isinstance(h, _ast.Attribute) and h.attr == alan
+               for n in _ast.walk(_f) if isinstance(n, _ast.Assign)
+               for h in n.targets)
+
+check("tarama geri çağrısı zaman damgası basıyor",
+      _damga_basiyor_mu('_on_scan', '_scan_zaman'), True)
+check("odometri geri çağrısı zaman damgası basıyor",
+      _damga_basiyor_mu('_on_odom', '_odom_zaman'), True)
+
+# Ölü bandın SAF FONKSİYONDA doğru olması yetmiyor: `_yol`'a ham adımı ekleyen
+# bir satır fonksiyonu devre dışı bırakır ve fonksiyonun kendi testleri yeşil
+# kalır. Birikimin o fonksiyondan GEÇTİĞİ ayrıca kilitleniyor.
+_odom = _uye('_on_odom')
+_yol_yazan = [n for n in _ast.walk(_odom or _ast.Module(body=[], type_ignores=[]))
+              if isinstance(n, (_ast.AugAssign, _ast.Assign))
+              and any(isinstance(h, _ast.Attribute) and h.attr == '_yol'
+                      for h in ([n.target] if isinstance(n, _ast.AugAssign) else n.targets))]
+check("_yol'a yazan tek satır var", len(_yol_yazan), 1)
+check("yol birikimi ölü banttan geçiyor",
+      any(getattr(c.func, 'id', '') == 'yol_artimi'
+          for n in _yol_yazan for c in _ast.walk(n.value)
+          if isinstance(c, _ast.Call)), True)
+
+# ④ Yol artımı: gürültü elenirken gerçek hareket ELENMEMELİ.
+_DT = 1.0 / 50.0                      # EKF 50 Hz (ekf.yaml frequency)
+_GERCEK = 0.65 * _DT                  # nominal hızda bir örnekteki yer değiştirme
+check("gerçek hareket yola sayılıyor",
+      yol_artimi(_GERCEK, _DT, KAYAN_YOL_TABAN_HIZ_MS), _GERCEK)
+# Aracın yerinden kalkabildiği ölçülmüş en düşük hız 0.45 m/s; eşik bunu
+# elerse otonom kalkış sessizce mesafe saymaz.
+check("kalkış hızı yola sayılıyor",
+      yol_artimi(0.45 * _DT, _DT, KAYAN_YOL_TABAN_HIZ_MS) > 0.0, True)
+check("gürültü yola sayılmıyor",
+      yol_artimi(0.0005, _DT, KAYAN_YOL_TABAN_HIZ_MS), 0.0)
+# Eşik iki sınır arasında olmalı. ALT sınır ilk denemede ihlal edilmişti:
+# 0.05 m/s, 50 Hz'de 1 mm titremeyle TAM eşit çıkıyor ve hiçbir şey elenmiyor.
+check("eşik 1 mm titremeyi eliyor (alt sınır)",
+      KAYAN_YOL_TABAN_HIZ_MS > 0.001 / _DT, True)
+# ÜST sınır: kalkış hızının altında kalmalı, yoksa otonom kalkış hiç sayılmaz.
+check("eşik kalkış hızının belirgin altında (üst sınır)",
+      KAYAN_YOL_TABAN_HIZ_MS <= 0.45 / 2.0, True)
+# Bölme tanımsız: bir örnek atlamak, sonsuz bir artım eklemekten ucuz.
+check("dt sıfırken artım yok",  yol_artimi(0.009,  0.0, KAYAN_YOL_TABAN_HIZ_MS), 0.0)
+check("dt negatifken artım yok", yol_artimi(0.009, -0.1, KAYAN_YOL_TABAN_HIZ_MS), 0.0)
+
+# ⑤ Kusurun kendisi: DURAN araçta 60 saniye. Gürültü mutlak değer olarak
+# toplandığı için düzeltme olmadan metrelerce "yol" birikiyordu; aşamanın
+# bitiş ölçütü tam olarak bu sayı.
+_ORNEK, _JITTER = 50 * 60, 0.002   # örnek başına 2 mm ≙ 0.1 m/s
+_duzeltmesiz = _ORNEK * _JITTER
+_duzeltmeli  = sum(yol_artimi(_JITTER, _DT, KAYAN_YOL_TABAN_HIZ_MS)
+                   for _ in range(_ORNEK))
+check("düzeltmesiz duran araç metrelerce yol biriktiriyordu",
+      _duzeltmesiz > 2.0, True)
+check("duran araçta yol birikmiyor", _duzeltmeli, 0.0)
+# Ve hareket eden araçta ölçüt bozulmuyor: 20 m'lik aşama 20 m okumalı.
+_hareketli = sum(yol_artimi(_GERCEK, _DT, KAYAN_YOL_TABAN_HIZ_MS)
+                 for _ in range(int(20.0 / _GERCEK)))
+check("hareket eden araçta yol korunuyor", round(_hareketli, 1), 20.0)
+
+
+# ─── Sıkışma: Nav2 kurtarmalarına yer açmak ────────────────────────────────
+print("\n=== Kayan hedef bastırma ve hedef ömrü ===")
+
+from teknofest_ika.otonomi.pure_logic import (  # noqa: E402
+    hedef_yeniden_gonderilsin_mi,
+)
+from teknofest_ika.otonomi.topics import KAYAN_HEDEF_OLU_BANT_M  # noqa: E402
+
+# ① Bastırma yalnız "etkin hedef VAR ve hedef kaymadı" hâlinde.
+check("ilk hedef her zaman gönderilir",
+      hedef_yeniden_gonderilsin_mi((1.0, 0.0), None, True, 0.25), True)
+# Nav2 hedefi abort etmiş olabilir; bastırma o durumda aracı hedefsiz
+# bekletirdi ve bunu kimse söylemezdi.
+check("etkin hedef yokken kayma aranmaz",
+      hedef_yeniden_gonderilsin_mi((1.0, 0.0), (1.0, 0.0), False, 0.25), True)
+check("kaymayan hedef yeniden gönderilmez",
+      hedef_yeniden_gonderilsin_mi((1.05, 0.0), (1.0, 0.0), True, 0.25), False)
+check("kayan hedef gönderilir",
+      hedef_yeniden_gonderilsin_mi((1.30, 0.0), (1.0, 0.0), True, 0.25), True)
+# Eşiğin kendisi gönderim tarafında: sınırda susmak, tam eşik kadar kaymış
+# gerçek bir hareketi bastırmak olurdu.
+check("tam eşikteki kayma gönderilir",
+      hedef_yeniden_gonderilsin_mi((1.25, 0.0), (1.0, 0.0), True, 0.25), True)
+# Kayma düzlemde, tek eksende değil.
+check("çapraz kayma da sayılıyor",
+      hedef_yeniden_gonderilsin_mi((1.20, 0.20), (1.0, 0.0), True, 0.25), True)
+
+# ② Ölü bant iki uç arasında sıkışmalı.
+# ÜST — aracın kalkabildiği en düşük hız (0.45 m/s) bir periyotta hedefi bu
+# kadar kaydırır; eşik onu bastırırsa GERÇEK hareket duruyor sanılır.
+_EN_YAVAS_KAYMA = 0.45 * KAYAN_HEDEF_PERIYOT_S
+check("ölü bant gerçek hareketi bastırmıyor",
+      KAYAN_HEDEF_OLU_BANT_M <= _EN_YAVAS_KAYMA / 2.0, True)
+# ALT — santimetrelik LiDAR/EKF oynamasının üstünde olmalı, yoksa duran
+# araçta da gönderim sürer ve düzeltme hiçbir işe yaramaz.
+check("ölü bant gürültünün üstünde", KAYAN_HEDEF_OLU_BANT_M >= 0.10, True)
+
+# ③ Hedefin bittiğini fark etme — preemption yarışı dahil.
+# Nav2Client ROS düğümü istiyor; burada yalnız handle yaşam döngüsü
+# denetleniyor, o yüzden nesne __init__'siz kuruluyor.
+from teknofest_ika.otonomi.misyon_fsm import Nav2Client  # noqa: E402
+
+
+class _SahteLog:
+    def warn(self, *a, **k):  pass
+    def info(self, *a, **k):  pass
+    def error(self, *a, **k): pass
+
+
+class _SahteNode:
+    def get_logger(self):
+        return _SahteLog()
+
+
+class _SahteSonuc:
+    def __init__(self, durum):
+        self._durum = durum
+
+    def result(self):
+        class _R:
+            status = self._durum
+        return _R()
+
+
+def _istemci():
+    c = Nav2Client.__new__(Nav2Client)
+    c.node = _SahteNode()
+    c._son_handle = None
+    return c
+
+
+_c = _istemci()
+check("hedefsiz istemcide etkin hedef yok", _c.etkin_hedef_var(), False)
+_h1 = object()
+_c._son_handle = _h1
+check("hedef varken etkin hedef bildiriliyor", _c.etkin_hedef_var(), True)
+
+# Abort (status 6) etkin hedefi düşürmeli: düşmezse bastırma aracı sonsuza
+# kadar hedefsiz bekletir.
+_c._hedef_bitti(_SahteSonuc(6), _h1)
+check("abort edilen hedef etkin sayılmıyor", _c.etkin_hedef_var(), False)
+
+# 🔑 Preemption yarışı: yeni hedef kabul edildikten SONRA eskisinin sonucu
+# geliyor. Körlemesine temizlemek, az önce kabul edilen hedefi yok saymak
+# olurdu ve araç her preemption'da bir periyot boyunca hedefsiz görünürdü.
+_c2 = _istemci()
+_eski, _yeni = object(), object()
+_c2._son_handle = _yeni
+_c2._hedef_bitti(_SahteSonuc(6), _eski)
+check("bayat handle'ın bitişi yeni hedefi düşürmüyor", _c2.etkin_hedef_var(), True)
+
+# Sonuç okunamasa bile (future patladı) etkin hedef düşmeli — okunamayan bir
+# sonuç, hedefin sürdüğünün kanıtı değil.
+class _PatlayanSonuc:
+    def result(self):
+        raise RuntimeError('kırık future')
+
+
+_c3 = _istemci()
+_h3 = object()
+_c3._son_handle = _h3
+_c3._hedef_bitti(_PatlayanSonuc(), _h3)
+check("okunamayan sonuçta hedef etkin kalmıyor", _c3.etkin_hedef_var(), False)
+
+# ④ Yapısal bağ: bastırma kapısı gerçekten gönderimin ÖNÜNDE olmalı ve
+# sonuç aboneliği kurulmalı. Saf fonksiyonun doğru olması, çağrıldığını
+# göstermiyor (bu ders bu depoda daha önce çıktı).
+_sur_g = _uye('sur')
+_gonder = [n for n in _ast.walk(_sur_g or _ast.Module(body=[], type_ignores=[]))
+           if isinstance(n, _ast.Call)
+           and getattr(n.func, 'attr', '') == 'hedef_gonder']
+check("sürüş döngüsünde hedef gönderimi var", len(_gonder) >= 1, True)
+
+_korunan = []
+_karsilastirma_yenilenir = False
+for _dugum in _ast.walk(_sur_g or _ast.Module(body=[], type_ignores=[])):
+    if not isinstance(_dugum, _ast.If):
+        continue
+    if not any(getattr(c.func, 'id', '') == 'hedef_yeniden_gonderilsin_mi'
+               for c in _ast.walk(_dugum.test) if isinstance(c, _ast.Call)):
+        continue
+    _korunan += [n for b in _dugum.body for n in _ast.walk(b)
+                 if isinstance(n, _ast.Call)
+                 and getattr(n.func, 'attr', '') == 'hedef_gonder']
+    _karsilastirma_yenilenir = _karsilastirma_yenilenir or any(
+        isinstance(h, _ast.Name) and h.id == 'son_gonderilen'
+        for b in _dugum.body for n in _ast.walk(b)
+        if isinstance(n, _ast.Assign) for h in n.targets)
+check("her gönderim bastırma kapısının içinde",
+      len(_korunan), len(_gonder))
+# Karşılaştırma noktası gönderimde yenilenmezse `son_gonderilen` sonsuza
+# kadar None kalır, kapı hep True döner ve bastırma HİÇ devreye girmez —
+# düzeltme sessizce etkisizleşir. Mutasyon turu bu deliği açtı.
+check("gönderimde karşılaştırma noktası yenileniyor",
+      _karsilastirma_yenilenir, True)
+
+# `_uye` KayanHedefSurucusu'na bağlı; bu geri çağrı Nav2Client'ta. Sınıf
+# sınırını atlamak, dosyada aynı adı taşıyan başka bir üyeyi denetlemek olurdu.
+_NAV2C = next((d for d in _ast.walk(_AGAC)
+               if isinstance(d, _ast.ClassDef) and d.name == 'Nav2Client'), None)
+check("Nav2Client bulundu", _NAV2C is not None, True)
+_kabul = next((d for d in (_NAV2C.body if _NAV2C else [])
+               if isinstance(d, _ast.FunctionDef)
+               and d.name == '_hedef_kabul_edildi'), None)
+check("hedef sonucu dinleniyor",
+      any(getattr(n.func, 'attr', '') == 'get_result_async'
+          for n in _ast.walk(_kabul or _ast.Module(body=[], type_ignores=[]))
+          if isinstance(n, _ast.Call)), True)
+
+
+# ─── Kat edilen yol sayacı aşamaya ait ─────────────────────────────────────
+print("\n=== Aşama yol sayacının sahipliği ===")
+
+# Sayaç `sur()`'un girişinde sıfırlanıyordu. `sur()` AYNI aşama için birden
+# çok kez çağrılıyor — STOP (aşama başına 3 kez) ve hata kurtarma — yani her
+# çağrı aşamayı BAŞTAN başlatıyordu. 22 metrenin 20'sini gitmiş bir araç
+# timeout olup kurtarmadan döndüğünde 22 metreyi yeniden sürer ve parkurun
+# geri kalanı 20 m kayardı.
+from teknofest_ika.otonomi.misyon_fsm import KayanHedefSurucusu  # noqa: E402
+
+
+def _surucu():
+    k = KayanHedefSurucusu.__new__(KayanHedefSurucusu)
+    k._lock      = __import__('threading').Lock()
+    k._yol       = 0.0
+    k._konum     = None
+    k._asama_no  = None
+    return k
+
+
+_k = _surucu()
+_k.asama_basla(0)
+_k._yol = 12.5                      # aşamanın 12,5 metresi gidildi
+
+# STOP ve kurtarma aynı aşama numarasıyla geri geliyor: sayaç KORUNMALI.
+_k.asama_basla(0)
+check("aynı aşamaya dönüşte yol korunuyor", _k._yol, 12.5)
+
+# Yeni aşama: sıfırlanmalı, yoksa bir sonraki istasyon erken biter.
+_k.asama_basla(1)
+check("yeni aşamada yol sıfırlanıyor",      _k._yol, 0.0)
+
+# Aşama atlanırsa (vazgeçilen aşama) numara sıçrar — yine sıfırlanmalı.
+_k._yol = 3.0
+_k.asama_basla(4)
+check("atlanan aşamada da sıfırlanıyor",    _k._yol, 0.0)
+# İlk çağrı: sayaç hiç kurulmamışken de sıfırlama yapılmalı.
+_k2 = _surucu()
+_k2._yol = 9.9
+_k2.asama_basla(0)
+check("ilk aşamada sıfırlanıyor",           _k2._yol, 0.0)
+
+# ── Yapısal: sıfırlama artık sürüş çağrısında OLMAMALI ─────────────────────
+_sur_y = _uye('sur')
+_yol_sifirlayan = [
+    n for n in _ASTM.walk(_sur_y or _ASTM.Module(body=[], type_ignores=[]))
+    if isinstance(n, _ASTM.Assign)
+    and any(isinstance(h, _ASTM.Attribute) and h.attr == '_yol' for h in n.targets)
+]
+check("sürüş çağrısı yol sayacını sıfırlamıyor", len(_yol_sifirlayan), 0)
+
+# ── Yapısal: çağrı DÖNGÜNÜN DIŞINDA olmalı ─────────────────────────────────
+# Döngünün içine alınırsa STOP'tan sonraki `continue` sayacı yine sıfırlar ve
+# düzeltme sessizce etkisizleşir — kilitlenmesi gereken asıl şey bu.
+_exec = next((d for d in _ast.walk(_AGAC)
+              if isinstance(d, _ast.ClassDef) and d.name == 'NavigateState'), None)
+_exec = next((d for d in (_exec.body if _exec else [])
+              if isinstance(d, _ast.FunctionDef) and d.name == 'execute'), None)
+check("NavigateState.execute bulundu", _exec is not None, True)
+
+
+def _asama_basla_cagrilari(dugum):
+    return [n for n in _ASTM.walk(dugum) if isinstance(n, _ASTM.Call)
+            and getattr(n.func, 'attr', '') == 'asama_basla']
+
+
+_hepsi   = _asama_basla_cagrilari(_exec) if _exec else []
+_dongude = [c for d in _ASTM.walk(_exec or _ASTM.Module(body=[], type_ignores=[]))
+            if isinstance(d, (_ASTM.While, _ASTM.For))
+            for c in _asama_basla_cagrilari(d)]
+check("aşama başlangıcı bir kez çağrılıyor", len(_hepsi), 1)
+check("çağrı sürüş döngüsünün dışında",      len(_dongude), 0)
+
+
+# ─── A: hedef ileri yönde ve tek yayla gidilebilir olmalı ──────────────────
+print("\n=== Hedef erişilebilirliği ===")
+
+from teknofest_ika.otonomi.pure_logic import (  # noqa: E402
+    hedef_ulasilabilir_mi, kayan_hedef as _kayan_hedef_fn, ic_duvar_hedefi,
+)
+from teknofest_ika.otonomi.topics import (  # noqa: E402
+    KAYAN_HEDEF_MIN_ILERI_M, IC_DUVAR_MIN_ILERI_M,
+    PLANLAYICI_DONUS_YARICAPI_M,
+)
+
+_RMIN = PLANLAYICI_DONUS_YARICAPI_M
+_MINI = KAYAN_HEDEF_MIN_ILERI_M
+
+# R_min, L ve δ_max'tan TÜRETİLİR ama nav2_params'a elle yazılıyor. L
+# değişince orada unutulursa kapı ile planlayıcı ayrışır ve kapı,
+# planlayıcının çözemeyeceği bir hedefi geçirir.
+check("R_min = L / tan(δ_max)",
+      abs(_RMIN - 1.44 / math.tan(0.5236)) < 0.01, True)
+
+# ① ARKADAKİ hedef elenmeli. `hypot` ile ölçen bir kapı işaretsizdir ve aracın
+# 2,5 m gerisindeki bir noktayı geçirir. Planlayıcı REEDS_SHEPP olduğu için
+# oraya bir yol ÜRETİLEBİLİR — ama araç arkadan kör, o yol görülmemiş alandan
+# geçer. Geri yay sıkışma kurtarması için açık, hedef üretimi için değil.
+check("arkadaki hedef eleniyor",
+      hedef_ulasilabilir_mi((-3.0, 0.0, 0.0), _MINI, _RMIN), False)
+check("hafif arkadaki hedef de eleniyor",
+      hedef_ulasilabilir_mi((-0.5, 2.5, 0.0), _MINI, _RMIN), False)
+check("tam yandaki hedef eleniyor",
+      hedef_ulasilabilir_mi((0.0, 3.0, 0.0), _MINI, _RMIN), False)
+check("düz ileri hedef geçiyor",
+      hedef_ulasilabilir_mi((3.0, 0.0, 0.0), _MINI, _RMIN), True)
+check("çok yakın hedef eleniyor",
+      hedef_ulasilabilir_mi((1.0, 0.0, 0.0), _MINI, _RMIN), False)
+
+# ② Dönüş yarıçapı ölçütü: R = (x²+y²)/(2|y|) — çemberin orijinde x eksenine
+# teğet olmasından çıkan kapalı çözüm, yaklaşım değil. İki yönde de simetrik.
+# Sınır noktaları _RMIN'den TÜRETİLİYOR, elle yazılmıyor: R_min dingil arası
+# ya da δ_max ölçülünce değişiyor ve sabit koordinatlı bir vaka sessizce
+# anlamını kaybeder (2.42 döneminde (2.0, 1.0) hedefi 8 cm payla geçiyordu,
+# 2.49'da pay 1 cm'ye iniyor).
+#   x sabit, R = (x² + y²) / (2|y|) → verilen R için y = R − √(R² − x²)
+def _y_for_R(x, R):
+    return R - math.sqrt(max(0.0, R * R - x * x))
+
+
+_X = 2.0
+_Y_SINIR = _y_for_R(_X, _RMIN)          # tam R_min: kapıda
+for _isaret in (1.0, -1.0):
+    # Sınırın %20 içi: yarıçap R_min'in üstünde → geçer
+    check(f"tek yayla dönülebilen hedef geçiyor ({_isaret:+.0f})",
+          hedef_ulasilabilir_mi((_X, 0.80 * _Y_SINIR * _isaret, 0.0),
+                                _MINI, _RMIN), True)
+    # Sınırın %20 dışı: yarıçap R_min'in altında → elenir
+    check(f"tek yayla dönülemeyen hedef eleniyor ({_isaret:+.0f})",
+          hedef_ulasilabilir_mi((_X, 1.20 * _Y_SINIR * _isaret, 0.0),
+                                _MINI, _RMIN), False)
+# Uzak hedefte yarıçap kısıtı gevşiyor — 8 m'de 3 m yanal serbest.
+check("uzak hedefte yanal serbestlik artıyor",
+      hedef_ulasilabilir_mi((8.0, 3.0, 0.0), _MINI, _RMIN), True)
+
+# ③ Sabitler tek kaynakta olmalı.
+# `min_ileri` iki yerde yaşıyor: kapının sabiti ve kayan_hedef'in imza
+# varsayılanı. Ayrışırlarsa merkez çizgisi kapının geçireceği bir hedefi
+# baştan üretmez (ya da tersi) ve sebebi hiçbir logda görünmez.
+import inspect as _ins  # noqa: E402
+check("min_ileri kapı ile üreticide aynı",
+      _ins.signature(_kayan_hedef_fn).parameters['min_ileri'].default, _MINI)
+# Dönüş yarıçapı planlayıcının aradığı sayı olmak zorunda: kapı bu sayıyla
+# eliyor, planlayıcı o sayıyla arıyor.
+check("dönüş yarıçapı planlayıcıyla aynı",
+      _NAV['planner_server']['ros__parameters']['GridBased']['minimum_turning_radius'],
+      _RMIN)
+
+# ④ Kapı İKİ üretim yoluna birden uygulanmalı. `ic_duvar_hedefi`'nde hiç
+# mesafe kapısı yoktu ve duvar noktasını x >= -1.0 ile kabul ediyor.
+_uret = _uye('hedef_uret')
+check("hedef üretimi bulundu", _uret is not None, True)
+_iade = [n for n in _ASTM.walk(_uret or _ASTM.Module(body=[], type_ignores=[]))
+         if isinstance(n, _ASTM.Return) and isinstance(n.value, _ASTM.Tuple)
+         and not (isinstance(n.value.elts[0], _ASTM.Constant)
+                  and n.value.elts[0].value is None)]
+check("hedef döndüren iki yol var", len(_iade), 2)
+_kapi_cagri = [c for d in _ASTM.walk(_uret or _ASTM.Module(body=[], type_ignores=[]))
+               if isinstance(d, _ASTM.If)
+               for c in _ASTM.walk(d.test) if isinstance(c, _ASTM.Call)
+               and getattr(c.func, 'id', '') == 'hedef_ulasilabilir_mi']
+check("her iki yol da kapıdan geçiyor", len(_kapi_cagri), 2)
+
+# ⑤ İki yol AYNI ÖLÇÜTLERLE geçmemeli. Ölçüm: tek ölçüte indirmek U
+# dönüşlerinde iç duvar takibini kırıyor (hedefsiz 1→4 ve 0→2).
+_tabanlar = sorted(getattr(c.args[1], 'id', None) for c in _kapi_cagri
+                   if len(c.args) == 3)
+check("iki yol ayrı mesafe tabanı kullanıyor",
+      _tabanlar, ['IC_DUVAR_MIN_ILERI_M', 'KAYAN_HEDEF_MIN_ILERI_M'])
+# Yay ölçütü YALNIZ merkez çizgisinde: iç duvar çağrısı None geçiyor.
+_yaylar = sorted(
+    'None' if isinstance(c.args[2], _ASTM.Constant) and c.args[2].value is None
+    else getattr(c.args[2], 'id', '?')
+    for c in _kapi_cagri if len(c.args) == 3)
+check("yay ölçütü yalnız merkez çizgisinde",
+      _yaylar, ['None', 'PLANLAYICI_DONUS_YARICAPI_M'])
+
+# ⑥ Yay ölçütü kapatıldığında ÖTEKİ İKİ KAPI DÜŞMEMELİ — kapatma "her şeyi
+# kabul et" demek değil.
+check("yay kapalıyken arkadaki hedef yine eleniyor",
+      hedef_ulasilabilir_mi((-1.0, 0.0, 0.0), 1.2, None), False)
+check("yay kapalıyken çok yakın hedef yine eleniyor",
+      hedef_ulasilabilir_mi((0.5, 0.0, 0.0), 1.2, None), False)
+
+# ⑦ Regresyonun kendisi kilitleniyor: CAD'de ÖLÇÜLEN gerçek bir U dönüşü
+# hedefi. Yay ölçütü iç duvara uygulanırsa bu hedef elenir ve araç dönüşün
+# içinde bayat hedefle sürer.
+_U_HEDEFI = (1.48, -0.77, 0.0)      # 6→7 sol U, ölçülen: d=1,67 m, açı −27°
+check("ölçülen U dönüşü hedefi iç duvar kipinde geçiyor",
+      hedef_ulasilabilir_mi(_U_HEDEFI, IC_DUVAR_MIN_ILERI_M, None), True)
+check("aynı hedef yay ölçütüne takılıyordu",
+      hedef_ulasilabilir_mi(_U_HEDEFI, IC_DUVAR_MIN_ILERI_M,
+                            PLANLAYICI_DONUS_YARICAPI_M), False)
+
+# ⑧ İç duvar tabanı iki yönden sınırlı.
+# ALT: gövdenin yarısı 0,95 m — bundan yakın hedef aracın AYAK İZİNİN içinde.
+check("iç duvar tabanı gövdenin dışında", IC_DUVAR_MIN_ILERI_M >= 0.95, True)
+# ÜST: CAD'de ölçülen en yakın iç duvar hedefi 1,32 m; bundan büyük taban
+# meşru hedef kaybettirir.
+check("iç duvar tabanı ölçülen en yakın hedefin altında",
+      IC_DUVAR_MIN_ILERI_M <= 1.32, True)
+check("iç duvar tabanı merkez çizgisinden küçük",
+      IC_DUVAR_MIN_ILERI_M < KAYAN_HEDEF_MIN_ILERI_M, True)
+
+
+# ─── B: süre ölçümleri ayarlanabilir saatte olmamalı ───────────────────────
+print("\n=== Saat kaynağı ===")
+
+# Jetson'ın RTC'si ölü ve bir ağ bağlantısı belirdiğinde saat günlerce ileri
+# atlıyor. time.time() ile ölçülen aralıklar o sıçramada milyonlarca saniye
+# okunur: iki bayatlama kapısı, MisyonSaati, STOP cooldown'ı ve hedef periyodu
+# TEK bir olayla birden tetiklenir → her aşama 'failed', sonra MISSION_ABORT.
+# Ölçüt AST'den okunuyor, dizgeden değil: bu kararın gerekçesi kaynakların
+# YORUMLARINDA `time.time()` diye geçiyor ve dizge araması kendi
+# dokümantasyonunu ihlal sayıyordu (ilk sürüm dördünü birden düşürdü).
+def _saat_cagrilari(yol):
+    agac = _ASTM.parse(_kaynak(yol))
+    bulunan = set()
+    for n in _ASTM.walk(agac):
+        if not isinstance(n, _ASTM.Call):
+            continue
+        f = n.func
+        if (isinstance(f, _ASTM.Attribute)
+                and getattr(f.value, 'id', '') == 'time'):
+            bulunan.add(f.attr)
+    return bulunan
+
+
+for _d in ('teknofest_ika/otonomi/misyon_fsm.py',
+           'teknofest_ika/otonomi/mod_yoneticisi.py',
+           'teknofest_ika/otonomi/anti_rollback.py',
+           'teknofest_ika/utils/pid_controller.py'):
+    _cagri = _saat_cagrilari(_d)
+    # Karıştırma en kötüsü: bir damga monotonic, karşılaştırması time.time()
+    # olursa fark anlamsız çıkar ve hiçbir hata basılmaz. O yüzden ölçüt
+    # "monotonic kullanılıyor" değil, "ayarlanabilir saat HİÇ ÇAĞRILMIYOR".
+    check(f"{os.path.basename(_d)} ayarlanabilir saat çağırmıyor",
+          'time' in _cagri, False)
+    check(f"{os.path.basename(_d)} monotonik saat çağırıyor",
+          'monotonic' in _cagri, True)
+
+# Koşu saatinin kendisi de aynı kaynakta olmalı — sıçrama §6.12'yi anında
+# doldurup koşuyu bitirir.
+_saat = next((d for d in _ast.walk(_AGAC)
+              if isinstance(d, _ast.ClassDef) and d.name == 'MisyonSaati'), None)
+check("MisyonSaati bulundu", _saat is not None, True)
+check("koşu saati monotonik",
+      all(getattr(n.func, 'attr', '') == 'monotonic'
+          for n in _ASTM.walk(_saat or _ASTM.Module(body=[], type_ignores=[]))
+          if isinstance(n, _ASTM.Call)
+          and getattr(getattr(n.func, 'value', None), 'id', '') == 'time'),
+      True)
+
+
+# ─── Gözcü: ölen düğümü kim geri getirir ───────────────────────────────────
+print("\n=== Gözcü (düğüm süpervizyonu) ===")
+
+_BOOT_G = _kaynak('scripts/lydia_startup.sh')
+
+check("gözcü varsayılan açık", _VARSAYILAN.get('GOZCU_AKTIF'), '1')
+# Tek turluk keşif sarsıntısına bakıp sağlam düğüm öldürülmesin diye iki tur
+# teyit var; periyot ona göre seçilmeli. `ros2 node list` bir keşif sorgusu ve
+# ~1 s sürüyor, o yüzden periyot saniyeler mertebesinde.
+check("yoklama periyodu makul", 5 <= float(_VARSAYILAN.get('GOZCU_PERIYOT_S', 0)) <= 60, True)
+# Sınır olmadan belirleyici bir hata gözcüyü sonsuz döngüye sokar.
+check("yeniden başlatma sınırlı", 1 <= int(_VARSAYILAN.get('GOZCU_AZAMI_DENEME', 0)) <= 5, True)
+
+# ── Yeniden başlatma komutu, ilk başlatan komutla AYNI olmalı ──────────────
+# preprocessing_node `-r /scan_lidar:=/scan` olmadan yanlış konuya abone olur
+# ve hiçbir şey üretmez — hata da basmaz. Komut iki yerde yazılı olduğu için
+# argümanlar karşılaştırılıyor.
+def _arg_kumesi(metin):
+    return set(re.findall(r'(-[rp] [^\s\\]+)', metin))
+
+
+_m_ilk_pre = re.search(
+    r'^ros2 run teknofest_ika preprocessing_node --ros-args(.*?)&$',
+    _BOOT_G, flags=re.S | re.M)
+_m_goz_pre = re.search(
+    r'        preprocessing_node\)\n(.*?)\n            ;;',
+    _BOOT_G, flags=re.S)
+check("preprocessing ilk başlatma bulundu", _m_ilk_pre is not None, True)
+check("preprocessing gözcü dalı bulundu",   _m_goz_pre is not None, True)
+if _m_ilk_pre and _m_goz_pre:
+    check("preprocessing yeniden başlatma argümanları aynı",
+          _arg_kumesi(_m_goz_pre.group(1)), _arg_kumesi(_m_ilk_pre.group(1)))
+
+_m_ilk_pano = re.search(r'^PANO_PORT="\$PANO_PORT" python3 "\$WS/scripts/web_dashboard\.py"'
+                        r' --ros-args(.*?)&$', _BOOT_G, flags=re.S | re.M)
+_m_goz_pano = re.search(r'        web_dashboard\)\n(.*?)\n            ;;',
+                        _BOOT_G, flags=re.S)
+check("pano ilk başlatma bulundu", _m_ilk_pano is not None, True)
+if _m_ilk_pano and _m_goz_pano:
+    check("pano yeniden başlatma argümanları aynı",
+          _arg_kumesi(_m_goz_pano.group(1)), _arg_kumesi(_m_ilk_pano.group(1)))
+
+# ── Döngü ÇALIŞTIRILARAK denetleniyor ──────────────────────────────────────
+# Dizge araması bir döngünün yönünü ölçemez: koşulu tersine çevrilmiş bir
+# gözcüyü de onaylar. Gruplar ve döngü gerçek betikten kesilip bash'te
+# koşturuluyor, yalnız `sleep`, `ros2` ve düğüm başlatma gölgeleniyor.
+_m_serbest  = re.search(r'(_GOZCU_SERBEST=".*?"\n)',  _BOOT_G, flags=re.S)
+_m_dikkatli = re.search(r'(_GOZCU_DIKKATLI=".*?"\n)', _BOOT_G, flags=re.S)
+_m_dongu    = re.search(r'(if \[ "\$GOZCU_AKTIF" != "1" \]; then\n.*?\nfi\n)',
+                        _BOOT_G, flags=re.S)
+check("gözcü grupları bulundu", bool(_m_serbest and _m_dikkatli), True)
+check("gözcü döngüsü bulundu",  _m_dongu is not None, True)
+
+if _m_serbest and _m_dikkatli and _m_dongu:
+    def _gozcu_kos(senaryo, tur, aktif=1, azami=3,
+                   beklenen='preprocessing_node misyon_fsm seri_kopru'):
+        """Gözcüyü `tur` kez döndürür; başlatılan düğümlerin izini döner."""
+        with tempfile.TemporaryDirectory() as _t:
+            betik = (
+                f'LOG={_t}\nWS={_t}\nPANO_PORT=8083\n'
+                f'GOZCU_AKTIF={aktif}\nGOZCU_PERIYOT_S=0\n'
+                f'GOZCU_AZAMI_DENEME={azami}\n'
+                f'_BEKLENEN="{beklenen}"\n'
+                + _m_serbest.group(1) + _m_dikkatli.group(1) +
+                # Düğüm başlatma gölgeleniyor: gerçek `ros2 run` çağrılmadan
+                # HANGİ düğümün başlatılacağı ölçülür.
+                '_gozcu_baslat() { echo "BASLAT:$1" >> "$LOG/iz"; }\n'
+                f'_senaryo() {{\n{senaryo}\n}}\n'
+                '_tur=0\n'
+                f'sleep() {{ _tur=$((_tur+1)); [ "$_tur" -gt {tur} ] && exit 0;'
+                ' _senaryo "$_tur" > "$LOG/canli"; return 0; }\n'
+                'ros2() { cat "$LOG/canli" 2>/dev/null; }\n'
+                + _m_dongu.group(1))
+            r = subprocess.run(['bash', '-c', betik], capture_output=True,
+                               text=True)
+            try:
+                with open(os.path.join(_t, 'iz'), encoding='utf-8') as f:
+                    iz = f.read()
+            except FileNotFoundError:
+                iz = ''
+            return iz, r.stdout
+
+    _HEPSI = 'echo "/preprocessing_node"; echo "/misyon_fsm"; echo "/seri_kopru"'
+    _EKSIK = 'echo "/misyon_fsm"; echo "/seri_kopru"'   # preprocessing yok
+
+    # ① TEK turluk eksiklik işlem üretmemeli — keşif sarsıntısı olabilir.
+    _iz, _ = _gozcu_kos(f'case "$1" in 1) {_EKSIK} ;; *) {_HEPSI} ;; esac', tur=3)
+    check("tek turluk eksiklik yeniden başlatma üretmiyor",
+          'BASLAT:' in _iz, False)
+
+    # ② İki tur üst üste eksikse başlatılmalı.
+    _iz, _ = _gozcu_kos(f'{_EKSIK}', tur=3)
+    check("iki tur eksik serbest düğüm başlatılıyor",
+          'BASLAT:preprocessing_node' in _iz, True)
+
+    # ③ ASLA grubu başlatılmamalı ama adıyla bildirilmeli — yeniden başlarsa
+    #    koşu 0. waypoint'ten başlar ve saat sıfırlanır.
+    _iz, _cikti = _gozcu_kos(
+        'echo "/preprocessing_node"; echo "/seri_kopru"', tur=3)
+    check("misyon_fsm yeniden başlatılmıyor", 'BASLAT:misyon_fsm' in _iz, False)
+    check("misyon_fsm ölümü bildiriliyor",    'misyon_fsm' in _cikti, True)
+
+    # ④ DİKKATLİ grubu da başlatılmamalı — portu yeniden açmak kartı
+    #    resetleyebilir, ön koşul otomatikleştirilemiyor.
+    _iz, _cikti = _gozcu_kos(
+        'echo "/preprocessing_node"; echo "/misyon_fsm"', tur=3)
+    check("seri_kopru yeniden başlatılmıyor", 'BASLAT:seri_kopru' in _iz, False)
+    check("seri_kopru ölümü bildiriliyor",    'seri_kopru' in _cikti, True)
+
+    # ⑤ `ros2 node list` bomboşsa sorun bizdedir: 25 düğümün 25'ini ölmüş
+    #    sayıp başlatmak, gözcünün önlediği arızadan kötüdür.
+    _iz, _ = _gozcu_kos('echo -n ""', tur=4)
+    check("boş düğüm listesinde hiçbir şey başlatılmıyor", 'BASLAT:' in _iz, False)
+
+    # ⑥ Deneme sınırı: sınırdan fazla başlatma olmamalı.
+    _iz, _cikti = _gozcu_kos(f'{_EKSIK}', tur=12, azami=2)
+    check("yeniden başlatma sınırı uygulanıyor",
+          _iz.count('BASLAT:preprocessing_node'), 2)
+    check("sınıra ulaşınca vazgeçildiği yazılıyor", 'VAZGEÇİLDİ' in _cikti, True)
+
+    # ⑦ Kapalıyken hiçbir şey yapmamalı (eski davranış).
+    _iz, _cikti = _gozcu_kos(f'{_EKSIK}', tur=4, aktif=0)
+    check("gözcü kapalıyken başlatma yok", 'BASLAT:' in _iz, False)
+
+# Grupları ayrıştır. Tanım bu bloğun BAŞINDA: aşağıdaki kapsam testleri
+# de kullanıyor ve önceki yerleşimde onlardan SONRA geliyordu.
+_SERB = set(re.findall(r'[\w]+', _m_serbest.group(1).split('"')[1])) if _m_serbest else set()
+_DIKK = set(re.findall(r'[\w]+', _m_dikkatli.group(1).split('"')[1])) if _m_dikkatli else set()
+
+# ── HER beklenen düğüm bir grupta olmalı ───────────────────────────────────
+# 🔑 Bu testin sebebi: gözcünün ilk sürümünde 21 beklenen düğümün 7'si hiçbir
+# grupta değildi ve sessizce varsayılana (ASLA) düşüyordu. Davranış güvenliydi
+# — yanlış yeniden başlatma yok — ama gözcü onları KAPSAMIYORDU ve aralarında
+# `ackermann_converter` vardı: ölürse /cmd_vel çevrimi durur ve araç durur.
+# Varsayılanın güvenli olması, sınıflandırmanın eksik kalmasını meşru kılmıyor;
+# eksiklik ancak sayılırsa görülür.
+_GOZCU_ASLA_BEKLENEN = {'misyon_fsm', 'e_stop_node'}
+_m_bek_hepsi = re.findall(r'_BEKLENEN="([^"]*)"', _BOOT_G)
+_BEK = set()
+for _p in _m_bek_hepsi:
+    _BEK |= {w for w in _p.replace('$_BEKLENEN', '').split()}
+check("beklenen düğüm listesi okundu", len(_BEK) >= 15, True)
+_sinifsiz = sorted(_BEK - _SERB - _DIKK - _GOZCU_ASLA_BEKLENEN)
+check("sınıflandırılmamış beklenen düğüm yok", _sinifsiz, [])
+# ASLA grubu AÇIKÇA yazılı olmalı — "listede yok, demek ki ASLA" bir karar
+# değil, karar verilmemişliğin sonucu.
+check("ASLA grubu bilinçli seçilmiş",
+      sorted(_GOZCU_ASLA_BEKLENEN & _BEK), ['e_stop_node', 'misyon_fsm'])
+
+# ── Listelerde ÖLÜ girdi olmamalı ──────────────────────────────────────────
+# İlk sürümde DİKKATLİ listesinde nav2'nin altı düğümü vardı ama `_BEKLENEN`'de
+# yoklardı — hiç eşleşmeyen, kural yazdığımı sandığım ölü girdiler.
+check("SERBEST listesinde ölü girdi yok", sorted(_SERB - _BEK), [])
+check("DİKKATLİ listesinde ölü girdi yok", sorted(_DIKK - _BEK), [])
+
+# ── Ölmesi aracı durduran düğümler kapsam DIŞINDA kalmamalı ────────────────
+for _n in ('ackermann_converter', 'anti_rollback', 'seri_kopru'):
+    check(f"{_n} gözcü kapsamında", _n in (_SERB | _DIKK), True)
+
+
+# ── Gruplandırılmamış düğüm ASLA sayılmalı ─────────────────────────────────
+# Yeni bir düğüm eklenip gruplandırılması unutulursa varsayılan davranış
+# "dokunma" olmalı; "başlat" olursa unutulan bir düğüm sessizce riskli hâle
+# gelir. Serbest ve dikkatli listelerin KESİŞİMİ de boş olmalı.
+check("serbest ve dikkatli listeler ayrışık", sorted(_SERB & _DIKK), [])
+# E-STOP ve görev durumu hiçbir koşulda serbest olmamalı.
+for _n in ('misyon_fsm', 'e_stop_node'):
+    check(f"{_n} serbest grupta değil", _n in _SERB, False)
+    check(f"{_n} dikkatli grupta da değil", _n in _DIKK, False)
+
+
+
+# ─── 20. Kip titremesi, kesme tekrarı ve manuel kip kapısı ──────────────────
+print("\n=== 20. Kip, kesme ve manuel kip ===")
+
+_MODY = _kaynak('teknofest_ika/otonomi/mod_yoneticisi.py')
+_SERI = _kaynak('teknofest_ika/gomulu/seri_kopru.py')
+
+
+def _sabit(kaynak, ad):
+    """Modül düzeyindeki sayısal sabiti AST'den okur."""
+    for d in ast.parse(kaynak).body:
+        if isinstance(d, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == ad for t in d.targets):
+            return ast.literal_eval(d.value)
+    return None
+
+
+# Kip bayatlama eşiği köprünün TEKRAR periyoduna bağlı. Eşik periyodun altına
+# inerse kart kip 2'de sabitken bile mod her tekrar arasında manuele düşer ve
+# her geri dönüşte /mission_start basılır — FSM baştan başlar.
+_KIP_T   = _sabit(_MODY, 'KIP_TIMEOUT_S')
+_KIP_P   = _sabit(_MODY, 'KIP_TEKRAR_PERIYOT_S')
+_TAZELE  = _sabit(_SERI, 'DURUM_TAZELEME_S')
+check("kip tekrar periyodu köprüyle aynı", _KIP_P, _TAZELE)
+check("kip eşiği tekrar periyodunun en az 2 katı", _KIP_T >= 2.0 * _KIP_P, True)
+
+# Kesme kaynağı PERİYODİK yayınlanmalı. Yalnız değişimde basılırsa açılışta
+# e_stop_node'dan önce çıkar ve kimse duymaz.
+check("kesme tekrar periyodu tanımlı", _sabit(_MODY, 'KESME_TEKRAR_S') is not None, True)
+check("kesme periyodik yayınlanıyor",
+      'self.create_timer(KESME_TEKRAR_S, self._kesme_yayinla)' in _MODY, True)
+check("kesme yayını değişim dalında değil",
+      '_kesme_pub.publish' in _MODY.split('def _kesme_yayinla')[0].split('def _durum_cb')[-1],
+      False)
+
+# Manuel kipte uçuştaki Nav2 hedefi iptal edilmeli. Kart komutu zaten yok
+# sayıyor, ama iptal edilmeyen hedef ayakta kalır ve SwC geri otonoma
+# alındığında araç bayat bir hedefe kalkar.
+_FSM = _kaynak('teknofest_ika/otonomi/misyon_fsm.py')
+check("go_to manuel kapısı alıyor",   'manuel_check_fn' in _FSM, True)
+check("kayan sürüş manuel kapısı alıyor", 'manuel_fn' in _FSM, True)
+check("manuel kapısı hedefi iptal ediyor",
+      "manuel_check_fn()" in _FSM and "return 'manuel_mod'" in _FSM, True)
+check("NavigateState manuel sonucu işliyor", "result == 'manuel_mod'" in _FSM, True)
+# C4: görev kaldığı yerden sürer — manuel dalı aşama indeksini ilerletmiyor
+# ve bir sonuç döndürmüyor, aynı aşamaya `continue` ile dönüyor.
+_MANUEL_DAL = _FSM.split("result == 'manuel_mod'")[1].split('continue')[0]
+check("manuel dalı aşamayı bitirmiyor", 'return' in _MANUEL_DAL.replace(
+    "return 'e_stop'", ''), False)
+check("manuel dalı wp_index'e dokunmuyor", 'wp_index' in _MANUEL_DAL, False)
+
+# Manuelde 0x38 karşılaştırması sahte alarm üretir: kart Jetson komutunu yok
+# sayıp kumandadan geleni geri yolluyor.
+_GB = _SERI.split('def _geri_bildirim')[1].split('def ')[0]
+check("komut karşılaştırması otonom kiple sınırlı", 'KART_KIP_OTONOM' in _GB, True)
+
+
+# ─── 21. Kart canlılığı, kamera konuları ve planlayıcı ──────────────────────
+print("\n=== 21. Canlılık, kamera, planlayıcı ===")
+
+# /kart/durum|hata|kip önbellekten tekrarlanıyor: hat çöp okurken de akarlar.
+# Canlılık ölçütü yalnız gerçek çerçeveden doğan /kart/surus olabilir.
+_WD = _kaynak('teknofest_ika/otonomi/watchdog.py')
+# Denetim İZLENEN SÖZLÜĞE bakmalı, dosyanın tamamına değil: ad mesaj tipi
+# haritasında da geçiyor ve orada kalması izlendiği anlamına gelmez.
+_TEMEL = _WD.split('TEMEL_TOPICLER = {')[1].split('\n}')[0]
+check("watchdog kart canlılığını /kart/surus'tan ölçüyor",
+      'KART_SURUS_TOPIC:' in _TEMEL, True)
+check("izlenen konunun mesaj tipi tanımlı",
+      'KART_SURUS_TOPIC:' in _WD.split('_TOPIC_MSG_TYPE = {')[1].split('\n}')[0], True)
+for _tekrarli in ('KART_DURUM_TOPIC', 'KART_HATA_TOPIC', 'KART_KIP_TOPIC'):
+    check(f"watchdog {_tekrarli} ile canlılık ölçmüyor", _tekrarli in _WD, False)
+
+# Arka kamera konusu, yayıncısı olan kamera gözcüsüyle eşleşmeli.
+from teknofest_ika.otonomi.topics import CAMERA_REAR_TOPIC as _REAR  # noqa: E402
+check("arka kamera konusu", _REAR, '/camera/arka/image_raw')
+check("ölü ön kamera sabiti kalmadı",
+      'CAMERA_FRONT_TOPIC' in _kaynak('teknofest_ika/otonomi/topics.py'), False)
+for _y in ('scripts/lydia_startup.sh', 'launch/gercek_arac.launch.py'):
+    check(f"{_y}: arka kamera konusu tek ad",
+          '/camera/rear/' in _kaynak(_y), False)
+
+# Planlayıcı geri yayı ÜRETEBİLMELİ (dar koridorda DUBIN plan bulamıyor), ama
+# araç arkadan kör olduğu için geri gitmek pahalı kalmalı.
+_GB_PARAM = _nav2_params()['planner_server']['ros__parameters']['GridBased']
+check("planlayıcı REEDS_SHEPP", _GB_PARAM['motion_model_for_search'], 'REEDS_SHEPP')
+check("geri yay açık", _GB_PARAM['allow_reverse_expansion'], True)
+check("geri gitmek cezalı", _GB_PARAM['reverse_penalty'] >= 5.0, True)
+
+# Kayan hedef kapısı geri manevraya GÜVENMEZ: hedef ileride olmak zorunda.
+check("arkadaki hedef REEDS_SHEPP'te de eleniyor",
+      hedef_ulasilabilir_mi((-3.0, 0.0, 0.0), _MINI, _RMIN), False)
+
+# Açılış: iki okuyucu hattı bozuyor, telemetri varsayılan kapalı.
+_ST = _kaynak('scripts/lydia_startup.sh')
+check("telemetri varsayılanı kapalı", ': "${F767_TELEMETRI_AKTIF:=0}"' in _ST, True)
+# autostart sabit zaman aşımıyla düşerse bringup bir daha denenmiyor.
+check("nav2 lifecycle doğrulaması var", '_nav2_aktif_mi' in _ST, True)
+check("nav2 doğrulaması bt_navigator'a bakıyor",
+      'bt_navigator controller_server' in _ST, True)
 
 
 # ─── Sonuç ───────────────────────────────────────────────────────────────────

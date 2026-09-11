@@ -1116,6 +1116,166 @@ def arac_hedefini_odoma_tasi(hedef, odom_poz):
             oyaw + hyaw)
 
 
+def hedef_ulasilabilir_mi(hedef, min_ileri_m: float,
+                          donus_yaricapi_m) -> bool:
+    """
+    Araç çerçevesindeki `(x, y, yaw)` hedefine ileri yönde gidilebilir mi.
+
+    NEDEN GEREKLİ
+    ─────────────────────────────────────────────────────────────────────────
+    Hedef taramadan doğuyor ve üreten iki yolun ikisinde de "ileride mi"
+    sorusunu soran bir kapı yoktu:
+
+      · `koridor_merkez_cizgisi` zincirin yönünü her adımda merkeze göre
+        güncelliyor ve ADIM BAŞINA DÖNÜŞ SINIRI YOK. Adım 0,5 m ileri, yanal
+        kayma 2,2 m'ye kadar — tek adımda yön 77° dönebiliyor. Kıvrılmaya
+        sebep olan adımlar 'belirsiz' işaretlenip hedef adayı olmaktan çıkıyor
+        ama zincirin YÖNÜNÜ yine de değiştiriyorlar; sonraki 'iki_duvar'
+        noktası sapmış zincirin üstünde duruyor ve kabul ediliyor.
+      · `kayan_hedef`'in `min_ileri` kapısı `hypot` ile ölçüyor, yani
+        İŞARETSİZ: aracın 2,5 m ARKASINDAKİ bir nokta o kapıdan geçiyor.
+      · `ic_duvar_hedefi`'nde hiç mesafe kapısı yok ve duvar noktasını
+        x >= -1,0 ile kabul ediyor.
+
+    Planlayıcı `REEDS_SHEPP`, yani geri yay teorik olarak var; ama araç
+    arkadan kör ve geri manevra yalnız sıkışmadan çıkmak için açık
+    (`reverse_penalty` yüksek). Kayan hedefin ürettiği bir hedef arkada
+    kalırsa planlayıcı ya 2 × R_min ≈ 5,0 m'lik bir dönüş arar — koridor
+    3 m, sığmaz — ya da aracı göremediği alana geri sürer. İkisi de
+    istenmiyor: kapı hedefi baştan eliyor.
+
+    YAY ÖLÇÜTÜ HER ÜRETİCİ İÇİN GEÇERLİ DEĞİL
+    ─────────────────────────────────────────────────────────────────────────
+    `donus_yaricapi_m=None` yay ölçütünü kapatır; yön ve mesafe kapıları
+    kalır. İç duvar takibi bu kipte çağrılıyor ve sebebi ölçüm:
+
+      merkez çizgisi  hedefi metrelerce ilerideki bir YÖN NOKTASI; parkur
+                      CAD'inde medyan 5–8 m'de doğuyor, yani yay bandının
+                      (d < 2·R_min ≈ 4,8 m) çoğunlukla dışında. Ölçüt orada
+                      bedava ve kısmen kıvrılmış zincirin ürettiği "önde ama
+                      neredeyse tam yanda" hedefi yakalıyor.
+      iç duvar        hedefi YAKIN BİR YANAL DÜZELTME: duvar noktası 2 m
+                      menzilde, hedef ondan 1,4 m koridorun içine kaydırılıyor.
+                      CAD'de 20–30° açılarda, 1,5–1,8 m'de doğan meşru
+                      hedefler yay ölçütüne takılıyordu (U dönüşü başına 2–3
+                      hedef). Dönüş fiilen mümkün — iç yarıçap ~3,3 m,
+                      R_min 2,42 — sadece o yakın noktaya TEK yayla değil.
+                      Kayan hedef varılacak nokta değil yönlendirme; 1,5 s'de
+                      bir yenileniyor ve hiç varılmıyor.
+
+    ÖLÇÜT: TEK YAYLA ERİŞİLEBİLİRLİK
+    ─────────────────────────────────────────────────────────────────────────
+    Aracın anlık yönüne teğet olup hedeften geçen dairenin yarıçapı, çemberin
+    orijinde x eksenine teğet olması koşulundan doğrudan çıkar:
+
+        x² + (y − R)² = R²   →   R = (x² + y²) / (2y)
+
+    Yaklaşım değil, kapalı çözüm. |R| dönüş yarıçapının altındaysa araç o
+    hedefe tek yayla dönemez. Dubins yolu iki yay + doğrudan oluştuğu için bu
+    ölçüt planlayıcıdan biraz DAHA SIKI: elediği bazı hedefler aslında üç
+    parçalı bir yolla çözülebilir. Sıkı tarafta durmak bilinçli — koridor 3 m
+    ve o üç parçalı yolun sığacağı yer yok.
+
+    y = 0 (tam ileri) hedefinde yarıçap sonsuz, kapı yalnız mesafeye bakar.
+    """
+    x, y, _ = hedef
+    if x <= 0.0:                       # arkada ya da tam yanda
+        return False
+    if math.hypot(x, y) < min_ileri_m:
+        return False
+    if donus_yaricapi_m is None:       # yay ölçütü bu üretici için geçerli değil
+        return True
+    if abs(y) < 1e-9:                  # düz ileri: yarıçap sonsuz
+        return True
+    yaricap = (x * x + y * y) / (2.0 * abs(y))
+    return yaricap >= donus_yaricapi_m
+
+
+def hedef_yeniden_gonderilsin_mi(yeni_xy, son_gonderilen_xy,
+                                 etkin_hedef_var: bool,
+                                 olu_bant_m: float) -> bool:
+    """
+    Kayan hedefin Nav2'ye YENİDEN gönderilip gönderilmeyeceği.
+
+    NEDEN BASTIRMA GEREKLİ
+    ─────────────────────────────────────────────────────────────────────────
+    Nav2'nin kurtarma dalı `<GoalUpdated/>` ile korunuyor: hedef değiştiyse
+    çalışan kurtarma davranışı halt edilip ana boru hattına dönülüyor. Biz her
+    periyotta yeni zaman damgasıyla gönderdiğimiz için hedef, araç hiç
+    kımıldamasa bile "değişti" okunuyordu. Sonucu, aracı sıkıştığı pozdan
+    çıkarabilecek tek davranışın (BackUp) hiç tamamlanamamasıydı.
+
+    Bastırma yalnız araç kımıldamadığında devreye girer: gerçek hareket bir
+    periyotta hedefi ölü bandın çok üstünde kaydırır (bkz.
+    KAYAN_HEDEF_OLU_BANT_M).
+
+    NEDEN `etkin_hedef_var` AYRI BİR KAPI
+    ─────────────────────────────────────────────────────────────────────────
+    Nav2 hedefi abort edebiliyor (altı kurtarma hakkı dolunca) ve kayan sürüş
+    bunu ancak sonucu dinleyerek öğreniyor. Etkin hedef yokken bastırma
+    yapılırsa araç, hedefi olmadığı için hiç sürmez ve bunu kimse söylemez —
+    sıkışmayı çözerken yeni bir sıkışma üretmiş oluruz. Bu yüzden "hedef yok"
+    her zaman gönderim sebebidir, kayma miktarına bakılmaz.
+
+    ZAMAN TABANLI KAÇIŞ YOK
+    ─────────────────────────────────────────────────────────────────────────
+    "N saniyedir göndermedik, yine de gönder" kuralı bilerek konmadı: o kural
+    kurtarmayı tam ihtiyaç duyulan anda yeniden keserdi. Süre güvencesi
+    aşamanın kendi bütçesinde ve FSM'in iki denemesinde.
+    """
+    if not etkin_hedef_var or son_gonderilen_xy is None:
+        return True
+    dx = yeni_xy[0] - son_gonderilen_xy[0]
+    dy = yeni_xy[1] - son_gonderilen_xy[1]
+    return math.hypot(dx, dy) >= olu_bant_m
+
+
+def olcum_bayat_mi(son_zaman: float, simdi: float, sinir_s: float) -> bool:
+    """
+    Bir ölçüm akışının kör sürmeyi başlatacak kadar sessizleşip sessizleşmediği.
+
+    `son_zaman == 0.0` "hiç gelmedi" demektir ve bayatla aynı sınıfa konur:
+    ikisinde de elde güncel ölçüm yoktur, ayrı ele almak yalnız iki ayrı kod
+    yolu üretirdi.
+
+    NEDEN AYRI BİR FONKSİYON
+    ─────────────────────────────────────────────────────────────────────────
+    Kayan sürüş iki ölçüme birden yaslanıyor: odometri aşamanın NEREDE
+    biteceğini, tarama NEREYE gidileceğini söylüyor. Odometri için bu kapı
+    baştan vardı, tarama için yoktu — `_scan` son taramayı süresiz tutuyor ve
+    hedef ölü veriden üretilmeye devam ediyordu. En sinsi yanı `hedefsiz`
+    sayacının hiç artmamasıydı: hedef ÜRETİLİYOR, yalnız koridorun
+    hafızasından. Kural tek yerde durunca iki akış da aynı davranıyor.
+    """
+    return son_zaman == 0.0 or (simdi - son_zaman) > sinir_s
+
+
+def yol_artimi(adim_m: float, dt_s: float, taban_hiz_ms: float) -> float:
+    """
+    Bir odometri örneğinin kat edilen yola KATACAĞI mesafe. Gürültü 0 döner.
+
+    NEDEN ÖLÜ BANT ŞART
+    ─────────────────────────────────────────────────────────────────────────
+    Yol, ardışık konumların |Δ|'sı toplanarak birikiyor. Mutlak değer olduğu
+    için poz gürültüsü negatif katkı VEREMEZ: duran araçta da toplam büyür.
+    EKF 50 Hz'de koştuğundan bu, aşamanın bitiş ölçütünü sessizce şişirir ve
+    araç istasyona varmadan sonrakine geçer.
+
+    NEDEN METRE DEĞİL HIZ EŞİĞİ
+    ─────────────────────────────────────────────────────────────────────────
+    Sabit bir metre eşiği örnekleme frekansına bağlı olurdu: EKF yükte
+    seyrelirse adımlar büyür ve aynı eşik gerçek yavaş hareketi elemeye
+    başlardı. Hız cinsinden eşik frekanstan bağımsızdır.
+
+    `dt_s <= 0` (aynı ana damgalanmış iki örnek, geri giden saat) bölmeyi
+    tanımsız yapar; o örnek yola sayılmaz — bir örnek atlamak, sonsuz bir
+    artım eklemekten ucuzdur.
+    """
+    if dt_s <= 0.0:
+        return 0.0
+    return adim_m if adim_m / dt_s >= taban_hiz_ms else 0.0
+
+
 def hedefleme_modu_sec(istenen: str, waypoint_dolu: bool):
     """
     Koşunun hangi hedefleme yoluyla sürüleceğini seçer. Dönüş: `(mod, gerekçe)`.

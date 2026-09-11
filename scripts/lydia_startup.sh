@@ -116,6 +116,45 @@ trap temizle TERM INT
 # KAYIT_AKTIF: veri_paketi rosbag kaydı. Kapalı — Jetson'ın diski dolarsa
 # loglar ve harita da yazılamaz.
 : "${KAYIT_AKTIF:=0}"
+# DERINLIK_AKTIF: OS30A derinlik kamerası ve onun costmap TF'i. Kapalı, çünkü
+# kaynağın Nav2'ye kattığı değer ölçülmemiş bir dönüşümün arkasında duruyor:
+# base_link → dm_base_frame'in üç sayısı (OS30A_X_M/Y_M/Z_M) tahmin. Yükseklik
+# yanlışsa nokta bulutu düşeyde kayar, zemin engel olarak işaretlenir ve araç
+# kendini duvarla çevrili sanıp hiç rota üretmez.
+# Kapatma iki yerde birden geçerli olmak zorunda: burası düğümü ve TF'i
+# başlatmıyor, nav2_params.yaml da os30a_cloud'u observation_sources'a
+# yazmıyor. Yalnız TF'i kapatmak kaynağı ayrı bir TF adasında bırakır ve
+# costmap "Transform failure" basmaya başlar — sorun kalır, gürültü artar.
+: "${DERINLIK_AKTIF:=0}"
+# SLAM_AKTIF: slam_toolbox ve panonun harita görüntüsü (map_image_node).
+# Kapalı, çünkü sürüş zincirinin hiçbir yeri haritayı okumuyor: hedef her
+# döngüde taramadan doğuyor ve `odom` çerçevesinde gönderiliyor
+# (topics.py KAYAN_HEDEF_FRAME), aşama da koordinatla değil kat edilen yolla
+# bitiyor. Geriye kalan tek tüketici panonun harita paneliydi, o da ızgaradan
+# çıkarıldı. Karşılığı: açılıştan ~17 s, YOLO ile paylaşılan CPU/RAM, ve
+# `map→odom` düzeltmesinin koşu ortasında sıçrama ihtimali.
+#
+# 🔑 Nav2 bu anahtardan BAĞIMSIZ olarak `odom`'da çalışır (nav2_params.yaml:
+# bt_navigator ve global_costmap global_frame). SLAM açılsa bile yalnız harita
+# üretir, planlayıcı onu kullanmaz. Ayrım kasıtlı: yapılandırmanın anahtara
+# göre iki farklı hâli olsaydı sahada hangi hâlde olunduğu görünmezdi ve
+# `map` çerçevesi yokken Nav2 hiç ayağa kalkmazdı.
+: "${SLAM_AKTIF:=0}"
+# GOZCU_AKTIF: koşu sırasında ölen düğümleri izleyen gözcü döngüsü.
+# Açık, çünkü kapattığı arıza teorik değil: `seri_kopru` kapanmış porta
+# yazarken öldü, betik geri getirmedi ve boşalan seri portu elektrikçilerin
+# telemetri servisi kaptı — `/kart/*`'ın tamamı sustu ve sebebi kart ekibi
+# tarafından bulundu. Açılış doğrulaması bunu göremiyor: bir kez, açılışta
+# bakıyor (satır ~792) ve sonra betik `wait`'te bekliyordu.
+# Kapatmak için GOZCU_AKTIF=0 — o hâlde davranış eski hâline döner.
+: "${GOZCU_AKTIF:=1}"
+# Yoklama periyodu. `ros2 node list` bir keşif sorgusu ve ~1 s sürüyor;
+# sık yoklamak yığından CPU çalar, seyrek yoklamak arızayı geç görür.
+: "${GOZCU_PERIYOT_S:=15}"
+# Aynı düğüm için azami yeniden başlatma. Belirleyici bir hata yüzünden ölen
+# düğüm yeniden başlatılınca aynı çökme döngüsüne girer; sınır olmadan gözcü
+# koşu boyunca CPU yakar ve log'u boğar. Sınıra ulaşınca adıyla vazgeçiliyor.
+: "${GOZCU_AZAMI_DENEME:=3}"
 
 # SERI_PORT: sürüş kartının komut portu (8 baytlık ikili çerçeve, seri_kopru).
 # 3 Eylül'deki not "ST-LINK yalnız ASCII teşhis basar, komut kabul etmez,
@@ -131,13 +170,34 @@ trap temizle TERM INT
 
 # F767 TELEMETRİ: ST-LINK USB'sinden akan ASCII teşhis satırını JSON'a çevirip
 # panoya besler. ⚠ Komut yolu DEĞİL — tek yönlü, yalnız dinler.
-: "${F767_TELEMETRI_AKTIF:=1}"
+#
+# 🔴 VARSAYILAN 0. Aşağıdaki "aynı port" koruması çakışmayı zaten çözüyor ama
+# koruma bir kural, varsayılan bir niyet: kartın tek okuyucusu seri_kopru.
+# İki okuyucu denendiğinde iki ayrı arıza çıktı (10 Eylül, sahada):
+#   · telemetri portu SONRA açıp hat hızını 115200'e çekti ve kendisi
+#     kapandıktan sonra da öyle bıraktı — köprü portu tutuyor ama yalnız çöp
+#     okuyor, tek belirti seyrek bir XOR hatası. Kart durumu açılışta dondu.
+#   · baytlar bölüşüldü, köprü portu 141 kez yeniden açtı ve çöktü.
+# Teşhis: stty -F /dev/ttyACM0 speed → 921600 olmalı.
+# Teşhis servisi gerekiyorsa köprü durdurulup F767_TELEMETRI_AKTIF=1 verilir.
+: "${F767_TELEMETRI_AKTIF:=0}"
 : "${F767_TELEMETRI_PORT:=/dev/f767}"
 : "${F767_TELEMETRI_HTTP:=8092}"
 
-# BMS: JK Smart BMS'i BLE'den okur, panoya batarya verisi besler.
-# ⚠ BLE aynı anda TEK istemci kabul eder — bu koşarken telefondaki JK
-# uygulaması bağlanamaz. BMS_MAC boşsa servis başlatılmaz.
+# BMS zinciri iki parçalı ve ikisi ayrı şeyler:
+#   jk_servis.py   — elektrik tarafının betiği, BLE'yi okuyup :8091/bms'te düz
+#                    JSON yayınlıyor. Bu betik onu aşağıda başlatıyor.
+#   bms_koprusu    — bizim ROS düğümümüz, o HTTP ucunun İSTEMCİSİ; BLE'ye hiç
+#                    dokunmuyor, veriyi /battery/status'a taşıyor.
+# 🔴 :8091'i servis eden kalmazsa bms_koprusu bayat okuma görüp bilerek susar
+# ve /battery/status hiç yayınlanmaz — panoda "batarya yok", imu_guvenlik
+# gerilim körü. bms_koprusu'nun ayakta olması veri geldiği anlamına GELMEZ.
+# ⚠ Aynı servisi elektrik tarafının hepsini_baslat betiği de açabiliyor; iki
+# başlatıcının kavga etmemesi port kontrolüne bağlı (ikinci açılış :8091'i
+# dolu bulup vazgeçmeli).
+# ⚠ BLE aynı anda TEK istemci kabul eder: servis koşarken telefondaki JK
+# uygulaması bağlanamaz, tersi de doğru. "Batarya yok" şikâyetinin ilk
+# şüphelisi budur. BMS_MAC boşsa servis başlatılmaz.
 : "${BMS_AKTIF:=1}"
 : "${BMS_MAC:=28:D4:1E:12:C1:70}"   # 3 Eyl 2026'da canlı doğrulandı
 : "${BMS_HTTP:=8091}"
@@ -164,6 +224,22 @@ trap temizle TERM INT
 #   Yeniden derleme gerekmiyor, düğümü yeniden başlatmak yeter.
 : "${TEKERLEK_CEVRE_MM:=0}"
 
+# Kartın kalan 0x09 ayarları. Hepsi TEKERLEK_CEVRE_MM ile aynı kuralda:
+# 0 = ÖLÇÜLMEDİ ve gönderilmez. Ortam değişkeni olmalarının sebebi sahada
+# betiği düzenlemek zorunda kalmamak — ölçüm araç başında yapılıyor ve
+# metin düzenleyiciyle girilen bir sayı yanlış satıra da yazılabiliyor.
+#
+# 🔴 ÇEVRE TEK BAŞINA YETMEZ: kart hız alanını doldurmak için çevreyi VE
+#    darbe/tur'u birlikte istiyor. Yalnız biri girilirse hız 0 kalmaya devam
+#    eder ve sahada "girdik ama olmadı" denir.
+: "${GOSTERGE_DARBE_TUR:=0}"    # gösterge ucu darbe/tur
+: "${ENKODER_DISLI_ORANI:=0}"   # enkoder mili turu : teker turu
+: "${DIREKSIYON_ORANI:=0}"      # direksiyon kolon/teker oranı
+# ⚠ Yalnız +1 ya da -1 kabul edilir; başka değer köprüde reddedilir.
+#   İşaret yanlışsa Nav2 sola ister araç sağa gider ve sapma büyür — bu yüzden
+#   ilk denemesi TEKERLEKLER YERDEN KESİK yapılır.
+: "${DIREKSIYON_ISARET:=0}"
+
 if [ "$ENKODER_AKTIF" != "1" ]; then
     _TF_SAHIBI=statik
 elif [ "$NAV2_AKTIF" = "1" ]; then
@@ -172,6 +248,15 @@ else
     _TF_SAHIBI=seri_kopru
 fi
 echo "odom→base_footprint sahibi: $_TF_SAHIBI"
+# ENKODER_AKTIF=0 iken odom→base_footprint STATİK basılır ve aracı TF'te
+# ilerleten tek şey SLAM'in tarama eşlemesidir. İkisi birden kapalıysa araç
+# TF'te çakılı durur: Nav2 hedefe hiç yaklaşmadığını görür ve her hedefi
+# bütçesi dolunca iptal eder. Kombinasyon geçerli (manuel sürüş, teşhis) ama
+# sessiz kalırsa donanım arızası gibi görünür.
+if [ "$_TF_SAHIBI" = "statik" ] && [ "$SLAM_AKTIF" != "1" ]; then
+    echo "UYARI: ENKODER_AKTIF=0 ve SLAM_AKTIF=0 — araç TF'te hiç hareket etmez;"
+    echo "       otonom sürüş için ENKODER_AKTIF=1 gerekir."
+fi
 
 WS=${WS:-/home/lydia/lydia_ws/src/teknofest_ika_yazilim}
 LOG=${LOG:-/home/lydia/lydia_log}
@@ -262,8 +347,12 @@ fi
 pkill -f static_tf_pub_laser 2>/dev/null
 
 # Derinlik kamerası (OS30A) — /apc/depth/image_raw renklendirilmiş derinlik,
-# /apc/left/image_color stereo sol göz renkli görüntü.
-if [ ! -e /dev/kamera_stereo ]; then
+# /apc/left/image_color stereo sol göz renkli görüntü. Açılışı 14 saniye
+# bekletiyor ve YOLO ile aynı USB/CPU bütçesinden yiyor; tüketicisi
+# kalmadığında başlatmamak bunların ikisini birden geri veriyor.
+if [ "$DERINLIK_AKTIF" != "1" ]; then
+    echo "Derinlik kamerası kapalı (DERINLIK_AKTIF=0) — açılışı atlandı"
+elif [ ! -e /dev/kamera_stereo ]; then
     echo "UYARI: derinlik kamerası (/dev/kamera_stereo) bulunamadı — açılışı ATLANDI"
 else
     ros2 launch ydlidar_os30a apc_camera_launch.py > "$LOG/apc.log" 2>&1 &
@@ -322,8 +411,8 @@ if [ -e /dev/kamera_arka ]; then
         -p image_width:=640 -p image_height:=480 \
         -p pixel_format:=mjpeg2rgb -p framerate:=30.0 \
         -p qos_history_policy:=keep_last -p qos_history_depth:=1 \
-        -r /image_raw:=/camera/rear/image_raw \
-        -r /camera_info:=/camera/rear/camera_info \
+        -r /image_raw:=/camera/arka/image_raw \
+        -r /camera_info:=/camera/arka/camera_info \
         > "$LOG/arka_cam.log" 2>&1 &
     sleep 5
 else
@@ -342,13 +431,13 @@ fi
 # KART AYARLARI (0x09) — hepsi varsayılan 0 = ÖLÇÜLMEDİ, sıfır olan
 # gönderilmez. Kart bu sayıları flash'a yazmıyor: köprü, kartı ilk gördüğünde
 # ve kart her resetlendiğinde yeniden gönderiyor, yani kalıcılık burada.
-# Ölçüm yapıldıkça aşağıdaki satırlar açılır — değeri değiştirmek için
-# yeniden DERLEME GEREKMEZ, düğümü yeniden başlatmak yeter:
-#     -p tekerlek_cevre_mm:=1842.5     tekerlekte bir tam tur, yerde ölçülür
-#     -p gosterge_darbe_tur:=6.0       gösterge ucu darbe/tur
-#     -p enkoder_disli_orani:=3.25     enkoder mili turu : teker turu
-#     -p direksiyon_orani:=12.4        kolon/teker oranı
-#     -p direksiyon_isaret:=-1         ⚠ ÖNCE tekerlekler yerden kesik denenir
+# Beşi de ortam değişkeninden geliyor; değeri değiştirmek için ne betiği
+# düzenlemek ne yeniden DERLEMEK gerekiyor, düğümü yeniden başlatmak yeter:
+#     TEKERLEK_CEVRE_MM=1842.5   tekerlekte bir tam tur, YÜK ALTINDA yerde ölçülür
+#     GOSTERGE_DARBE_TUR=6       gösterge ucu darbe/tur
+#     ENKODER_DISLI_ORANI=3.25   enkoder mili turu : teker turu
+#     DIREKSIYON_ORANI=12.4      kolon/teker oranı
+#     DIREKSIYON_ISARET=-1       ⚠ ÖNCE tekerlekler yerden kesik denenir
 # 🔴 Tekerlek çevresi girilmeden kart hız alanını 0 basar; o hâlde Nav2
 #    aracı hareketsiz sanar ve her hedefi 20 saniyede iptal eder.
 if [ ! -e "$SERI_PORT" ]; then
@@ -359,6 +448,10 @@ fi
 ros2 run teknofest_ika seri_kopru --ros-args \
     -p port:="$SERI_PORT" -p baud:=921600 \
     -p tekerlek_cevre_mm:="$TEKERLEK_CEVRE_MM" \
+    -p gosterge_darbe_tur:="$GOSTERGE_DARBE_TUR" \
+    -p enkoder_disli_orani:="$ENKODER_DISLI_ORANI" \
+    -p direksiyon_orani:="$DIREKSIYON_ORANI" \
+    -p direksiyon_isaret:="$DIREKSIYON_ISARET" \
     -p publish_tf:="$_SERI_TF" \
     -p ham_enkoder:="$HAM_ENKODER" > "$LOG/seri_kopru.log" 2>&1 &
 sleep 8
@@ -463,12 +556,19 @@ ros2 run tf2_ros static_transform_publisher 0 0 "$LIDAR_Z_M" "$LIDAR_YAW_RAD" 0 
 # os30a_cloud kaynağı tek nokta bile dönüştüremez (costmap sürekli "Transform
 # failure" basar) ve derinlik kamerası costmap'e hiçbir katkı yapmaz.
 #
+# Varsayılanı DERINLIK_AKTIF belirliyor: TF'i kameradan bağımsız açık bırakmak
+# ikisinin sessizce ayrışmasına yol açar — kamera kapalıyken boşa bir yayıncı,
+# kamera açıkken TF'siz bir TF adası. Ayrı ayarlanması gerekirse bu satır
+# yine ezilebilir.
+#
 # ⚠️ AŞAĞIDAKİ KONUM ÖLÇÜLMEDİ — urdf/arac.urdf os30a_joint'inden alındı
 #    (x=0.30 ileri, z=0.20 yukarı, base_link'e göre); urdf'te o da placeholder.
 #    Ön kameranın kamera_joint'i (x=0.55) BAŞKA bir sensördür, karıştırma.
 #    OS30A menzili 0.02–2.5 m olduğu için 10 cm'lik hata bile engelleri gözle
 #    görülür kaydırır. Şerit metreyle ölç ve OS30A_X_M / OS30A_Z_M ile geç.
-: "${OS30A_TF_AKTIF:=1}"
+#    Bu üç sayı ölçülmeden derinlik kaynağını açmak, zemini engel işaretleyip
+#    Nav2'yi hiç rota üretemez hâle getirebilir.
+: "${OS30A_TF_AKTIF:=$DERINLIK_AKTIF}"
 : "${OS30A_X_M:=0.30}"    # ⚠️ PLACEHOLDER — base_link'ten kamera gövdesine ileri
 : "${OS30A_Y_M:=0.0}"     # ⚠️ PLACEHOLDER — yanal kaçıklık
 : "${OS30A_Z_M:=0.20}"    # ⚠️ PLACEHOLDER — base_link'ten kamera gövdesine yukarı
@@ -486,15 +586,21 @@ sleep 4
 # Tarama konusu çalışma anında eziliyor: launch dosyası tek tek parametre
 # almıyor, yalnız dosya alıyor. Kopya log dizinine üretiliyor ki depodaki
 # yaml sahada değişmesin.
-_SLAM_PARAMS="$LOG/mapper_params.runtime.yaml"
-sed "s|^\( *scan_topic: *\).*|\1$SLAM_SCAN_TOPIC|" \
-    "$WS/config/mapper_params_online_sync.yaml" > "$_SLAM_PARAMS"
-echo "[SLAM] tarama konusu: $SLAM_SCAN_TOPIC"
-ros2 launch slam_toolbox online_async_launch.py \
-    slam_params_file:="$_SLAM_PARAMS" > "$LOG/slam.log" 2>&1 &
-sleep 14
-ros2 run teknofest_ika map_image_node > "$LOG/map_image.log" 2>&1 &
-sleep 3
+if [ "$SLAM_AKTIF" != "1" ]; then
+    echo "SLAM kapalı (SLAM_AKTIF=0) — harita üretilmiyor, Nav2 odom'da sürüyor"
+else
+    _SLAM_PARAMS="$LOG/mapper_params.runtime.yaml"
+    sed "s|^\( *scan_topic: *\).*|\1$SLAM_SCAN_TOPIC|" \
+        "$WS/config/mapper_params_online_sync.yaml" > "$_SLAM_PARAMS"
+    echo "[SLAM] tarama konusu: $SLAM_SCAN_TOPIC"
+    ros2 launch slam_toolbox online_async_launch.py \
+        slam_params_file:="$_SLAM_PARAMS" > "$LOG/slam.log" 2>&1 &
+    sleep 14
+    # map_image_node'un tek girdisi /map — SLAM'siz hiç kare üretmez ve
+    # açılış doğrulaması onu boşuna "ayağa kalkmadı" diye rapor eder.
+    ros2 run teknofest_ika map_image_node > "$LOG/map_image.log" 2>&1 &
+    sleep 3
+fi
 
 # ── Nav2 yolu (tabela → arazi profili → planlama) ────────────────────────────
 # Zincir: ön kamera → yolo_detection → yolo_adapter → /yolo/class_id →
@@ -535,6 +641,42 @@ if [ "$NAV2_AKTIF" = "1" ]; then
             use_sim_time:=false \
             params_file:="$WS/config/nav2_params.yaml" > "$LOG/nav2.log" 2>&1 &
         sleep 12
+        # 🔴 lifecycle_manager `autostart: true` ile geçişleri SABİT bir zaman
+        # aşımıyla sürüyor. Bir düğümün `configure`'ı o bütçeyi aşarsa manager
+        # bringup'ın TAMAMINI iptal eder ve BİR DAHA DENEMEZ; log'da tek satır
+        # kalır, düğümler `unconfigured`'da durur ve Nav2 hiç hedef kabul
+        # etmez. Yakalanan düğüm her koşuda başkası olduğu için arıza
+        # "aralıklı" görünüyor — sebebi Jetson'ın o anki yüküdür.
+        #
+        # Kontrol tek yönlü: iki çekirdek düğüm `active` değilse bringup bir
+        # kez daha denenir. İkinci deneme de tutmazsa durum adıyla basılır;
+        # kör bir döngü, sorunu gizlemekten başka bir şey yapmaz.
+        _nav2_aktif_mi() {
+            for _d in bt_navigator controller_server; do
+                ros2 lifecycle get "/$_d" 2>/dev/null | grep -q '^active' || return 1
+            done
+            return 0
+        }
+        if ! _nav2_aktif_mi; then
+            echo "UYARI: Nav2 lifecycle geçişi tamamlanmadı — bringup yeniden" \
+                 "başlatılıyor (autostart sabit zaman aşımı)."
+            pkill -f navigation_launch.py 2>/dev/null
+            sleep 3
+            ros2 launch nav2_bringup navigation_launch.py \
+                use_sim_time:=false \
+                params_file:="$WS/config/nav2_params.yaml" \
+                > "$LOG/nav2_ikinci.log" 2>&1 &
+            sleep 15
+            if _nav2_aktif_mi; then
+                echo "Nav2 ikinci denemede ayağa kalktı."
+            else
+                echo "🔴 Nav2 AYAĞA KALKMADI. Durumlar:"
+                for _d in bt_navigator controller_server planner_server \
+                          behavior_server smoother_server velocity_smoother; do
+                    echo "   /$_d: $(ros2 lifecycle get "/$_d" 2>/dev/null || echo 'yok')"
+                done
+            fi
+        fi
         # Tabela → arazi profili zinciri
         ros2 run teknofest_ika yolo_adapter_node  > "$LOG/yolo_adapter.log" 2>&1 &
         sleep 2
@@ -657,6 +799,22 @@ sleep 2
 #
 # ⚠ İkisi de ROS düğümü DEĞİL, düz HTTP servisi — aşağıdaki `_BEKLENEN`
 # düğüm doğrulaması bunları görmez; kontrol port dinlemesiyle yapılıyor.
+#
+# 🔴 Telemetri ve seri_kopru AYNI seri portu açamaz. Denendiğinde çekirdek
+# "multiple access on port" diyor ve iki okuyucu çerçeveleri paylaşıyor:
+# 8 Eylül'de 41 port yeniden açılışı, 13 okuma hatası, 13 XOR hatası çıktı.
+# Bölünmenin izi çerçevede görünüyordu — `aa 01 00 00 35 55 aa 36`, ortada
+# `55 aa`, yani bir çerçevenin sonu artı sonrakinin başı.
+#
+# Kimin kazandığı açılış sırasına kalıyor ve bu bir YARIŞ: telemetri kazanırsa
+# /kart/* konularının tamamı boş kalır, yani odometri, IMU, RC, E-STOP ve mod
+# birden susar. Köprü hattın sahibi olduğu için çakışmada telemetri geri
+# çekilir — teşhis servisi, sürüşün kendisinden önce gelemez.
+if [ "$F767_TELEMETRI_AKTIF" = "1" ] && [ "$F767_TELEMETRI_PORT" = "$SERI_PORT" ]; then
+    echo "F767 telemetrisi başlatılmadı: $SERI_PORT'u seri_kopru kullanıyor" \
+         "(aynı portu iki okuyucu paylaşamaz)."
+    F767_TELEMETRI_AKTIF=0
+fi
 if [ "$F767_TELEMETRI_AKTIF" = "1" ]; then
     if [ -e "$F767_TELEMETRI_PORT" ]; then
         python3 -u /home/lydia/f767_telemetri.py \
@@ -691,8 +849,9 @@ fi
 # "ayağa kalkmadı" diye raporlanabiliyordu. Sahte uyarı, kontrolün kendisini
 # değersizleştirdiği için gerçek arızayı kaçırmakla aynı sonucu veriyor.
 _BEKLENEN="seri_kopru mod_yoneticisi ackermann_converter e_stop_node
-           anti_rollback preprocessing_node yolo_detection_node map_image_node
+           anti_rollback preprocessing_node yolo_detection_node
            watchdog web_dashboard bms_koprusu"
+[ "$SLAM_AKTIF" = "1" ] && _BEKLENEN="$_BEKLENEN map_image_node"
 if [ "$NAV2_AKTIF" = "1" ]; then
     _BEKLENEN="$_BEKLENEN ekf_filter_node controller_server yolo_adapter_node
                terrain_adapter cone_fusion_node kayar_engel_kalman
@@ -741,4 +900,149 @@ else
 fi
 
 echo "LYDİA açılış yığını başlatıldı — loglar: $LOG"
-wait
+
+# ── GÖZCÜ ────────────────────────────────────────────────────────────────────
+# `ros2 run ... &` ile başlatılan bir düğüm ölürse GERİ GELMEZ. Yukarıdaki
+# doğrulama bir kez, açılışta bakıyor; koşu sırasında hiçbir denetim yoktu ve
+# betik `wait`'te bekliyordu.
+#
+# 🔑 SÜPERVİZYON BAYRAKLA DEĞİL LİSTEYLE GELİR. Her düğüme `Restart=always`
+# takmak bazı arızaları arızanın kendisinden kötü hâle getirir; bu yüzden
+# beklenen düğümler üç gruba ayrılmış durumda:
+#
+#   SERBEST  — durumsuz, yeniden başlaması yalnız kendi verisini geri getirir.
+#   DİKKATLİ — yeniden başlatılabilir ama bir ÖN KOŞUL var ve o koşul burada
+#              otomatikleştirilemez; gözcü yalnız adıyla ve reçetesiyle uyarır:
+#                seri_kopru      portu yeniden açmak kartı resetleyebilir;
+#                                ayarlar (0x09) ve enkoder temeli yeniden
+#                                kurulmalı, boşalan portu telemetri kapmış
+#                                olabilir (F767_TELEMETRI_AKTIF=0 ile başlat)
+#                ekf_filter_node odom→base_footprint'in SAHİBİ; eskisinin
+#                                gerçekten öldüğü doğrulanmadan ikinci kopya
+#                                kalkarsa TF iki konum arasında titrer
+#                nav2 düğümleri  lifecycle_manager bond'u tek düğümle onarılamaz;
+#                                yeniden başlatılacaksa bringup'ın TAMAMI
+#   ASLA     — otomatik yeniden başlatma kabul edilemez:
+#                misyon_fsm      0. waypoint'ten başlar ve koşu saati sıfırlanır;
+#                                parkurun yarısındaki araç baştan sürmeye kalkar
+#                e_stop_node     kaynaklar False başlıyor, yeniden başlarken
+#                                kısa süre "E-STOP yok" der
+#
+# Gözcü SERBEST grubu yeniden başlatır, diğer ikisini adıyla bildirir.
+# SERBEST — durumsuz ya da durumunu her döngüde yeniden yayınlayan düğümler.
+# Sondaki beşi ilk yazımda hiçbir gruba girmemişti; varsayılan "dokunma"
+# olduğu için davranış güvenliydi ama gözcü onları kapsamıyordu. Beşinin de
+# yeniden başlatılabilirliği koddan doğrulandı:
+#   ackermann_converter  `_mod = None` ile açılır → `_manuel_mi()` False →
+#                        fren komutları geçer. Kodun kendi belgesi bunun
+#                        bilinçli güvenli yön olduğunu yazıyor ("bilmiyorsam
+#                        basmayayım" dersek araç %45 eğimde frensiz kalır).
+#                        Ölürse /cmd_vel çevrimi durur ve ARAÇ DURUR.
+#   anti_rollback        durumu her kontrol döngüsünde KOŞULSUZ yayınlıyor ve
+#                        `_aktif = False` ile açılıyor; yeniden başlatmak
+#                        ackermann_converter'da takılı kalmış `True`
+#                        override'ı bir döngüde temizler — yani güvenli
+#                        olmakla kalmıyor, kayıtlı bir riski onarıyor.
+#   watchdog             saf gözlemci, yalnız /sensor/fault yayınlıyor.
+#   targeting_node       yalnız atış aşamasında etkin; durumsuz.
+#   imu_guvenlik         /speed_limit yayıncısı; ölürse son limit takılı kalır.
+_GOZCU_SERBEST="preprocessing_node yolo_detection_node yolo_adapter_node
+                terrain_adapter cone_fusion_node kayar_engel_kalman
+                kayar_engel_costmap web_dashboard bms_koprusu map_image_node
+                mod_yoneticisi ackermann_converter anti_rollback watchdog
+                targeting_node imu_guvenlik"
+# DİKKATLİ — yeniden başlatılabilir ama ön koşulu otomatikleştirilemiyor.
+# 🔑 nav2'nin öteki düğümleri (bt_navigator, planner_server, behavior_server,
+# smoother_server, velocity_smoother, lifecycle_manager) bu listede DEĞİL,
+# çünkü `_BEKLENEN`'de de yoklar — listeye yazmak hiç eşleşmeyen ölü girdi
+# üretiyordu. Tespit yine kayıp değil: nav2'den biri ölünce lifecycle
+# manager'ın bond'u tüm yığını indiriyor ve belirti `controller_server`'ın
+# kaybolmasıyla burada görünüyor.
+_GOZCU_DIKKATLI="seri_kopru ekf_filter_node controller_server"
+# Listelerde adı geçmeyen her beklenen düğüm ASLA sayılır: yeni bir düğüm
+# eklenip gruplandırılmayı unutursa varsayılan davranış "dokunma" olmalı.
+# test_birim.py ayrıca `_BEKLENEN`'deki her adın üç gruptan birinde geçtiğini
+# denetliyor — sessizce varsayılana düşen düğüm kalmasın.
+
+# Yeniden başlatma komutu, düğümü İLK başlatan komutla aynı olmak zorunda.
+# 🔴 Argümanlı iki düğümün komutu burada İKİNCİ kez yazılı: preprocessing_node
+#    `-r /scan_lidar:=/scan` olmadan yanlış konuya abone olur ve HİÇBİR ŞEY
+#    üretmez (hata da basmaz), web_dashboard ise nişan panelini köreltir.
+#    test_birim.py iki kopyanın argümanlarını karşılaştırıyor.
+_gozcu_baslat() {
+    case "$1" in
+        preprocessing_node)
+            ros2 run teknofest_ika preprocessing_node --ros-args \
+                -r /scan_lidar:=/scan \
+                -p flip_taret:=true \
+                -p derinlik_isle:=false >> "$LOG/preprocessing.log" 2>&1 &
+            ;;
+        web_dashboard)
+            PANO_PORT="$PANO_PORT" python3 "$WS/scripts/web_dashboard.py" --ros-args \
+                -r /camera/taret/image_raw:=/camera/taret/image_processed \
+                >> "$LOG/web_dashboard.log" 2>&1 &
+            ;;
+        *)
+            ros2 run teknofest_ika "$1" >> "$LOG/$1.yeniden.log" 2>&1 &
+            ;;
+    esac
+}
+
+if [ "$GOZCU_AKTIF" != "1" ]; then
+    echo "Gözcü kapalı (GOZCU_AKTIF=0) — ölen düğüm geri gelmez"
+    wait
+else
+    echo "Gözcü açık — ${GOZCU_PERIYOT_S}s'de bir yoklama, azami $GOZCU_AZAMI_DENEME deneme"
+    rm -f "$LOG"/gozcu_*.kez 2>/dev/null
+    _onceki_eksik=""
+    while :; do
+        sleep "$GOZCU_PERIYOT_S"
+        _canli=$(ros2 node list 2>/dev/null)
+        # Çıktı tamamen boşsa sorun bizde: ROS ortamı ya da keşif çökmüş,
+        # 25 düğümün 25'ini ölmüş sayıp yeniden başlatmak felaket olur.
+        [ -z "$_canli" ] && continue
+
+        _simdi_eksik=""
+        for _n in $_BEKLENEN; do
+            echo "$_canli" | grep -qx "/$_n" || _simdi_eksik="$_simdi_eksik $_n"
+        done
+
+        for _n in $_simdi_eksik; do
+            # İKİ TUR ÜST ÜSTE eksik olmadan işlem yapılmaz. `ros2 node list`
+            # bayat DDS keşfinde sağlam düğümleri de eksik gösteriyor —
+            # açılış doğrulamasının üç deneme yapmasının sebebi de bu. Tek
+            # turluk bir sarsıntıya bakıp sağlam düğümü öldürmek, gözcünün
+            # önlemeye çalıştığı arızanın kendisini üretir.
+            case " $_onceki_eksik " in
+                *" $_n "*) ;;
+                *) continue ;;
+            esac
+
+            _grup=asla
+            case " $_GOZCU_SERBEST "  in *" $_n "*) _grup=serbest  ;; esac
+            case " $_GOZCU_DIKKATLI " in *" $_n "*) _grup=dikkatli ;; esac
+
+            case "$_grup" in
+                serbest)
+                    _kez_dosya="$LOG/gozcu_$_n.kez"
+                    _kez=$(cat "$_kez_dosya" 2>/dev/null || echo 0)
+                    if [ "$_kez" -ge "$GOZCU_AZAMI_DENEME" ]; then
+                        echo "GÖZCÜ: $_n $_kez kez başlatıldı ve yine öldü — VAZGEÇİLDİ. Sebebi: $LOG/$_n*.log"
+                    else
+                        _kez=$((_kez + 1))
+                        echo "$_kez" > "$_kez_dosya"
+                        echo "GÖZCÜ: $_n ölmüş — yeniden başlatılıyor ($_kez/$GOZCU_AZAMI_DENEME)"
+                        _gozcu_baslat "$_n"
+                    fi
+                    ;;
+                dikkatli)
+                    echo "GÖZCÜ: ⚠ $_n ölmüş — OTOMATİK BAŞLATILMIYOR (ön koşul var, bkz. gözcü notu). Log: $LOG/"
+                    ;;
+                asla)
+                    echo "GÖZCÜ: 🔴 $_n ölmüş — otomatik başlatılmaz, koşuyu bozar. Log: $LOG/"
+                    ;;
+            esac
+        done
+        _onceki_eksik="$_simdi_eksik"
+    done
+fi

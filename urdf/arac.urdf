@@ -63,8 +63,8 @@
 
   <!-- ═══════════════════════════════════════════════
        SAĞ ÖN TEKERLEK
-       X: +0.70 (öne doğru) — wheelbase=1.40m (2026-07-27 araçtan
-                  ölçüldü), config/ekf.yaml, nav2_params.yaml
+       X: +0.72 (öne doğru) — wheelbase=1.44m (mezürle araçtan
+                  ölçüldü, kart ekibiyle teyitli), config/ekf.yaml, nav2_params.yaml
                   (minimum_turning_radius) ve ackermann_converter.py'deki
                   wheelbase parametresiyle TUTARLI tutulur; biri
                   değişirse diğerleri de değişmeli.
@@ -95,14 +95,14 @@
   <joint name="sag_on_joint" type="continuous">
     <parent link="base_link"/>
     <child link="sag_on_teker"/>
-    <origin xyz="0.70 -0.335 -0.10" rpy="0 0 0"/>
+    <origin xyz="0.72 -0.335 -0.10" rpy="0 0 0"/>
     <axis xyz="0 -1 0"/>
     <dynamics damping="0.5" friction="0.5"/>
   </joint>
 
   <!-- ═══════════════════════════════════════════════
        SOL ÖN TEKERLEK
-       X: +0.70 (sağ ön ile aynı — simetrik, wheelbase=1.40m)
+       X: +0.72 (sağ ön ile aynı — simetrik, wheelbase=1.44m)
        Y: +0.335 (sola doğru, pozitif)
        Görsel: sağ ön ile aynı — silindir simetrik olduğu için taraf ayrımı yok
   ════════════════════════════════════════════════ -->
@@ -129,14 +129,14 @@
   <joint name="sol_on_joint" type="continuous">
     <parent link="base_link"/>
     <child link="sol_on_teker"/>
-    <origin xyz="0.70 0.335 -0.10" rpy="0 0 0"/>
+    <origin xyz="0.72 0.335 -0.10" rpy="0 0 0"/>
     <axis xyz="0 -1 0"/>
     <dynamics damping="0.5" friction="0.5"/>
   </joint>
 
   <!-- ═══════════════════════════════════════════════
        SOL ARKA TEKERLEK
-       X: -0.70 (arkaya doğru, wheelbase=1.40m — bkz. ön teker notu)
+       X: -0.72 (arkaya doğru, wheelbase=1.44m — bkz. ön teker notu)
        Y: +0.335 (sol taraf — ön ile aynı genişlik)
   ════════════════════════════════════════════════ -->
   <link name="sol_arka_teker">
@@ -162,14 +162,14 @@
   <joint name="sol_arka_joint" type="continuous">
     <parent link="base_link"/>
     <child link="sol_arka_teker"/>
-    <origin xyz="-0.70 0.335 -0.10" rpy="0 0 0"/>
+    <origin xyz="-0.72 0.335 -0.10" rpy="0 0 0"/>
     <axis xyz="0 -1 0"/>
     <dynamics damping="0.5" friction="0.5"/>
   </joint>
 
   <!-- ═══════════════════════════════════════════════
        SAĞ ARKA TEKERLEK
-       X: -0.70 (sol arka ile aynı — simetrik)
+       X: -0.72 (sol arka ile aynı — simetrik)
        Y: -0.335 (sağ taraf)
   ════════════════════════════════════════════════ -->
   <link name="sag_arka_teker">
@@ -195,7 +195,7 @@
   <joint name="sag_arka_joint" type="continuous">
     <parent link="base_link"/>
     <child link="sag_arka_teker"/>
-    <origin xyz="-0.70 -0.335 -0.10" rpy="0 0 0"/>
+    <origin xyz="-0.72 -0.335 -0.10" rpy="0 0 0"/>
     <axis xyz="0 -1 0"/>
     <dynamics damping="0.5" friction="0.5"/>
   </joint>
@@ -244,7 +244,7 @@
        ama bu eklemin ebeveyni base_link ve base_joint gövdeyi zeminden
        0.28 m yukarı alıyor, yani buradaki 0.55 zemin yüksekliğini 0.83 m
        gösteriyor. X de 0 yazıyor, LiDAR ise burna yakın monte (ön aks
-       merkezi x=+0.70). Jetson çalışma kopyası "0.80 0 0.265" diyor;
+       merkezi x=+0.72). Jetson çalışma kopyası "0.80 0 0.265" diyor;
        mezürle doğrulanınca burası ve lydia_startup.sh'teki statik
        yayıncı birlikte güncellenecek.
        NOT: bu dönüşümü şu an boot betiğindeki statik yayıncı basıyor. Bir gün

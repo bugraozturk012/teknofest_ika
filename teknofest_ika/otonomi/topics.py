@@ -83,11 +83,12 @@ CAMERA_IMAGE_TOPIC = "/camera/image_raw"
 # Mesaj tipi : sensor_msgs/CameraInfo
 CAMERA_INFO_TOPIC = "/camera/camera_info"
 
-# Microcase 720P — Ön manevra kamerası
-CAMERA_FRONT_TOPIC = "/camera/front/image_raw"
-
-# Microcase 720P — Arka manevra kamerası
-CAMERA_REAR_TOPIC = "/camera/rear/image_raw"
+# Microcase 720P — Arka manevra kamerası.
+# 🔑 Ad elektrik tarafının kamera gözcüsüyle eşleşmek zorunda: yayıncı o,
+# ve kamera fişten çıkıp geri takıldığında cihazı port yolundan geri bağlayan
+# da o. Ön kamera ayrı bir konu DEĞİL, CAMERA_IMAGE_TOPIC'ten geliyor (iki
+# kamera aynı fiziksel cihaza indirgendi).
+CAMERA_REAR_TOPIC = "/camera/arka/image_raw"
 
 # Microcase 720P — Nişan kamerası (taret üzeri)
 CAMERA_TARET_TOPIC = "/camera/taret/image_raw"
@@ -596,7 +597,104 @@ KAYAN_HEDEF_PERIYOT_S  = 1.5    # [s] yeniden hedefleme periyodu (~0,67 Hz)
 # periyot (1,5 s) olduğu için sürüklenme ölçülemeyecek kadar küçük kalır.
 KAYAN_HEDEF_FRAME      = "odom"
 KAYAN_HEDEF_YOK_SINIR  = 8      # ardışık bu kadar döngüde hedef üretilemezse aşama başarısız
+# Hedef bu kadar kaymadıysa YENİDEN GÖNDERİLMEZ.
+#
+# NEDEN: Nav2'nin kurtarma dalı `<GoalUpdated/>` ile korunuyor ve o düğüm
+# hedefi header'ıyla birlikte eşitlikle karşılaştırıyor. Her gönderimde zaman
+# damgası yenilendiği için araç taş gibi dursa bile hedef "değişti" okunuyor;
+# `ReactiveFallback` çalışan kurtarmayı halt edip SUCCESS dönüyor ve
+# `RecoveryNode` bunu "kurtarma başarılı" sayıp altı hakkın birini yiyor.
+# Sonuç: 3 saniyelik Wait hiç bitmiyor, 0,5 m'lik BackUp sınırda kesiliyor —
+# yani Ackermann aracı sıkıştığı pozdan çıkarabilecek TEK davranış.
+#
+# 0,25 m iki uçtan da uzak:
+#   ALT — LiDAR gürültüsünün koridor merkezinde ürettiği oynama santimetre
+#         mertebesinde; eşik onun belirgin üstünde olmalı, yoksa duran araçta
+#         da gönderim sürer ve düzeltme hiçbir işe yaramaz.
+#   ÜST — aracın yerinden kalkabildiği en düşük hız 0,45 m/s; bir periyotta
+#         (1,5 s) en az 0,68 m yol eder ve hedef onunla birlikte kayar.
+#         Eşik bunun altında kaldığı sürece GERÇEK hareket hiç bastırılmaz.
+# Yani düzeltme yalnız araç kımıldamadığında devreye giriyor — tam da
+# kurtarmaya ihtiyaç duyulan an.
+#
+# Yalnız KONUM'a bakılıyor, yaw'a değil: `use_rotate_to_heading: false` ve
+# kayan modda hedef denetleyicisi hiç tetiklenmediği için hedefin açısı
+# sürüşü belirlemiyor. Yaw'ı eşiğe katmak, açıdaki gürültünün bastırmayı
+# bozmasına kapı açardı.
+KAYAN_HEDEF_OLU_BANT_M = 0.25   # [m] hedef bundan az kaydıysa yeniden gönderilmez
+
+# Hedefin araca en yakın kabul edilebilir uzaklığı. `kayan_hedef`'in kendi
+# varsayılanıyla AYNI olmak zorunda (test_birim.py imzadan okuyup karşılaştırır);
+# iç duvar yolunda böyle bir sınır hiç yoktu, kapı ikisine birden uygulanıyor.
+KAYAN_HEDEF_MIN_ILERI_M = 2.0    # [m]
+
+# İç duvar takibinin kendi tabanı. Merkez çizgisinin tabanından AYRI olmak
+# zorunda: `ic_duvar_hedefi` hedefi tasarımı gereği YAKINA koyuyor — duvar
+# noktası 2 m menzilde seçiliyor ve hedef ondan 1,4 m koridorun içine
+# kaydırıldığı için araca olan uzaklık kısalıyor. Parkur CAD'ine karşı ölçülen
+# uzaklıklar 1,32–2,38 m (medyan ~1,9). Merkez çizgisinin 2,0 tabanı buna
+# uygulandığında U dönüşlerinde hedeflerin %59-62'si eleniyordu ve araç
+# yönlendirmenin en çok gerektiği yerde 4,5 saniyeye kadar bayat hedefle
+# sürüyordu (ölçüm: scripts/parkur_cad/koridor_dogrula.py makineleri).
+#
+# 1,2 m ölçüden türetildi: gövdenin yarısı 0,95 m + pay. Bundan yakın bir
+# hedef aracın KENDİ AYAK İZİNİN içinde kalır; planlayıcı için anlamsızdır.
+# CAD süpürmesi de aynı yerde buluşuyor — 1,2 tabanı hedefsiz poz sayısını
+# kapı öncesi hâline (1 ve 0) geri getiriyor, 1,5 zaten bir hedef kaybediyor.
+IC_DUVAR_MIN_ILERI_M = 1.2       # [m]
+
+# Planlayıcının dönebildiği en küçük yarıçap. Hedefin ERİŞİLEBİLİR sayılıp
+# sayılmadığını belirleyen tek sayı bu: araç bu yarıçapın altında yay
+# çizemez.
+#
+# 🔑 Kapı GERİ MANEVRAYI hesaba katmaz, bilerek. Planlayıcı REEDS_SHEPP,
+#    yani arkadaki bir hedefe geri yayla teorik olarak yol var; ama araç
+#    ARKADAN KÖR (LiDAR'ın arkasını gövde kapatıyor) ve geri manevra
+#    costmap'te boş görünen bir alana yapılır. Geri yay sıkışmadan çıkmak
+#    için açık; kayan hedefin ÜRETTİĞİ hedefler ileride olmak zorunda.
+#
+# ⚠️ nav2_params.yaml'daki `minimum_turning_radius` ile AYNI olmak zorunda —
+#    planlayıcı o sayıyla arıyor, kapı bu sayıyla eliyor; ayrışırlarsa kapı
+#    planlayıcının çözemeyeceği bir hedefi geçirir ya da çözebileceğini eler.
+#    test_birim.py iki dosyayı karşılaştırıyor.
+#    Arkasındaki dingil arası 1,44 m (mezürle ölçüldü): 2,49 = 1,44/tan(30°).
+#    🔴 δ_max = 30° hâlâ bir varsayım; mekanik uç ölçülünce bu sayı da
+#    değişir. Değer dört ayrı yerde yaşadığı için (burası, nav2_params,
+#    ackermann_converter parametresi, urdf) tek kaynağa indirilmesi ayrı
+#    bir iş olarak duruyor.
+PLANLAYICI_DONUS_YARICAPI_M = 2.49   # [m]
 KAYAN_ODOM_BAYATLAMA_S = 1.0    # [s] /odometry/filtered bu süre gelmezse yol ölçülemiyor demektir
+# Taramanın karşılığı. Odometri için bu kapı vardı, tarama için YOKTU:
+# `_scan` son taramayı süresiz tutuyor ve hedef ölü veriden üretilmeye devam
+# ediyordu. En sinsi yanı, `hedefsiz` sayacının hiç artmaması — hedef
+# ÜRETİLİYOR, yalnız koridorun hafızasından. 1,0 s ölçülen tarama hızına
+# (9,96 Hz) on taramalık pay bırakır.
+KAYAN_TARAMA_BAYATLAMA_S = 1.0  # [s] /scan/filtered bu süre gelmezse kör sürülüyor demektir
+# `_yol` her EKF örneğinde |Δkonum| topluyor; mutlak değer olduğu için poz
+# gürültüsü NEGATİF katkı veremez, hep mesafe olarak birikir. EKF 50 Hz'de
+# koştuğu için duran araçta bile aşamanın bitiş ölçütü sessizce büyür ve
+# istasyona varılmadan sonrakine geçilir.
+#
+# Eşik hız cinsinden: örnek arası yer değiştirme bu hızdan yavaş bir hareket
+# ima ediyorsa gürültü sayılır. Hız cinsinden olması EKF frekansından
+# bağımsız kılıyor — örnekleme seyrelirse eşik kendiliğinden ölçekleniyor.
+# Değer iki sınır arasında sıkışıyor:
+#   ALT — elemesi beklenen gürültüyü geçirmemeli. 50 Hz'de örnek başına 1 mm
+#         titreme 0,05 m/s eder; eşik 0,05 seçilirse tam sınırda kalır ve
+#         hiçbir şey elenmez (ilk denemede böyle yazıldı, test yakaladı).
+#   ÜST — aracın yerinden kalkabildiği ölçülmüş en düşük hızı (0,45 m/s,
+#         imu_guvenlik.TABAN_HIZ) elememeli.
+# 0,15 m/s ikisinin arasında: örnek başına 3 mm'ye kadar titremeyi eler,
+# kalkış hızının üçte biri kalır.
+#
+# 🔑 Hata yönü bilerek seçildi: eşik yüksek kalırsa yol EKSİK sayılır ve aşama
+# bütçesinde biter (araç istasyonu geçmez, timeout'a düşer); düşük kalırsa yol
+# FAZLA sayılır ve araç istasyona varmadan sonrakine geçer. İkincisi puanı
+# doğrudan götürüyor, o yüzden şüphede yüksek taraf tercih edildi.
+#
+# 🔴 Gürültünün GERÇEK büyüklüğü ölçülmedi. Ölçümü: araç dursun, 60 s
+#    /odometry/filtered izlenip konumun ne kadar gezdiğine bakılsın.
+KAYAN_YOL_TABAN_HIZ_MS = 0.15   # [m/s] bunun altını ima eden yer değiştirme yola sayılmaz
 
 # Mod yönetimi
 MOD_KOMUT_TOPIC   = "/mod/komut"    # yazılımsal/GCS mod değiştirme (UInt8)

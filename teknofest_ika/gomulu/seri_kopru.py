@@ -689,9 +689,18 @@ class SeriKopru(Node):
         """
         Kart anladığı komutu geri yollar. Gönderdiğimizle farkı tek başına
         teşhistir: ölçek hatası, işaret hatası ve kayıp paket burada görünür.
+
+        Karşılaştırma YALNIZ otonom kipte anlamlı: manuel kipte kart tasarım
+        gereği Jetson'ın sürüş komutunu yok sayıyor ve 0x38'de kendi
+        uyguladığını (kumandadan geleni) yolluyor. Orada uyuşmazlık beklenen
+        durumdur; uyarmak gerçek ölçek ve işaret hatalarının arasına sürekli
+        bir gürültü katar.
         """
         with self._lock:
             gonderilen_hiz, gonderilen_aci = self._son_surucu
+            kip = self._kip
+        if kip != KART_KIP_OTONOM:
+            return
         if (abs(hiz_mms - gonderilen_hiz) > SAPMA_HIZ_MMS or
                 abs(aci_cd - gonderilen_aci) > SAPMA_ACI_CD):
             self.get_logger().warn(

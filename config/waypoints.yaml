@@ -39,8 +39,22 @@ parkur_cad:
 #               kameradan geliyor: yolo_adapter_node modelin çıktısını
 #               /ika/detections JSON'una ve /yolo/class_id UInt8'e çevirir,
 #               terrain_adapter oradan arazi profilini (hız + inflation) seçer.
-#               Buradaki değeri değiştirmek araç davranışını DEĞİŞTİRMEZ;
-#               aşamayı hangi duruma yollayacağına `type` alanı karar verir.
+#               Buradaki değeri değiştirmek araç davranışını DEĞİŞTİRMEZ.
+#
+# 🔑 AŞAMAYI HANGİ DURUMA YOLLADIĞINI `isim` BELİRLER, bu dosyadaki başka
+#    hiçbir alan değil. misyon_fsm.load_waypoints eşlemeyi ADDAN türetiyor:
+#      ATIS_BOLGESI                      → shoot     (ShootApproach → Shoot)
+#      HIZLANMA_PARKURU                  → hizlanma  (HizlanmaState, Nav2 baypas)
+#      DIK_EGIM_GIRIS / DIK_EGIM_CIKIS   → rampa     (RampaState, Nav2 baypas)
+#      diğerleri                          → nav       (Nav2 / kayan hedef)
+#
+#    ⚠️ Bir aşamanın ADINI değiştirmek davranışını SESSİZCE değiştirir: rampa
+#    baypası kapanır, atış durumuna hiç girilmez, hata basılmaz. Eşleme
+#    test_birim.py'de load_waypoints çalıştırılarak kilitli.
+#
+#    Burada bir zamanlar `type:` alanları vardı ve okunuyormuş gibi
+#    duruyorlardı; hiçbiri okunmuyordu. İkinci bir kaynakmış gibi görünen o
+#    alanlar, rampa baypasının ölü olduğu sonucuna vardırdı — silindiler.
 #
 # pas_gecilir : Şartname §9 pas hakkı. VARSAYILAN false, öyle kalmalı.
 #               true → aşama timeout'a girerse FSM bir sonraki hedefe geçer.
@@ -238,13 +252,10 @@ asamalar:
 
   - isim: ATIS_BOLGESI
     yolo_sinifi: Tabela_9
-    # misyon_fsm NavigateState'ten hangi duruma geçeceğini YALNIZ bu alandan
-    # seçer (misyon_fsm.py: wp.get('type')). Alan yoksa istasyon sıradan bir
-    # navigasyon hedefi olur ve ShootApproach/Shoot durumlarına hiç girilmez.
+    # ShootApproach → Shoot durumlarına ADIYLA gidiyor (bkz. dosya başı).
     # Taret kapalıyken (TARET_AKTIF=0) atış başarısız olur ama görev DÜŞMEZ:
     # ERROR_RECOVERY bir deneme harcar, sonraki istasyon tamamlanınca sayaç
     # sıfırlanır. Bedeli koşu süresinden ~30-60 s.
-    type: shoot
     waypoint:
       x: 0.0
       y: 0.0
@@ -292,10 +303,10 @@ asamalar:
 
   - isim: HIZLANMA_PARKURU
     yolo_sinifi: Tabela_11
-    # Alan olmadan §6.11 parkuru sıradan bir Nav2 hedefi olarak arazi
-    # profilinin hızıyla (0.65 m/s) sürülür; HizlanmaState Nav2'yi bypass edip
-    # tam gaz veren tek yol. Tarete bağlı değil, /odom yoksa kendini iptal eder.
-    type: hizlanma
+    # HizlanmaState'e ADIYLA gidiyor (bkz. dosya başı). Eşleme kopsaydı §6.11
+    # parkuru sıradan bir Nav2 hedefi olarak arazi profilinin hızıyla
+    # (0.65 m/s) sürülürdü; HizlanmaState tam gaz veren tek yol. Tarete bağlı
+    # değil, /odom yoksa kendini iptal eder.
     waypoint:
       x: 0.0    # ⚠️ PLACEHOLDER — SLAM haritasından doldur (pistin başlangıç noktası)
       y: 0.0

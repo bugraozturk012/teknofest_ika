@@ -138,7 +138,11 @@ _HATA_ADI = [
     (HATA_GOST_SESSIZ,   'gösterge'),
     (HATA_ESTOP_UYUSMAZ, 'E-STOP uyuşmaz'),
     (HATA_RC_YOK,        'RC kablo'),
-    (HATA_FREN_STALL,    'fren takıldı'),
+    # Bit iki ayrı durumu birden anlatıyor ve hangisi olduğu telemetride
+    # yok: sıkma yönünde stall gerçek arıza, serbest yönünde stall ise
+    # "fren tam açıldı" demek — otonomda her bırakmadan sonra yanıyor.
+    # "takıldı" yazmak operatörü her seferinde arıza aramaya gönderir.
+    (HATA_FREN_STALL,    'fren ucunda'),
     (HATA_GAZ_YOK,       'GAZ YOK'),
 ]
 # DRM_SSR bilerek listede yok: karşılığı olan donanım söküldü.

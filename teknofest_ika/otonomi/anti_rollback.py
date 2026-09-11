@@ -17,7 +17,9 @@ Komut mimarisi (race condition yoktur):
   /anti_rollback/aktif (Bool)  → ackermann_converter bu flag'e göre karar verir
 """
 
-import time
+import time   # süre ölçümleri time.monotonic() ile: Jetson'ın RTC'si ölü ve
+             # saat düzeltmesi sıçradığında time.time() aralıkları
+             # milyonlarca saniye okunur (ayrıntı: misyon_fsm.py)
 
 import rclpy
 from rclpy.node import Node
@@ -60,7 +62,9 @@ class AntiRollback(Node):
         self._pitch    = 0.0
         self._velocity = 0.0
         self._komut_vx = 0.0
-        self._komut_t  = 0.0   # wall-clock — son /mux/cmd_vel'in geliş anı
+        self._komut_t  = 0.0   # monotonik — son /mux/cmd_vel'in geliş anı
+                               # 0.0 = hiç gelmedi; aşağıdaki bayatlık
+                               # kontrolü bu değeri ayrıca eliyor.
         self._aktif    = False
         self._e_stop   = False
         self._yokus    = False   # §6.10 yokuş kalkışı sürüyor mu
@@ -102,7 +106,7 @@ class AntiRollback(Node):
 
     def _komut_cb(self, msg: Twist):
         self._komut_vx = msg.linear.x
-        self._komut_t  = time.time()
+        self._komut_t  = time.monotonic()
 
     def _kontrol(self):
         if self._e_stop:
@@ -123,7 +127,7 @@ class AntiRollback(Node):
         # pure_logic.rollback_mudahale_gerekli — test_birim.py bu fonksiyonu
         # doğrudan test eder (önceden bu mantık testte ayrı yazılmıştı).
         komut_bayat = (self._komut_t == 0.0 or
-                       time.time() - self._komut_t > NAV2_CMD_BAYATLAMA_S)
+                       time.monotonic() - self._komut_t > NAV2_CMD_BAYATLAMA_S)
         rollback = rollback_mudahale_gerekli(
             self._pitch, self._velocity, self._komut_vx, komut_bayat,
             RAMP_PITCH_THRESHOLD_DEG, ROLLBACK_VEL_THRESHOLD, GERI_KOMUT_ESIGI,

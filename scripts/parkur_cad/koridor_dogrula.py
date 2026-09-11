@@ -99,7 +99,7 @@ def pozlar_uret(arac, engeller):
                 max(a['x'], b['x']) + 4, max(a['y'], b['y']) + 4)
         try:
             yol, _ = donus.yol_var_mi(
-                arac, 2.42, (a['x'], a['y'], a['yaw']), (b['x'], b['y'], b['yaw']),
+                arac, 2.49, (a['x'], a['y'], a['yaw']), (b['x'], b['y'], b['yaw']),
                 kutu, engeller, [], maks=900000)
         except ValueError:
             yol = None
@@ -165,7 +165,7 @@ def viraj_dogrula(arac, engeller, koniler):
 def yol_var_mi_guvenli(arac, a, b, kutu, engeller):
     try:
         return donus.yol_var_mi(
-            arac, 2.42, (a['x'], a['y'], a['yaw']), (b['x'], b['y'], b['yaw']),
+            arac, 2.49, (a['x'], a['y'], a['yaw']), (b['x'], b['y'], b['yaw']),
             kutu, engeller, [], maks=900000)
     except ValueError:
         return None, 0

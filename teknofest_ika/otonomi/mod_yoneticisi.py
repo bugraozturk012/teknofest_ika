@@ -40,7 +40,9 @@ GİRİŞLER:
   /mission_start  (Bool)   — FULL_AUTO'ya ilk geçişte FSM'i tetikler
 """
 import threading
-import time
+import time   # süre ölçümleri time.monotonic() ile: Jetson'ın RTC'si ölü ve
+             # saat düzeltmesi sıçradığında time.time() aralıkları
+             # milyonlarca saniye okunur (ayrıntı: misyon_fsm.py)
 
 import rclpy
 from rclpy.node import Node
@@ -76,11 +78,30 @@ MANUAL_MAX_ANGULAR = 1.5    # [rad/s]
 # RC zaman aşımı — sinyal kesilirse araç durdurulur
 RC_TIMEOUT_S = 0.5          # [s]
 
-# Mod geçiş debounce — pot eşiğin etrafında titrerse mod zıplamasın
-# Kart kipi 100 Hz geliyor; bu süre boyunca hiç gelmemesi kartın ya da köprünün
-# sustuğu anlamına gelir ve mod manuele düşer. Debounce'a gerek yok: kip artık
+# Kip bayatlama eşiği. Bu süre boyunca /kart/kip hiç gelmezse kartın ya da
+# köprünün sustuğu varsayılır ve mod manuele düşer. Debounce'a gerek yok: kip
 # eşiklenen bir pot değil, kartın verdiği ayrık bir karar.
-KIP_TIMEOUT_S = 0.5         # [s]
+#
+# 🔴 Eşik, köprünün TEKRAR PERİYODUNA bağlıdır; kartın yayın hızına değil.
+# seri_kopru /kart/kip'i yalnız değişimde ve DURUM_TAZELEME_S periyoduyla
+# tekrarlıyor. Eşik o periyodun altına inerse kip her tekrar arasında bayat
+# sayılır ve kart kip 2'de sabitken bile mod MANUAL↔FULL_AUTO zıplar; her
+# FULL_AUTO geçişi /mission_start bastığı için misyon FSM'i hiç ilerleyemez
+# (sahada ölçülen: 60 saniyede 122 geçiş, kart tek geçiş yaparken).
+# 2.5 = tekrar periyodunun 2,5 katı; tek bir kayıp tekrar kipi düşürmemeli.
+KIP_TEKRAR_PERIYOT_S = 1.0  # [s] seri_kopru.DURUM_TAZELEME_S ile aynı olmalı
+KIP_TIMEOUT_S = 2.5         # [s]
+
+# Kumanda kesmesinin (SwA) /e_stop/force/rc'ye tekrarlanma periyodu.
+# 🔴 Yalnız DEĞİŞİMDE yayınlanan bir kesme açılışta kaybolur: kart açılışta
+# zaten KESME'deyse yayın e_stop_node ayağa kalkmadan önce çıkar ve kimse
+# duymaz; /e_stop false kalır ve SwA değişene kadar da düzelmez (sahada
+# ölçülen fark: 3,7 s). seri_kopru buton durumunu aynı sebeple tekrarlıyor
+# (_estop_yayinla).
+#
+# TRANSIENT_LOCAL seçilmedi: kaynak durumu sürekli, latch'lenmiş tek mesaj
+# kaynak temizlendikten sonra doğan bir aboneye yanlış bilgi verir.
+KESME_TEKRAR_S = 0.5        # [s]
 
 
 class ModYoneticisi(Node):
@@ -141,6 +162,7 @@ class ModYoneticisi(Node):
 
         self.create_timer(0.05, self._mux_dongusu)   # 20 Hz
         self.create_timer(1.0,  self._mod_yayinla)   # 1 Hz
+        self.create_timer(KESME_TEKRAR_S, self._kesme_yayinla)
 
         self.get_logger().info(
             'ModYoneticisi hazır | başlangıç: MANUAL\n'
@@ -160,13 +182,13 @@ class ModYoneticisi(Node):
         with self._lock:
             self._ch1  = float(msg.data[0])
             self._ch2  = float(msg.data[1])
-            self._rc_son = time.time()
+            self._rc_son = time.monotonic()
 
     # ── Kart kipi — mod otoritesi ───────────────────────────────────────────
     def _kip_cb(self, msg: UInt8):
         with self._lock:
             self._kip     = int(msg.data)
-            self._kip_son = time.time()
+            self._kip_son = time.monotonic()
 
     # ── Kart durum bayrakları — kesme anahtarı E-STOP kaynağı ───────────────
     def _durum_cb(self, msg: UInt16):
@@ -178,12 +200,25 @@ class ModYoneticisi(Node):
         kesme = kesme_estop(drm, geldi, DRM_KESME)
         if kesme != self._kesme_aktif:
             self._kesme_aktif = kesme
-            self._kesme_pub.publish(Bool(data=kesme))
             if kesme:
                 self.get_logger().error(
                     '!!! KUMANDA KESME (SwA) — E-STOP kaynağı aktif !!!')
             else:
                 self.get_logger().warn('[E-STOP] kumanda kesmesi kaldırıldı.')
+        # Yayın değişime bağlı DEĞİL: _kesme_yayinla periyodik basıyor.
+
+    # ── Kesme kaynağının periyodik yayını ──────────────────────────────────
+    def _kesme_yayinla(self):
+        """
+        Kumanda kesmesini KESME_TEKRAR_S'de bir tekrarlar.
+
+        Tek seferlik bir yayın, geç doğan e_stop_node'a hiç ulaşmaz. Durum
+        değişmese de basmak, kaynağın görünürlüğünü aboneliğin ne zaman
+        kurulduğundan bağımsız kılar.
+        """
+        with self._lock:
+            kesme = self._kesme_aktif
+        self._kesme_pub.publish(Bool(data=kesme))
 
     # ── Yazılımsal Komut Callback ────────────────────────────────────────────
     def _komut_cb(self, msg: UInt8):
@@ -198,7 +233,7 @@ class ModYoneticisi(Node):
     def _nav2_cb(self, msg: Twist):
         with self._lock:
             self._nav2_twist = msg
-            self._nav2_son   = time.time()
+            self._nav2_son   = time.monotonic()
 
     # ── Hız Sınırı Callback (imu_guvenlik) ───────────────────────────────────
     def _speed_limit_cb(self, msg: Float32):
@@ -238,12 +273,12 @@ class ModYoneticisi(Node):
             mod         = self._mod
             ch1         = self._ch1
             ch2         = self._ch2
-            rc_gecmis   = time.time() - self._rc_son
+            rc_gecmis   = time.monotonic() - self._rc_son
             kip         = self._kip
-            kip_gecmis  = time.time() - self._kip_son
+            kip_gecmis  = time.monotonic() - self._kip_son
             kip_hic     = (self._kip_son == 0.0)
             nav2        = self._nav2_twist
-            nav2_gecmis = time.time() - self._nav2_son
+            nav2_gecmis = time.monotonic() - self._nav2_son
             nav2_hic    = (self._nav2_son == 0.0)
             speed_limit = self._speed_limit
 

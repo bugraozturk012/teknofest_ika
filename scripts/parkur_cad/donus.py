@@ -29,7 +29,7 @@ SERIT = 3.0                       # §6.1
 class Arac:
     """Bisiklet modeli; poz arka aks merkezinde."""
 
-    def __init__(self, boy=1.90, gen=1.16, dingil=1.40, arka_tasma=0.20):
+    def __init__(self, boy=1.90, gen=1.16, dingil=1.44, arka_tasma=0.20):
         self.boy, self.gen, self.dingil = boy, gen, dingil
         self.arka, self.on = arka_tasma, boy - arka_tasma
         self.yari_b, self.yari_g = boy / 2, gen / 2
@@ -213,7 +213,7 @@ def en_dar_aralik(arac, R, yanal, engeller, alt=0.8, ust=5.0, tol=0.05):
     return ust
 
 
-def rapor(R=2.42):
+def rapor(R=2.49):
     arac, engeller = Arac(), bariyerler() + sanal_duvarlar()
     print(f'araç {arac.boy:.2f} × {arac.gen:.2f} m · dingil {arac.dingil:.2f} m · '
           f'R = {R:.2f} m · geri vites yok\n')
@@ -241,7 +241,7 @@ def rapor(R=2.42):
         print(f'    {yanal:7.2f}' + ''.join(f'{h:>12s}' for h in hucre))
 
 
-def cizim(dosya=None, R=2.42, slalom=(2.60, 1.48)):
+def cizim(dosya=None, R=2.49, slalom=(2.60, 1.48)):
     """Bulunan yolları araç dikdörtgenleriyle çizer — koridor dışına taşma gözle görülsün."""
     import matplotlib
     matplotlib.use('Agg')

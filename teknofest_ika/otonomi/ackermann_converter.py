@@ -68,8 +68,9 @@ TF / TOPIC MİMARİSİ
 ─────────────────────────────────────────────────────────────────────────────
 PARAMETRELER (ros2 param set ile çalışma zamanında değiştirilebilir)
 ─────────────────────────────────────────────────────────────────────────────
-    wheelbase          : Dingil arası [m]     — 1.40 🔴 ÖLÇÜLMEDİ, yer tutucu
-    max_steering_angle : Max direksiyon açısı [rad] — yaklaşık 30° = 0.5236 rad
+    wheelbase          : Dingil arası [m]     — 1.44, mezürle ölçüldü
+    max_steering_angle : Max direksiyon açısı [rad] — 30° = 0.5236 rad
+                         🔴 ÖLÇÜLMEDİ, yer tutucu
     max_speed          : sürüş kartının otonom hız tavanı [m/s]
     cmd_vel_timeout    : Bu süre içinde /cmd_vel gelmezse araç durdurulur [s]
 
@@ -117,17 +118,20 @@ class AckermannConverter(Node):
         super().__init__('ackermann_converter')
 
         # ── Parametreler ──────────────────────────────────────────────────────
-        # wheelbase: ön aks ↔ arka aks. 🔴 DEĞER ÖLÇÜLMEDİ — 1.40 bir yer
-        # tutucudur ve elektrik tarafındaki değer de aynı varsayımdan geliyor.
+        # wheelbase: ön aks ↔ arka aks, mezürle ölçüldü (kart ekibiyle teyitli).
         # Ackermann kinematiğinin tek girdisi bu: yanlışsa üretilen HER
         # direksiyon açısı yanlış olur, ve hata sahada ancak aracın virajı
         # geniş ya da dar almasıyla görülür.
-        # urdf/arac.urdf teker joint'leri (x=±0.70) ve nav2_params.yaml
+        # urdf/arac.urdf teker joint'leri (x=±0.72) ve nav2_params.yaml
         # minimum_turning_radius (L/tan δ_max) ile TUTARLI tutulur; biri
         # değişirse diğerleri de değişmeli.
         # Çalışma zamanında değiştirmek için:
-        #   ros2 param set /ackermann_converter wheelbase 1.40
-        self.declare_parameter('wheelbase', 1.40)
+        #   ros2 param set /ackermann_converter wheelbase 1.44
+        self.declare_parameter('wheelbase', 1.44)
+        # 🔴 max_steering_angle ÖLÇÜLMEDİ. 30°, mekanik ucun altında kaldığı
+        # varsayılan bir yer tutucu; gerçek uç 5°'lik adımlarla bulunup
+        # birkaç derece altı yazılmalı (step motor uca dayanınca adım kaçırır
+        # ve kartın konum sayacı gerçeği kaybeder).
         self.declare_parameter('max_steering_angle', 0.5236)   # 30° = π/6
         self.declare_parameter('max_speed', KART_HIZ_TAVAN)
         self.declare_parameter('cmd_vel_timeout', 0.5)         # [s]

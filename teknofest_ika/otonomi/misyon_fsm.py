@@ -79,7 +79,27 @@ TEST (kamerasız):
 
 import json
 import math
-import time
+import time   # aralık ölçümleri time.monotonic() ile — gerekçe aşağıda
+#
+# ⏱ SAAT SEÇİMİ — bu dosyada süre ölçen HER YER time.monotonic() kullanır.
+#
+# Jetson'ın RTC'si ölü: açılışta saat geçmiş bir tarihte başlıyor ve bir ağ
+# bağlantısı belirdiğinde (telefon hotspot'u, ICS) systemd-timesyncd saati
+# günlerce ileri atıyor. time.time() ile ölçülen her aralık o sıçramada bir
+# anda milyonlarca saniye okunur ve tek bir olayla şunların hepsi birden
+# tetiklenir:
+#
+#   · tarama ve odometri bayatlama kapıları → her aşama 'failed'
+#   · MisyonSaati → "§6.12 koşu süresi doldu" → MISSION_ABORT
+#   · STOP cooldown'ı, kayan hedef periyodu, ilerleme uyarıları
+#
+# time.monotonic() ayarlanamaz ve geriye gitmez; ölçtüğü tek şey geçen süre.
+# Mutlak zaman gerekmiyor: bu dosyada hiçbir damga yayınlanmıyor ya da tarih
+# olarak yazılmıyor. Tek ROS saati kullanımı hedefin header.stamp'i (satır
+# ~433) ve o değer bizim ölçümlerimizle hiç karşılaştırılmıyor.
+#
+# ⚠️ Karıştırma tehlikelidir: bir damga monotonic, karşılaştırması time.time()
+#    olursa fark anlamsız çıkar. Bu yüzden dönüşüm dosya bazında TAM yapıldı.
 import threading
 import yaml
 
@@ -115,6 +135,10 @@ from teknofest_ika.otonomi.topics import (
     IMU_TOPIC, IMU_PITCH_RAMP_THRESHOLD,
     KORIDOR_SAPMA_UYARI_M, KORIDOR_TOPLAM_TOLERANS, KORIDOR_PENCERE_RAD,
     KAYAN_HEDEF_PERIYOT_S, KAYAN_HEDEF_FRAME, KAYAN_HEDEF_YOK_SINIR,
+    KAYAN_TARAMA_BAYATLAMA_S, KAYAN_YOL_TABAN_HIZ_MS,
+    KAYAN_HEDEF_OLU_BANT_M, KAYAN_HEDEF_MIN_ILERI_M,
+    IC_DUVAR_MIN_ILERI_M,
+    PLANLAYICI_DONUS_YARICAPI_M,
     KAYAN_ODOM_BAYATLAMA_S, LIDAR_MONTAJ_YAW_RAD,
 )
 from teknofest_ika.otonomi.pure_logic import (
@@ -126,6 +150,8 @@ from teknofest_ika.otonomi.pure_logic import (
     rampa_ara_durus_gerekli, yokus_kalkis_freni,
     koridor_merkez_cizgisi, kayan_hedef, ic_duvar_hedefi,
     hedefleme_modu_sec, kayan_hedef_karari,
+    olcum_bayat_mi, yol_artimi, hedef_yeniden_gonderilsin_mi,
+    hedef_ulasilabilir_mi,
     quat_yaw, arac_hedefini_odoma_tasi,
 )
 
@@ -257,13 +283,18 @@ class Nav2Client:
 
     def go_to(self, x: float, y: float, yaw: float,
               timeout_sec: float = 120.0,
-              stop_check_fn=None) -> str:
+              stop_check_fn=None, manuel_check_fn=None) -> str:
         """
         Verilen (x, y, yaw) noktasına git. Bloklar.
-        Dönüş: 'success' | 'failed' | 'timeout' | 'stop_requested'
+        Dönüş: 'success' | 'failed' | 'timeout' | 'stop_requested' | 'manuel_mod'
 
         stop_check_fn: callable → bool. True döndürünce goal iptal edilir,
         'stop_requested' döner. NavigateState §6.10 STOP mantığı için kullanır.
+
+        manuel_check_fn: callable → bool. Operatör SwC'yi otonomdan çıkardığında
+        True döner; goal iptal edilip 'manuel_mod' dönülür. Kart Jetson komutunu
+        zaten yok sayıyor, ama iptal edilmeyen bir hedef ayakta kalır ve SwC geri
+        otonoma alındığında araç bayat bir hedefe kalkar.
         """
         if not self._client.wait_for_server(timeout_sec=5.0):
             self.node.get_logger().error(
@@ -279,13 +310,15 @@ class Nav2Client:
             f'timeout={timeout_sec:.0f}s'
         )
 
-        deadline = time.time() + timeout_sec
+        deadline = time.monotonic() + timeout_sec
 
         future = self._client.send_goal_async(goal)
         while not future.done():
-            if time.time() > deadline:
+            if time.monotonic() > deadline:
                 self.node.get_logger().warn('Nav2 hedef gönderme timeout.')
                 return 'timeout'
+            if manuel_check_fn and manuel_check_fn():
+                return 'manuel_mod'
             if stop_check_fn and stop_check_fn():
                 return 'stop_requested'
             time.sleep(0.05)
@@ -302,12 +335,15 @@ class Nav2Client:
 
         result_future = goal_handle.get_result_async()
         while not result_future.done():
-            if time.time() > deadline:
+            if time.monotonic() > deadline:
                 self.node.get_logger().warn(
                     f'Nav2 aşama timeout ({timeout_sec:.0f}s) — hedef iptal ediliyor.'
                 )
                 goal_handle.cancel_goal_async()
                 return 'timeout'
+            if manuel_check_fn and manuel_check_fn():
+                goal_handle.cancel_goal_async()
+                return 'manuel_mod'
             if stop_check_fn and stop_check_fn():
                 goal_handle.cancel_goal_async()
                 return 'stop_requested'
@@ -355,6 +391,18 @@ class Nav2Client:
         future.add_done_callback(self._hedef_kabul_edildi)
         return True
 
+    def etkin_hedef_var(self) -> bool:
+        """
+        Nav2'de bizim adımıza koşan bir hedef var mı.
+
+        Kayan sürüş, hedef kaymadığında yeniden göndermiyor (Nav2'nin kurtarma
+        davranışlarına yer açmak için). O bastırmanın güvenli olması, hedefin
+        bittiğini FARK EDEBİLMEMİZE bağlı: Nav2 altı kurtarma hakkını
+        tükettiğinde hedefi abort ediyor ve haber vermeyen bir istemci, aracı
+        hedefsiz bekletirken hâlâ "hedef gönderdim" sanır.
+        """
+        return self._son_handle is not None
+
     def _hedef_kabul_edildi(self, future):
         """send_goal_async sonucu — iptal edebilmek için handle saklanır."""
         try:
@@ -362,10 +410,42 @@ class Nav2Client:
         except Exception as e:
             self.node.get_logger().warn(f'Nav2 kayan hedef gönderilemedi: {e}')
             return
-        if handle.accepted:
-            self._son_handle = handle
-        else:
+        if not handle.accepted:
             self.node.get_logger().warn('Nav2 kayan hedefi reddetti.')
+            return
+        self._son_handle = handle
+        # Sonuç dinlenmezse hedefin abort edildiği HİÇ öğrenilmez.
+        try:
+            handle.get_result_async().add_done_callback(
+                lambda f, h=handle: self._hedef_bitti(f, h))
+        except Exception as e:
+            # Aboneliğin kurulamaması hedefi geçersiz kılmaz; yalnız bitişi
+            # göremeyiz. Bastırma o durumda yanlış tarafa hata yapmasın diye
+            # hedef "yok" sayılır — fazladan gönderim, sessiz duruştan ucuz.
+            self._son_handle = None
+            self.node.get_logger().warn(
+                f'Nav2 hedef sonucu dinlenemiyor: {e} — hedef etkin sayılmıyor.')
+
+    def _hedef_bitti(self, future, handle):
+        """
+        Hedef sonuçlandı (başarı, abort ya da iptal).
+
+        Yalnız HÂLÂ etkin olan hedefin bitişi bayrağı düşürür: yeni bir hedef
+        öncekini preempt ettiğinde eskisinin sonucu SONRA geliyor ve körlemesine
+        temizlemek, az önce kabul edilmiş yeni hedefi yok saymak olurdu.
+        """
+        try:
+            durum = future.result().status
+        except Exception as e:
+            durum = None
+            self.node.get_logger().warn(f'Nav2 hedef sonucu okunamadı: {e}')
+        if self._son_handle is not handle:
+            return
+        self._son_handle = None
+        if durum is not None and durum != 4:   # 4 = STATUS_SUCCEEDED
+            self.node.get_logger().warn(
+                f'Nav2 kayan hedefi sonlandırdı (status={durum}) — '
+                'yeni hedef gönderilecek.')
 
     def iptal(self):
         """Etkin kayan hedefi iptal eder. Nav2 iptalde aracı durdurur."""
@@ -418,7 +498,7 @@ class MisyonSaati:
         self._pub    = node.create_publisher(Float32, MISYON_KALAN_SURE_TOPIC, 10)
 
     def baslat(self) -> None:
-        self._t0 = time.time()
+        self._t0 = time.monotonic()
         self._uyarildi.clear()
         self.node.get_logger().info(
             f'[SAAT] Koşu saati başladı — §6.12 limiti {self.sure_s / 60.0:.0f} dk.'
@@ -432,7 +512,7 @@ class MisyonSaati:
         """Kalan saniye. Saat başlamadıysa tüm süre kalmış sayılır."""
         if self._t0 is None:
             return self.sure_s
-        return max(0.0, self.sure_s - (time.time() - self._t0))
+        return max(0.0, self.sure_s - (time.monotonic() - self._t0))
 
     def doldu(self) -> bool:
         return self.basladi_mi() and self.kalan() <= 0.0
@@ -577,10 +657,13 @@ class KayanHedefSurucusu:
 
         self._lock       = threading.Lock()
         self._scan       = None    # (ranges, angle_min, angle_increment)
+        self._scan_zaman = 0.0     # monotonik — son taramanın geliş anı
+                                   # (0.0 = hiç gelmedi, olcum_bayat_mi eler)
         self._konum      = None    # son EKF konumu
         self._poz        = None    # (x, y, yaw) — hedefi odom'a taşımak için
-        self._odom_zaman = 0.0     # wall-clock — son EKF mesajının geliş anı
+        self._odom_zaman = 0.0     # monotonik — son EKF mesajının geliş anı
         self._yol        = 0.0     # aşama başından biriken YOL UZUNLUĞU [m]
+        self._asama_no   = None    # `_yol` hangi waypoint'e ait — bkz. asama_basla
 
         node.create_subscription(LaserScan, SCAN_FILTERED_TOPIC, self._on_scan, 10)
         # EKF çıkışı, ham /odom DEĞİL. /odom seri_kopru'nun tekerlek
@@ -598,20 +681,59 @@ class KayanHedefSurucusu:
 
     def _on_scan(self, msg: LaserScan):
         with self._lock:
-            self._scan = (list(msg.ranges), msg.angle_min, msg.angle_increment)
+            self._scan       = (list(msg.ranges), msg.angle_min, msg.angle_increment)
+            self._scan_zaman = time.monotonic()
 
     def _on_odom(self, msg: Odometry):
         p = msg.pose.pose.position
         q = msg.pose.pose.orientation
+        simdi = time.monotonic()
         with self._lock:
             if self._konum is not None:
                 # Kuş uçuşu değil, artımların toplamı: U dönüşünde ikisi
                 # 22 m'ye karşı 11 m ayrışır ve kuş uçuşu ölçüt aşamayı
                 # yolun yarısında bitirirdi.
-                self._yol += math.hypot(p.x - self._konum[0], p.y - self._konum[1])
+                adim = math.hypot(p.x - self._konum[0], p.y - self._konum[1])
+                # Gürültü mesafe sayılmaz — gerekçe yol_artimi'nde.
+                self._yol += yol_artimi(adim, simdi - self._odom_zaman,
+                                        KAYAN_YOL_TABAN_HIZ_MS)
             self._konum      = (p.x, p.y)
             self._poz        = (p.x, p.y, quat_yaw(q.x, q.y, q.z, q.w))
-            self._odom_zaman = time.time()
+            self._odom_zaman = simdi
+
+    def asama_basla(self, asama_no: int):
+        """
+        Kat edilen yol sayacını YENİ BİR AŞAMA için sıfırlar.
+
+        NEDEN SAYAÇ `sur()`'UN İÇİNDE DEĞİL
+        ─────────────────────────────────────────────────────────────────────
+        `_yol` bir sürüş çağrısının değil AŞAMANIN durumu: kayan modda
+        aşamayı bitiren tek ölçüt o. Sıfırlama `sur()`'un girişinde olsaydı,
+        `sur()`'u yeniden çağıran her yol aşamayı BAŞTAN başlatırdı — ve iki
+        böyle yol var:
+
+          · STOP tabelası — `sur()` 'stop_requested' ile çıkar, 2 s beklenir,
+            aynı aşama için yeniden çağrılır. Aşama başına üç kez olabilir.
+          · Hata kurtarma — 'recovered' ile NavigateState baştan çalışır.
+            Araç 22 metrenin 20'sini gitmişken timeout olursa 22 metreyi
+            YENİDEN sürerdi; parkurun geri kalanı 20 m kaymış olurdu.
+
+        Harita yolunda bu görünmüyordu: orada hedef sabit bir koordinat ve
+        tekrar göndermek "kaldığın yerden devam" demek. Ölçüt mesafeye
+        dönünce aynı desen "baştan başla" anlamına geldi.
+
+        Sıfırlama bu yüzden AŞAMA NUMARASINA bağlı: numara değişmediyse sayaç
+        korunur, yani STOP ve kurtarma aracın gerçekten gittiği yolu silmez.
+
+        `_konum` da sıfırlanıyor ama gerekli olduğu için değil: odometri geri
+        çağrısı aşamalar arasında da çalıştığı için orada boşluk oluşmaz.
+        """
+        if asama_no == self._asama_no:
+            return
+        with self._lock:
+            self._yol      = 0.0
+            self._konum    = None
+            self._asama_no = asama_no
 
     def hedef_uret(self, taraf):
         """Taramadan (x, y, yaw) üretir. Dönüş: (hedef | None, kaynak)."""
@@ -623,22 +745,44 @@ class KayanHedefSurucusu:
 
         cizgi = koridor_merkez_cizgisi(ranges, amin, inc, self._lidar_yaw,
                                        KORIDOR_GENISLIGI_M)
+        # Erişilebilirlik kapısı İKİ yola birden uygulanıyor ve gerekçesi
+        # hedef_ulasilabilir_mi'de. Kapı eklenince davranış bir yönde daha
+        # değişti: merkez çizgisi hedef ÜRETİP de erişilemez çıkarsa artık
+        # iç duvara düşülüyor. Önceden merkez çizgisinin ürettiği her hedef
+        # kabul ediliyor, iç duvar yalnız hiç üretilmediğinde deneniyordu.
+        # Kapı iki üreticiye de uygulanıyor ama AYNI ÖLÇÜTLERLE DEĞİL:
+        # ikisinin hedefi farklı mesafe rejiminde doğuyor. Tek ölçüte
+        # indirmek U dönüşlerinde iç duvar takibini kırıyor — ayrıntı
+        # hedef_ulasilabilir_mi ve IC_DUVAR_MIN_ILERI_M'de.
+        red = 'merkez_yok'
         hedef = kayan_hedef(cizgi)
         if hedef is not None:
-            return hedef, 'merkez'
+            # Merkez çizgisi hedefi uzakta doğuyor → yay ölçütü uygulanır.
+            if hedef_ulasilabilir_mi(hedef, KAYAN_HEDEF_MIN_ILERI_M,
+                                     PLANLAYICI_DONUS_YARICAPI_M):
+                return hedef, 'merkez'
+            red = 'merkez_erisilemez'
 
         if taraf:
             hedef = ic_duvar_hedefi(ranges, amin, inc, self._lidar_yaw, taraf)
             if hedef is not None:
-                return hedef, f'ic_duvar_{taraf}'
+                # İç duvar hedefi yakın bir yanal düzeltme → yay ölçütü
+                # UYGULANMAZ (None), yalnız yön ve mesafe kapısı kalır.
+                if hedef_ulasilabilir_mi(hedef, IC_DUVAR_MIN_ILERI_M, None):
+                    return hedef, f'ic_duvar_{taraf}'
+                red += f'+ic_duvar_{taraf}_erisilemez'
 
-        return None, 'hedef_yok'
+        return None, red
 
     def sur(self, label: str, mesafe_m: float, taraf, deadline: float,
-            dur_kontrol=None, e_stop_fn=None) -> str:
+            dur_kontrol=None, e_stop_fn=None, manuel_fn=None) -> str:
         """
         Aşamayı kayan hedefle sürer. Bloklar.
         Dönüş: 'success' | 'timeout' | 'failed' | 'stop_requested' | 'e_stop'
+                | 'manuel_mod'
+
+        manuel_fn: operatör SwC'yi otonomdan çıkardığında True. Etkin hedef
+        iptal edilir; katedilen yol SİLİNMEZ, aşama kaldığı yerden sürer.
         """
         if mesafe_m <= 0.0:
             self.node.get_logger().error(
@@ -647,25 +791,30 @@ class KayanHedefSurucusu:
             )
             return 'failed'
 
-        with self._lock:
-            self._yol   = 0.0
-            self._konum = None
-
+        # Sıfırlama BURADA DEĞİL: `sur()` aynı aşama için birden çok kez
+        # çağrılıyor (STOP, hata kurtarma) ve her çağrıda sıfırlamak aşamayı
+        # baştan başlatırdı. Sahibi NavigateState — bkz. asama_basla.
         self.node.get_logger().info(
             f'[KAYAN] {label} → {mesafe_m:.1f} m yol, '
-            f'viraj={taraf or "yok"}, bütçe={deadline - time.time():.0f}s'
+            f'viraj={taraf or "yok"}, bütçe={deadline - time.monotonic():.0f}s'
         )
 
         hedefsiz       = 0
         sonraki_hedef  = 0.0
-        son_ilerleme_t = time.time()
+        son_gonderilen = None    # (x, y) odom — ölü bandın karşılaştırma noktası
+        bastirma_bildirildi = False
+        son_ilerleme_t = time.monotonic()
         son_ilerleme_y = 0.0
         try:
             while rclpy.ok():
-                simdi = time.time()
+                simdi = time.monotonic()
                 if e_stop_fn and e_stop_fn():
                     self.node.get_logger().error('[KAYAN] E-STOP — sürüş iptal.')
                     return 'e_stop'
+                if manuel_fn and manuel_fn():
+                    # Etkin hedefin iptali finally dalında; hangi yoldan
+                    # çıkılırsa çıkılsın orada yapılıyor.
+                    return 'manuel_mod'
                 if dur_kontrol and dur_kontrol():
                     return 'stop_requested'
                 if simdi >= deadline:
@@ -679,14 +828,30 @@ class KayanHedefSurucusu:
                 with self._lock:
                     yol        = self._yol
                     odom_zaman = self._odom_zaman
+                    scan_zaman = self._scan_zaman
 
-                if odom_zaman == 0.0 or simdi - odom_zaman > KAYAN_ODOM_BAYATLAMA_S:
+                if olcum_bayat_mi(odom_zaman, simdi, KAYAN_ODOM_BAYATLAMA_S):
                     # Kat edilen yol ölçülemiyorsa aşamanın biteceği nokta da
                     # bilinmiyor demektir; kör sürmek yerine kurtarmaya düşülür.
                     self.node.get_logger().error(
                         f'[KAYAN] {label}: /odometry/filtered yok ya da bayat — '
                         'kat edilen '
                         'yol ölçülemiyor, sürüş kesiliyor.'
+                    )
+                    return 'failed'
+
+                if olcum_bayat_mi(scan_zaman, simdi, KAYAN_TARAMA_BAYATLAMA_S):
+                    # Odometri kapısının aynısı, tarama için. `hedefsiz`
+                    # sayacına bırakılamaz ve sebep tam tersi: tarama bayatken
+                    # hedef ÜRETİLMEYE devam eder (son tarama bellekte durur),
+                    # yani sayaç hiç artmaz ve KAYAN_HEDEF_YOK_SINIR hiç
+                    # dolmaz. Araç, koridorun hafızasından aşamanın bütçesi
+                    # (25–90 s) dolana kadar sürerdi. Sayaç yalnız hedef
+                    # ÜRETİLEMEDİĞİNDE işliyor; bayat veri o dala hiç düşmez.
+                    self.node.get_logger().error(
+                        f'[KAYAN] {label}: /scan/filtered yok ya da bayat '
+                        f'({simdi - scan_zaman:.1f}s) — hedef ölü taramadan '
+                        'üretilirdi, sürüş kesiliyor.'
                     )
                     return 'failed'
 
@@ -731,12 +896,33 @@ class KayanHedefSurucusu:
                         # gönderilirse Nav2 her yeniden planlamada onu o anki
                         # poza göre yeniden çözer ve hedef araçla kayar.
                         ox, oy, oyaw = arac_hedefini_odoma_tasi(hedef, poz)
-                        if self.nav.hedef_gonder(ox, oy, oyaw):
-                            self.node.get_logger().info(
-                                f'[KAYAN] {label}: hedef {kaynak} '
-                                f'araçtan ({hedef[0]:.2f}, {hedef[1]:.2f}) → '
-                                f'odom ({ox:.2f}, {oy:.2f}) '
-                                f'yol {yol:.1f}/{mesafe_m:.1f} m'
+                        # Kaymayan hedefi yeniden göndermek, Nav2'nin kurtarma
+                        # davranışını her seferinde baştan kestiriyor —
+                        # gerekçe hedef_yeniden_gonderilsin_mi'de.
+                        if hedef_yeniden_gonderilsin_mi(
+                                (ox, oy), son_gonderilen,
+                                self.nav.etkin_hedef_var(),
+                                KAYAN_HEDEF_OLU_BANT_M):
+                            if self.nav.hedef_gonder(ox, oy, oyaw):
+                                son_gonderilen = (ox, oy)
+                                bastirma_bildirildi = False
+                                self.node.get_logger().info(
+                                    f'[KAYAN] {label}: hedef {kaynak} '
+                                    f'araçtan ({hedef[0]:.2f}, {hedef[1]:.2f}) → '
+                                    f'odom ({ox:.2f}, {oy:.2f}) '
+                                    f'yol {yol:.1f}/{mesafe_m:.1f} m'
+                                )
+                        elif not bastirma_bildirildi:
+                            # Yalnız GEÇİŞTE bir satır: bastırma sıkışma
+                            # boyunca sürüyor ve her periyotta yazmak log'u
+                            # asıl olayın (kurtarma davranışları) üstüne
+                            # boğardı.
+                            bastirma_bildirildi = True
+                            self.node.get_logger().warn(
+                                f'[KAYAN] {label}: hedef kaymıyor '
+                                f'(<{KAYAN_HEDEF_OLU_BANT_M:.2f} m) — yeniden '
+                                'gönderim durduruldu, Nav2 kurtarmalarına yer '
+                                'açılıyor.'
                             )
                     sonraki_hedef = simdi + KAYAN_HEDEF_PERIYOT_S
 
@@ -833,7 +1019,7 @@ class NavigateState(smach.State):
         return _stop_check_pure(
             self.det_store.get_field('stop_var', False),
             self._stop_cooldown_bitis,
-            time.time(),
+            time.monotonic(),
         )
 
     def _pas_verilebilir(self, wp: dict, label: str) -> bool:
@@ -907,6 +1093,12 @@ class NavigateState(smach.State):
         # taze stage_timeout ile çağırmak toplam süreyi sınırsız bırakıyordu.
         stop_uygulandi = False
         stop_sayaci    = 0
+        # Kat edilen yol sayacının sahibi burası. Çağrı DÖNGÜNÜN DIŞINDA:
+        # içine alınırsa STOP'tan sonraki `continue` sayacı sıfırlar ve
+        # aşama baştan başlar. Aynı waypoint'e kurtarmadan dönülürse numara
+        # değişmediği için sayaç korunur (bkz. asama_basla).
+        if self.kayan is not None:
+            self.kayan.asama_basla(idx)
         # Aşamanın kendi süresi varsa o kullanılır; yoksa ortak tavana düşülür.
         # Tek bir ortak sayı (120 s) her aşamaya aynı süreyi veriyordu: 2,5 m'lik
         # rampa inişi de, 22 m'lik sol U dönüşü de. Süreler waypoints.yaml'da
@@ -922,7 +1114,7 @@ class NavigateState(smach.State):
                 f'[NAVIGATE] {label}: aşama bütçesi koşu saatiyle '
                 f'{istenen:.0f}s → {asama_butcesi:.0f}s kırpıldı.'
             )
-        wp_deadline    = time.time() + asama_butcesi
+        wp_deadline    = time.monotonic() + asama_butcesi
 
         # §6.9: tümsekli bölümde ortalanma izlenir. go_to() bloklayıcı, ölçüm
         # spin thread'indeki tarama callback'inde birikir.
@@ -932,9 +1124,10 @@ class NavigateState(smach.State):
 
         try:
             while True:
-                kalan = wp_deadline - time.time()
+                kalan = wp_deadline - time.monotonic()
                 dur_kontrol = (self._stop_check
                                if stop_sayaci < self.MAX_STOP else None)
+                manuel_kontrol = lambda: self.det_store.get_field('manual_mod', False)
                 if kalan <= 0.0:
                     result = 'timeout'
                 elif self.kayan is not None:
@@ -942,21 +1135,49 @@ class NavigateState(smach.State):
                         label,
                         float(wp.get('mesafe_m', 0.0)),
                         wp.get('viraj'),
-                        deadline=time.time() + kalan,
+                        deadline=time.monotonic() + kalan,
                         dur_kontrol=dur_kontrol,
                         e_stop_fn=lambda: durdurma_gerekli(self.det_store),
+                        manuel_fn=manuel_kontrol,
                     )
                 else:
                     result = self.nav.go_to(
                         wp['x'], wp['y'], wp.get('yaw', 0.0),
                         timeout_sec=kalan,
                         stop_check_fn=dur_kontrol,
+                        manuel_check_fn=manuel_kontrol,
                     )
 
                 # E-STOP kurtarmaya UĞRAMAZ (bkz. ErrorRecoveryState): kurtarma
                 # denemesi harcamak aracı saniyelerce oyalıyordu.
                 if result == 'e_stop':
                     return 'e_stop'
+
+                # Operatör SwC'yi otonomdan çıkardı. Hedef sürücü tarafında
+                # iptal edildi; burada yalnız beklenir ve AYNI aşamaya dönülür.
+                # Görev kaldığı yerden sürer: aşama indeksi ve katedilen yol
+                # korunuyor, sıfırlama yalnız aşama numarası değişince yapılır
+                # (bkz. asama_basla).
+                if result == 'manuel_mod':
+                    self.node.get_logger().warn(
+                        f'[NAVIGATE] {label}: manuel mod — RC devraldı, '
+                        'hedef iptal edildi, bekleniyor.'
+                    )
+                    duraklama = time.monotonic()
+                    while rclpy.ok() and self.det_store.get_field('manual_mod', False):
+                        if durdurma_gerekli(self.det_store):
+                            self.node.get_logger().error(
+                                '[NAVIGATE] E-STOP — manuel mod bekleme iptal.')
+                            return 'e_stop'
+                        time.sleep(0.2)
+                    # Manuel duraklama aşama bütçesinden sayılmaz; koşu saati
+                    # (§6.12) bundan bağımsız işlemeye devam ediyor.
+                    wp_deadline += time.monotonic() - duraklama
+                    self.node.get_logger().info(
+                        f'[NAVIGATE] {label}: tam otonoma dönüldü — '
+                        'aşama kaldığı yerden sürüyor.'
+                    )
+                    continue
 
                 if result == 'stop_requested':
                     stop_sayaci += 1
@@ -966,13 +1187,13 @@ class NavigateState(smach.State):
                     )
                     # Cooldown: aynı STOP işaretinin hemen tekrar tetiklenmesini engeller
                     # 3s: rampada üst-STOP ile alt-STOP arası için yeterli
-                    self._stop_cooldown_bitis = time.time() + 3.0
+                    self._stop_cooldown_bitis = time.monotonic() + 3.0
                     self.det_store.update_field('stop_var', False)
                     stop_uygulandi = True
                     # Zorunlu bekleme navigasyon süresinden sayılmaz.
                     wp_deadline += RAMP_STOP_DURATION
-                    deadline_stop = time.time() + RAMP_STOP_DURATION
-                    while time.time() < deadline_stop:
+                    deadline_stop = time.monotonic() + RAMP_STOP_DURATION
+                    while time.monotonic() < deadline_stop:
                         if durdurma_gerekli(self.det_store):
                             self.node.get_logger().error('[NAVIGATE] E-STOP — STOP bekleme iptal.')
                             return 'e_stop'
@@ -1028,8 +1249,8 @@ class NavigateState(smach.State):
                 f'[NAVIGATE] {label}: STOP tabelası tespit edilmeden hedefe '
                 'varıldı — §6.10 yedek (konum tabanlı) 2s bekleme uygulanıyor.'
             )
-            deadline_stop = time.time() + RAMP_STOP_DURATION
-            while time.time() < deadline_stop:
+            deadline_stop = time.monotonic() + RAMP_STOP_DURATION
+            while time.monotonic() < deadline_stop:
                 if durdurma_gerekli(self.det_store):
                     self.node.get_logger().error(
                         '[NAVIGATE] E-STOP — yedek STOP bekleme iptal.'
@@ -1045,8 +1266,8 @@ class NavigateState(smach.State):
             self.node.get_logger().info(
                 '[NAVIGATE] KAYAR_ENGEL: geçiş yönü bekleniyor...'
             )
-            deadline = time.time() + 10.0
-            while time.time() < deadline:
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
                 if durdurma_gerekli(self.det_store):
                     self.node.get_logger().error('[NAVIGATE] E-STOP — KAYAR_ENGEL bekleme iptal.')
                     return 'e_stop'
@@ -1133,8 +1354,8 @@ class ShootApproachState(smach.State):
             self._targeting_status = "STANDBY"
         self._targeting_enable_pub.publish(Bool(data=True))
 
-        deadline = time.time() + self.TIMEOUT_S
-        while time.time() < deadline:
+        deadline = time.monotonic() + self.TIMEOUT_S
+        while time.monotonic() < deadline:
             if durdurma_gerekli(self.det_store):
                 self.node.get_logger().error('[SHOOT_APPROACH] E-STOP.')
                 self._targeting_enable_pub.publish(Bool(data=False))
@@ -1242,7 +1463,7 @@ class ShootState(smach.State):
             # kart o paketi acil durum sayıp lazer isteğini düşürür, yani ateş
             # komutu kendi ateşini iptal ederdi.
             self._shoot_pub.publish(Bool(data=True))
-            ates_baslangic = time.time()
+            ates_baslangic = time.monotonic()
 
             # Onay bekle: seri_kopru, kartın 0x36'daki DRM_LAZER bitinin
             # yükselen kenarında SHOOT_RESULT_TOPIC'e True basar.
@@ -1254,7 +1475,7 @@ class ShootState(smach.State):
             # zamanlamasına tek başına güvenmek yerine yazılım seviyesinde
             # de minimum süreyi garanti ediyoruz — hareket kilidi bu süre
             # boyunca kesinlikle açık kalır.
-            gecen = time.time() - ates_baslangic
+            gecen = time.monotonic() - ates_baslangic
             if gecen < LASER_FIRE_DURATION:
                 time.sleep(LASER_FIRE_DURATION - gecen)
 
@@ -1371,7 +1592,7 @@ class HizlanmaState(smach.State):
         self._lock     = threading.Lock()
         self._pos      = None   # (x, y) — son odom konumu
         self._hiz      = 0.0    # m/s — durma payının izlenmesi için
-        self._son_odom = 0.0    # wall-clock — son /odom mesajının geliş anı
+        self._son_odom = 0.0    # monotonik — son /odom mesajının geliş anı
 
         node.create_subscription(Odometry, ODOM_TOPIC, self._on_odom, 10)
 
@@ -1382,7 +1603,7 @@ class HizlanmaState(smach.State):
                 msg.pose.pose.position.y,
             )
             self._hiz = msg.twist.twist.linear.x
-            self._son_odom = time.time()
+            self._son_odom = time.monotonic()
 
     def _hiz_oku(self) -> float:
         with self._lock:
@@ -1390,7 +1611,7 @@ class HizlanmaState(smach.State):
 
     def _odom_yasi(self) -> float:
         with self._lock:
-            return time.time() - self._son_odom
+            return time.monotonic() - self._son_odom
 
     def _mesafe(self, baslangic) -> float:
         with self._lock:
@@ -1405,8 +1626,8 @@ class HizlanmaState(smach.State):
             self.node._fsm_state_pub.publish(String(data='HIZLANMA'))
 
         # Odom başlangıç konumunu al (maks 2s bekle)
-        deadline_init = time.time() + 2.0
-        while time.time() < deadline_init:
+        deadline_init = time.monotonic() + 2.0
+        while time.monotonic() < deadline_init:
             with self._lock:
                 if self._pos is not None:
                     baslangic = self._pos
@@ -1422,7 +1643,7 @@ class HizlanmaState(smach.State):
 
         twist    = Twist()
         dt       = 1.0 / self.CMD_HZ
-        baslama  = time.time()
+        baslama  = time.monotonic()
         deadline = baslama + self.TIMEOUT_S
         sonuc    = 'completed'
 
@@ -1447,7 +1668,7 @@ class HizlanmaState(smach.State):
                 baslama  += 0.1
                 continue
 
-            if time.time() > deadline:
+            if time.monotonic() > deadline:
                 self.node.get_logger().warn('[HIZLANMA] Timeout — durduruluyor.')
                 break
 
@@ -1471,7 +1692,7 @@ class HizlanmaState(smach.State):
 
             dist = self._mesafe(baslangic)
 
-            if (time.time() - baslama > self.ODOM_ILERLEME_S
+            if (time.monotonic() - baslama > self.ODOM_ILERLEME_S
                     and dist < self.ODOM_ILERLEME_M):
                 self.node.get_logger().error(
                     f'[HIZLANMA] {self.ODOM_ILERLEME_S:.0f}s tam gazda ilerleme '
@@ -1514,7 +1735,7 @@ class HizlanmaState(smach.State):
         twist.linear.x  = 0.0
         twist.angular.z = 0.0
         cizgi      = self._mesafe(baslangic)
-        durma_basi = time.time()
+        durma_basi = time.monotonic()
         durum      = 'devam'
 
         while rclpy.ok():
@@ -1526,7 +1747,7 @@ class HizlanmaState(smach.State):
             )
             if durum != 'devam':
                 break
-            if time.time() - durma_basi > self.DURMA_TIMEOUT_S:
+            if time.monotonic() - durma_basi > self.DURMA_TIMEOUT_S:
                 durum = 'butce_asildi'
                 break
             time.sleep(dt)
@@ -1651,7 +1872,7 @@ class RampaState(smach.State):
         with self._lock:
             self._pos = (msg.pose.pose.position.x, msg.pose.pose.position.y)
             self._hiz = msg.twist.twist.linear.x
-            self._son_odom = time.time()
+            self._son_odom = time.monotonic()
 
     def _on_imu(self, msg: Imu):
         q = msg.orientation
@@ -1687,7 +1908,7 @@ class RampaState(smach.State):
     def _dur_ve_bekle(self, sure_s: float, etiket: str) -> str:
         """Sıfır komutu basar, GERÇEKTEN durmayı bekler, sonra sure_s sayar."""
         twist = Twist()
-        durma_basi = time.time()
+        durma_basi = time.monotonic()
         durdu_mu   = False
 
         while rclpy.ok():
@@ -1698,7 +1919,7 @@ class RampaState(smach.State):
             if abs(hiz) < self.DURMA_HIZ_ESIGI:
                 durdu_mu = True
                 break
-            if time.time() - durma_basi > self.DURMA_TIMEOUT_S:
+            if time.monotonic() - durma_basi > self.DURMA_TIMEOUT_S:
                 self.node.get_logger().error(
                     f'[RAMPA] {etiket}: {self.DURMA_TIMEOUT_S:.0f}s içinde '
                     f'durulamadı (hız={hiz:.2f} m/s) — §6.10 duruşu şüpheli.'
@@ -1708,12 +1929,12 @@ class RampaState(smach.State):
 
         if durdu_mu:
             self.node.get_logger().info(
-                f'[RAMPA] {etiket}: durdu ({time.time() - durma_basi:.1f}s), '
+                f'[RAMPA] {etiket}: durdu ({time.monotonic() - durma_basi:.1f}s), '
                 f'§6.10 {sure_s:.0f}s bekleme başlıyor.'
             )
 
-        bekleme_bitis = time.time() + sure_s
-        while time.time() < bekleme_bitis:
+        bekleme_bitis = time.monotonic() + sure_s
+        while time.monotonic() < bekleme_bitis:
             self._cmd_pub.publish(twist)
             if durdurma_gerekli(self.det_store):
                 return 'e_stop'
@@ -1740,12 +1961,12 @@ class RampaState(smach.State):
         twist.linear.x  = kalkis_hiz
         twist.angular.z = 0.0
 
-        basla = time.time()
+        basla = time.monotonic()
         try:
             while rclpy.ok():
                 if durdurma_gerekli(self.det_store):
                     return 'e_stop'
-                gecen = time.time() - basla
+                gecen = time.monotonic() - basla
                 fren, bitti = yokus_kalkis_freni(
                     gecen, YOKUS_TUTMA_FREN_BINDE, YOKUS_TORK_SURESI_S,
                     YOKUS_FREN_BIRAKMA_BINDE_PER_S)
@@ -1784,8 +2005,8 @@ class RampaState(smach.State):
         yon = 'iniş' if iniyor else 'tırmanış'
 
         # Odom başlangıcı — sensör yoksa hiç başlama
-        deadline_init = time.time() + 2.0
-        while time.time() < deadline_init:
+        deadline_init = time.monotonic() + 2.0
+        while time.monotonic() < deadline_init:
             pos, _, _, _ = self._oku()
             if pos is not None:
                 break
@@ -1801,7 +2022,7 @@ class RampaState(smach.State):
 
         twist         = Twist()
         dt            = 1.0 / self.CMD_HZ
-        baslama       = time.time()
+        baslama       = time.monotonic()
         timeout_s     = self._timeout(hedef_hiz)
         deadline      = baslama + timeout_s
         faz           = 'yaklasma'
@@ -1837,7 +2058,7 @@ class RampaState(smach.State):
                 baslama  += 0.1
                 continue
 
-            if time.time() > deadline:
+            if time.monotonic() > deadline:
                 self.node.get_logger().error(
                     f'[RAMPA] {timeout_s:.0f}s timeout — iptal.'
                 )
@@ -1853,7 +2074,7 @@ class RampaState(smach.State):
 
             pos, hiz, pitch, son_odom = self._oku()
 
-            yas = time.time() - son_odom
+            yas = time.monotonic() - son_odom
             if yas > self.ODOM_BAYATLAMA_S:
                 self.node.get_logger().error(
                     f'[RAMPA] /odom {yas:.1f}s bayat — eğimde körlemesine '
@@ -1866,7 +2087,7 @@ class RampaState(smach.State):
             # İlerleme koruması TOPLAM yola bakar: gidilen faz değişiminde
             # sıfırlandığı için onunla ölçmek her faz geçişinde sahte alarm verir.
             toplam = self._mesafe(baslangic_pos, pos)
-            if (time.time() - baslama > self.ODOM_ILERLEME_S
+            if (time.monotonic() - baslama > self.ODOM_ILERLEME_S
                     and toplam < self.ODOM_ILERLEME_M):
                 self.node.get_logger().error(
                     f'[RAMPA] {self.ODOM_ILERLEME_S:.0f}s gazda ilerleme '
@@ -1879,12 +2100,12 @@ class RampaState(smach.State):
             # pitch şartı arar). Sürekliyse tahrik yetmiyordur.
             if rollback_riskli(pitch, hiz, self.PITCH_ESIK_DEG, 0.05):
                 if kayma_basi is None:
-                    kayma_basi = time.time()
+                    kayma_basi = time.monotonic()
                     self.node.get_logger().warn(
                         f'[RAMPA] GERİ KAYMA (pitch={pitch:.1f}°, '
                         f'hız={hiz:.2f} m/s) — anti_rollback devrede olmalı.'
                     )
-                elif time.time() - kayma_basi > self.GERI_KAYMA_S:
+                elif time.monotonic() - kayma_basi > self.GERI_KAYMA_S:
                     self.node.get_logger().error(
                         f'[RAMPA] Geri kayma {self.GERI_KAYMA_S:.1f}s sürdü — '
                         'tahrik yetersiz, gaz kesiliyor. Aracı fren tutmalı.'
