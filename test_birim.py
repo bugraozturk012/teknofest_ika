@@ -42,6 +42,7 @@ from teknofest_ika.otonomi.pure_logic import (  # noqa: E402
     calib_stat_coz,
     ayar_deger,
     ayar_gonderilecek,
+    AYAR_DIREKSIYON,
     enkoder_sessiz,
     kip_modu,
     bms_okuma_gecerli,
@@ -2622,11 +2623,29 @@ _CAGRI = _m_sk.group(1) if _m_sk else ''
 for _ad in sorted(_SK_AYAR):
     check(f"{_ad} düğüme geçiriliyor", f'-p {_ad}:=' in _CAGRI, True)
 
-# Varsayılanları 0 olmalı: sıfır "ölçülmedi" demek ve köprü onu göndermiyor.
-# Uydurma bir sayı, kartın bilerek sustuğu alana yanlış ölçek yazmaktır.
+# Dördünün varsayılanı 0 olmalı: sıfır "ölçülmedi" demek ve köprü onu
+# göndermiyor. Uydurma bir sayı, kartın bilerek sustuğu alana yanlış ölçek
+# yazmaktır. Çevre ve dişli oranı ayrıca KART TARAFINDA ölçülü ve kart
+# "göndermeyin" diyor; buradan gönderilirse kartın kendi değerini ezer.
 for _ad in ('TEKERLEK_CEVRE_MM', 'GOSTERGE_DARBE_TUR', 'ENKODER_DISLI_ORANI',
-            'DIREKSIYON_ORANI', 'DIREKSIYON_ISARET'):
+            'DIREKSIYON_ISARET'):
     check(f"{_ad} varsayılanı ölçülmedi (0)", _VARSAYILAN.get(_ad), '0')
+
+# Kolon/teker oranı ölçüldü ve kartta karşılığı YOK — göndermek bizim işimiz.
+# Dizge karşılaştırması yerine değer köprünün ölçek yolundan geçiriliyor:
+# betikteki sayı doğru yazılmış olsa bile yanlış ölçekte int16'ya sığmazsa
+# ya da elenirse kart alanı boş kalır ve direksiyon büyüklüğü yanlış sürer.
+_ORAN_VAR = float(_VARSAYILAN.get('DIREKSIYON_ORANI', '0'))
+check("kolon/teker oranı gönderilecek", ayar_gonderilecek(_ORAN_VAR), True)
+check("kolon/teker oranı ham değeri", ayar_ham(AYAR_DIREKSIYON, _ORAN_VAR)[0],
+      13091)
+# Oran redüktör çıkışı 2 tur = 720° kolon ÷ 55° teker ölçümünden geliyor.
+check("oran ölçümle tutuyor", round(720.0 / 55.0, 3), round(_ORAN_VAR, 3))
+# Kolon kelepçesi ile oran birlikte ackermann'ın tavanını belirliyor: komut
+# edilen en büyük teker açısı kolonda ±750°'yi AŞMAMALI, yoksa kart kırpar ve
+# Nav2 istediği açıyı hiç alamadan dümdüz gider.
+check("max_steering_angle kolon kelepçesinin içinde",
+      math.degrees(0.5236) * _ORAN_VAR <= 750.0, True)
 
 
 # ─── Seri portu iki okuyucu paylaşamaz ─────────────────────────────────────

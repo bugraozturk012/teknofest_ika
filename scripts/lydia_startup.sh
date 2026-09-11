@@ -292,7 +292,22 @@ trap temizle TERM INT
 #    eder ve sahada "girdik ama olmadı" denir.
 : "${GOSTERGE_DARBE_TUR:=0}"    # gösterge ucu darbe/tur
 : "${ENKODER_DISLI_ORANI:=0}"   # enkoder mili turu : teker turu
-: "${DIREKSIYON_ORANI:=0}"      # direksiyon kolon/teker oranı
+# Kolon/teker oranı ÖLÇÜLDÜ: redüktör çıkışı 2 tur (720° kolon) attığında
+# tekerlekler 55° dönüyor → 720/55 = 13,091. Kartın adım sayısı bunu bağımsız
+# doğruluyor: 2 tur = 32.000 adım / 55° = 581,8 adım/teker°, kartın
+# 44,44 adım/kolon° x 13,091 = 581,8. Yani kartın "kolon turu" redüktörün
+# ÇIKIŞI (16.000 = 1600 mikroadım x 10 redüktör), motor mili değil.
+#
+# Kart kimlik 1 ve 2'den farklı olarak bu alanı kendisi ölçmüş değil, yani
+# göndermek bizim işimiz (050 §2.2). Ölçek 1000 → ham 13091, int16 içinde.
+#
+# ⚠ Bu oran ile kolonun ±750° sınırı tekerde ±57° demek ve o açıda Ackermann
+#   geometrisi anlamını yitirir (R = 1,44/tan57° = 0,92 m). İki ölçümden biri
+#   yanlış: ya 750° lock-to-lock'un TOPLAMI (tek yön 375° → teker 28,7°), ya
+#   mekanik uç 750°'den önce geliyor. Bu yüzden ackermann_converter'ın
+#   max_steering_angle'ı 30°'de bırakıldı: 30° → kolon 393°, kelepçenin rahat
+#   içinde ve minimum_turning_radius 2,49 geçerli kalıyor.
+: "${DIREKSIYON_ORANI:=13.091}"  # direksiyon kolon/teker oranı
 # ⚠ Yalnız +1 ya da -1 kabul edilir; başka değer köprüde reddedilir.
 #   İşaret yanlışsa Nav2 sola ister araç sağa gider ve sapma büyür — bu yüzden
 #   ilk denemesi TEKERLEKLER YERDEN KESİK yapılır.
@@ -514,15 +529,17 @@ fi
 # Sürüş kartı Nucleo-F767ZI: $SERI_PORT @ 921600. Bu iki değer düğümün
 # varsayılanıyla aynı tutulmalı — betik launch dosyasını kullanmıyor, yani
 # yalnız orada değiştirilen bir ayar sahaya hiç ulaşmaz.
-# KART AYARLARI (0x09) — hepsi varsayılan 0 = ÖLÇÜLMEDİ, sıfır olan
-# gönderilmez. Kart bu sayıları flash'a yazmıyor: köprü, kartı ilk gördüğünde
+# KART AYARLARI (0x09) — 0 = ÖLÇÜLMEDİ ve gönderilmez. Kolon/teker oranı
+# dışındaki dördü bilerek 0: çevre ve dişli oranını kart kendisi ölçtü ve
+# "göndermeyin" dedi (050 §0), gösterge ucu bağlı değil, işaret henüz
+# tekerlekler yerden kesik denenmedi. Kart bu sayıları flash'a yazmıyor: köprü, kartı ilk gördüğünde
 # ve kart her resetlendiğinde yeniden gönderiyor, yani kalıcılık burada.
 # Beşi de ortam değişkeninden geliyor; değeri değiştirmek için ne betiği
 # düzenlemek ne yeniden DERLEMEK gerekiyor, düğümü yeniden başlatmak yeter:
 #     TEKERLEK_CEVRE_MM=1842.5   tekerlekte bir tam tur, YÜK ALTINDA yerde ölçülür
 #     GOSTERGE_DARBE_TUR=6       gösterge ucu darbe/tur
 #     ENKODER_DISLI_ORANI=3.25   enkoder mili turu : teker turu
-#     DIREKSIYON_ORANI=12.4      kolon/teker oranı
+#     DIREKSIYON_ORANI=13.091    kolon/teker oranı — ÖLÇÜLDÜ, varsayılan bu
 #     DIREKSIYON_ISARET=-1       ⚠ ÖNCE tekerlekler yerden kesik denenir
 # 🔴 Tekerlek çevresi girilmeden kart hız alanını 0 basar; o hâlde Nav2
 #    aracı hareketsiz sanar ve her hedefi 20 saniyede iptal eder.
