@@ -3769,7 +3769,11 @@ for _olu in ('amcl', 'map_server', 'map_saver'):
 # --symlink-install'ı engellediği kayıtlıydı.
 check("setup.py maps glob'u kaldırıldı", "'maps/*'" in _SETUP24, False)
 check("setup.py worlds glob'u kaldırıldı", "'worlds/*'" in _SETUP24, False)
-check("maps dizini gerçekten yok", os.path.exists(os.path.join(_KOK, 'maps')), False)
+# ⚠️ Burada `maps/` dizininin VAR OLMADIĞI sınanmıyordu ve sınanmamalı: depo
+# testi çalışma ağacının yerel kalıntılarına bakamaz. Araçta git'in izlemediği
+# eski bir `maps/test_harita.pgm` duruyor ve o kontrol orada sahte alarm
+# veriyordu — laptop'ta yeşil, araçta kırmızı. Asıl kural setup.py'de glob'un
+# kalmaması ve o yukarıdaki iki satırla kilitli.
 
 # ── B3 · Derleme tazeliği ─────────────────────────────────────────────────
 # Overlay'in VAR olması yetmiyor: kopya tabanlı kurulumda `git pull` sonrası
