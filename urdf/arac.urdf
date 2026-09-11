@@ -37,7 +37,12 @@
       Gövde kutusu 1,90 x 1,17 x 0,415 m.
         en        1,17 m  — araçtan ölçüldü (tekerlek dışları dahil)
         yükseklik 0,415 m — TOPLAM yükseklik 0,78 m eksi zemin boşluğu 0,365 m
-        boy       1,90 m  — bu turda YENİDEN ÖLÇÜLMEDİ, eski değer
+        boy       1,83 m  — araçtan ölçüldü
+      ⚠️ Taşmanın öne/arkaya dağılımı ölçülmedi: 1,83 - 1,44 = 0,39 m ve
+      kutu base_footprint etrafında SİMETRİK varsayılıyor (her uç 0,195 m).
+      donus.py'nin bağımsız `arka_tasma=0.20` varsayımı ön ucu 0,19 m
+      veriyor, yani simetri iyi bir yaklaşım. Ölçülürse footprint'in x
+      uçları ayrı ayrı yazılır.
 
       🔑 Kutu ZEMİNE DEĞMİYOR: şasi altı zeminden 0,365 m yukarıda (ölçüldü).
       base_link zeminden 0,28 m'de olduğu için kutunun merkezi
@@ -50,14 +55,14 @@
     <visual>
       <origin xyz="0 0 0.2925" rpy="0 0 0"/>
       <geometry>
-        <box size="1.90 1.17 0.415"/>
+        <box size="1.83 1.17 0.415"/>
       </geometry>
       <material name="blue"/>
     </visual>
     <collision>
       <origin xyz="0 0 0.2925" rpy="0 0 0"/>
       <geometry>
-        <box size="1.90 1.17 0.415"/>
+        <box size="1.83 1.17 0.415"/>
       </geometry>
     </collision>
     <inertial>

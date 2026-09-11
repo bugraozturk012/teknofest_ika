@@ -2200,9 +2200,10 @@ print("\n=== Gövde ölçüsü tutarlılığı ===")
 
 # Araçtan ölçülen gerçek gövde. Planlayıcı bu dikdörtgeni kullanıyor; küçük
 # yazmak koridorlarda ve dönüşlerde olmayan bir pay uydurur.
-# Boy bu turda YENİDEN ÖLÇÜLMEDİ. En ölçüldü. Kutu yüksekliği TÜRETİLİR:
-# toplam yükseklik (0,78) eksi zemin boşluğu (0,365) — gövde zemine değmiyor.
-_ARAC_BOY, _ARAC_GEN = 1.90, 1.17
+# Boy ve en araçtan ÖLÇÜLDÜ. Kutu yüksekliği TÜRETİLİR: toplam yükseklik
+# (0,78) eksi zemin boşluğu (0,365) — gövde zemine değmiyor.
+# ⚠️ Taşmanın öne/arkaya dağılımı ölçülmedi; footprint simetrik varsayıyor.
+_ARAC_BOY, _ARAC_GEN = 1.83, 1.17
 _ARAC_YUK = round(0.78 - 0.365, 3)
 
 with open(os.path.join(_KOK, 'config/nav2_params.yaml'), encoding='utf-8') as f:

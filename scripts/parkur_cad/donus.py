@@ -2,7 +2,7 @@
 
     python3 donus.py            # rapor + donus_raporu.png
 
-Aracın 1,90 × 1,17 m dikdörtgeni, eğriliği 1/R ile sınırlı ve GERİ VİTESSİZ
+Aracın 1,83 × 1,17 m dikdörtgeni, eğriliği 1/R ile sınırlı ve GERİ VİTESSİZ
 yollar boyunca süpürülüyor; engellerle tam dikdörtgen-dikdörtgen (ayırıcı
 eksen) testi yapılıyor. Bariyerler `duzeltilmis.json`'dan yönelimleriyle
 okunuyor — eksen hizalı sınır kutusu virajlarda koridoru sahte biçimde
@@ -29,7 +29,7 @@ SERIT = 3.0                       # §6.1
 class Arac:
     """Bisiklet modeli; poz arka aks merkezinde."""
 
-    def __init__(self, boy=1.90, gen=1.17, dingil=1.44, arka_tasma=0.20):
+    def __init__(self, boy=1.83, gen=1.17, dingil=1.44, arka_tasma=0.20):
         self.boy, self.gen, self.dingil = boy, gen, dingil
         self.arka, self.on = arka_tasma, boy - arka_tasma
         self.yari_b, self.yari_g = boy / 2, gen / 2
