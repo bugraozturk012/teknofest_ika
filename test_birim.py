@@ -3610,6 +3610,93 @@ check("waypoint ön koşulu harita moduna daraltıldı",
       'YALNIZ `harita` modunda' in _ST23, True)
 
 
+
+# ─── 24. Nav2 yeniden başlatma, ölü harita ve derleme tazeliği ─────────────
+print("\n=== 24. Nav2 restart, ölü harita, derleme ===")
+
+_ST24 = _kaynak('scripts/lydia_startup.sh')
+_SETUP24 = _kaynak('setup.py')
+_NAV24 = _nav2_params()
+
+# ── A · Nav2 yeniden başlatma ─────────────────────────────────────────────
+# navigation_launch.py düğümleri AYRI SÜREÇ olarak açıyor (use_composition
+# varsayılanı False) ve launch'ın kapanışı kademeli: SIGINT → 5 s → SIGTERM
+# → 5 s → SIGKILL (launch/actions/execute_local.py varsayılanları). Sabit ve
+# kısa bir bekleme, ikinci bringup'ı eskiler çıkarken başlatır.
+check("nav2 kapanışı süreye değil duruma bekliyor", '_nav2_ayakta' in _ST24, True)
+check("sabit sleep 3 kalmadı",
+      'pkill -f navigation_launch.py 2>/dev/null\n            sleep 3' in _ST24, False)
+check("bekleme tavanlı", '_bekle" -lt 15' in _ST24, True)
+check("tavanı aşarsa adıyla kapatılıyor",
+      'adıyla kapatılıyor' in _ST24, True)
+
+# 🔑 Tespit KOMUT SATIRINDAN yapılmamalı: `pgrep -f` çağıranın kendi komut
+# satırını da tarar ve desen orada geçtiği an fonksiyon kendini bulur —
+# hiç nav2 süreci yokken bile tavan kadar beklenir (denendi, tam bu oldu).
+_AYAKTA = _ST24.split('_nav2_ayakta() {')[1].split('}')[0]
+check("tespit comm üzerinden (pgrep -f DEĞİL)", '-f ' in _AYAKTA, False)
+
+# Desen ALTERNATİF ALTERNATİF çözülüyor, metinde aranmıyor: 'controller_serv'
+# kırpılmamış 'controller_server' içinde de geçer, yani `in` ile bakan bir
+# test kırpmanın bozulmasını göremez (denendi, tam bu mutasyon kaçtı).
+_desen = re.search(r'pgrep\s+"\^\((.*?)\)\$"', _AYAKTA, re.S)
+check("pgrep deseni anchor'lı bulunabiliyor", _desen is not None, True)
+_adlar = set(_desen.group(1).split('|')) if _desen else set()
+# comm 15 KARAKTERE kırpılıyor (ölçüldü); beklenen küme
+# navigation_launch.py'deki sekiz executable'ın kırpılmış hâli.
+_BEKLENEN_COMM = {
+    'controller_server'[:15], 'planner_server'[:15], 'bt_navigator'[:15],
+    'behavior_server'[:15],   'smoother_server'[:15],
+    'velocity_smoother'[:15], 'waypoint_follower'[:15],
+    'lifecycle_manager'[:15],
+}
+check("desen tam olarak kırpılmış sekiz ad", _adlar, _BEKLENEN_COMM)
+check("hiçbir ad 15 haneyi aşmıyor",
+      all(len(a) <= 15 for a in _adlar), True)
+
+# navigation_launch.py SEKİZ düğüm açıyor; temizlik listesi waypoint_follower'ı
+# atlarsa betiğin yeniden çalıştırılması geride yönetilen bir düğüm bırakır.
+_TEMIZLIK = _ST24.split('for _p in web_dashboard.py')[1].split('; do')[0]
+for _n in ('controller_server', 'planner_server', 'bt_navigator',
+           'behavior_server', 'smoother_server', 'velocity_smoother',
+           'waypoint_follower', 'lifecycle_manager'):
+    check(f"temizlik listesinde {_n}", _n in _TEMIZLIK, True)
+
+# ── B1 · Ölü lokalizasyon yapılandırması ──────────────────────────────────
+# Üçü de lifecycle_manager'ın node_names listesinde değildi, yani hiç ayağa
+# kaldırılmıyorlardı; durmaları "haritayla çalışıyoruz" izlenimi veriyordu.
+for _olu in ('amcl', 'map_server', 'map_saver'):
+    check(f"{_olu} bloğu kaldırıldı", _olu in _NAV24, False)
+check("harita yokluğu gerekçesiyle yazılı",
+      'Lokalizasyon YOK' in _kaynak('config/nav2_params.yaml'), True)
+# Yönetilen düğüm listesi hiçbirine atıf yapmamalı.
+_YONETILEN = _NAV24['lifecycle_manager_navigation']['ros__parameters']['node_names']
+for _olu in ('amcl', 'map_server', 'map_saver'):
+    check(f"yönetilen listede {_olu} yok", _olu in _YONETILEN, False)
+# setup.py'deki maps/worlds glob'ları: dizinler yok, girdiler ölüydü ve
+# --symlink-install'ı engellediği kayıtlıydı.
+check("setup.py maps glob'u kaldırıldı", "'maps/*'" in _SETUP24, False)
+check("setup.py worlds glob'u kaldırıldı", "'worlds/*'" in _SETUP24, False)
+check("maps dizini gerçekten yok", os.path.exists(os.path.join(_KOK, 'maps')), False)
+
+# ── B3 · Derleme tazeliği ─────────────────────────────────────────────────
+# Overlay'in VAR olması yetmiyor: kopya tabanlı kurulumda `git pull` sonrası
+# .py değişiklikleri etkisizdir ve betik sessizce ESKİ kodu başlatır.
+# Yol tam olarak eşleşmeli: 'colcon_build.rc' kendisi 'colcon_build.rcX'
+# içinde de geçer ve substring arayan bir test bozulmayı göremez.
+check("derleme tazeliği colcon_build.rc'ye bakıyor",
+      'build/teknofest_ika/colcon_build.rc"' in _ST24, True)
+check("kurulum kipi ayırt ediliyor", '_KURULUM=symlink' in _ST24 and
+      '_KURULUM=kopya' in _ST24, True)
+# symlink kipinde .py değişikliği uyarı ÜRETMEMELİ (kaynak zaten canlı),
+# yalnız setup.py — console_scripts stub'ları iki kipte de kopya.
+_TAZE = _ST24.split('_YAPI_IZI="')[1].split('export ROS_DOMAIN_ID')[0]
+check("symlink dalı yalnız setup.py'ye bakıyor",
+      '$WS/setup.py" -newer' in _TAZE, True)
+check("kopya dalı tüm .py'lere bakıyor",
+      "'*.py' -newer" in _TAZE, True)
+
+
 # ─── Sonuç ───────────────────────────────────────────────────────────────────
 print(f"\n{'='*45}")
 print(f"  TOPLAM: {PASS+FAIL} test | {PASS} GEÇTI | {FAIL} BAŞARISIZ")

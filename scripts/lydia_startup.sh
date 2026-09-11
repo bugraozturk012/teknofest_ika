@@ -33,6 +33,42 @@ if ! ros2 pkg prefix teknofest_ika >/dev/null 2>&1; then
     exit 1
 fi
 
+# Overlay VAR olmak yetmiyor, GÜNCEL de olmalı. Yukarıdaki iki denetim
+# "derlenmiş mi" sorusunu cevaplıyor; "çekilen kod derlendi mi" sorusunu
+# hiçbir şey sormuyordu. Araçtaki kurulum kopya tabanlıysa `git pull` sonrası
+# .py değişiklikleri ETKİSİZDİR ve betik hiçbir uyarı basmadan ESKİ kodu
+# başlatır — sahada "düzeltme araçta" sanılan en pahalı hata sınıfı.
+#
+# İki kurulum kipi ayrı davranıyor (ölçüldü):
+#   symlink (`colcon build --symlink-install`) → build/<paket>/<paket> kaynağa
+#     symlink olur, .py değişiklikleri anında geçerlidir; yalnız setup.py
+#     (console_scripts) değişirse yeniden derleme gerekir çünkü stub'lar kopya.
+#   kopya   (düz `colcon build`) → her .py değişikliği derleme ister.
+# Zaman damgası ölçütü `colcon_build.rc`: başarılı her derlemenin sonunda
+# yazılıyor ve iki kipte de var.
+_WS_KOK=${WS%/src/*}
+_YAPI_IZI="$_WS_KOK/build/teknofest_ika/colcon_build.rc"
+if [ -f "$_YAPI_IZI" ]; then
+    if [ -L "$_WS_KOK/build/teknofest_ika/teknofest_ika" ]; then
+        _KURULUM=symlink
+        _YENI=$(find "$WS/setup.py" -newer "$_YAPI_IZI" -print -quit 2>/dev/null)
+        _NE="setup.py (console_scripts stub'ları kopya)"
+    else
+        _KURULUM=kopya
+        _YENI=$(find "$WS/teknofest_ika" "$WS/setup.py" -name '*.py' -newer "$_YAPI_IZI" \
+                -print -quit 2>/dev/null)
+        _NE="Python kaynağı"
+    fi
+    if [ -n "$_YENI" ]; then
+        echo "🔴 UYARI: $_NE son derlemeden YENİ (kurulum kipi: $_KURULUM)."
+        echo "   İlk yeni dosya: $_YENI"
+        echo "   Çalışacak olan ESKİ koddur. Düzeltmek için:"
+        echo "     cd $_WS_KOK && colcon build --packages-select teknofest_ika"
+    else
+        echo "Kurulum güncel (kip: $_KURULUM)."
+    fi
+fi
+
 export ROS_DOMAIN_ID=42
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 export FASTRTPS_DEFAULT_PROFILES_FILE=/home/lydia/lydia_ortam/udp_only.xml
@@ -290,7 +326,7 @@ for _p in web_dashboard.py yolo_detection_node preprocessing_node \
           ekf_node yolo_adapter_node terrain_adapter cone_fusion_node \
           kayar_engel_kalman kayar_engel_costmap misyon_fsm \
           controller_server planner_server bt_navigator behavior_server \
-          smoother_server velocity_smoother lifecycle_manager \
+          smoother_server velocity_smoother waypoint_follower lifecycle_manager \
           seri_kopru mod_yoneticisi ackermann_converter \
           async_slam_toolbox_node map_image_node foxglove_bridge; do
     pkill -f "$_p" 2>/dev/null
@@ -697,7 +733,40 @@ if [ "$NAV2_AKTIF" = "1" ]; then
             echo "UYARI: Nav2 lifecycle geçişi tamamlanmadı — bringup yeniden" \
                  "başlatılıyor (autostart sabit zaman aşımı)."
             pkill -f navigation_launch.py 2>/dev/null
-            sleep 3
+            # Sabit bir bekleme YETMEZ. navigation_launch.py düğümleri ayrı
+            # süreç olarak açıyor (use_composition varsayılanı False) ve
+            # launch'ın kapanış merdiveni kademeli: SIGINT → sigterm_timeout
+            # → SIGTERM → sigkill_timeout → SIGKILL, ikisinin de varsayılanı
+            # 5 saniye (launch/actions/execute_local.py). Yani en kötü hâlde
+            # kapanış 10 saniye sürüyor; altında kalan bir sleep, ikinci
+            # bringup'ı eskiler hâlâ çıkarken başlatır ve aynı adda iki düğüm
+            # doğar. Süre değil DURUM bekleniyor.
+            # Tespit KOMUT SATIRINDAN değil SÜREÇ ADINDAN (comm) yapılıyor:
+            # `pgrep -f` çağıranın kendi komut satırını da tarar ve desen o
+            # satırda geçtiği an fonksiyon kendini bulur, yani hiç nav2 süreci
+            # yokken bile 15 saniye bekler (denendi, tam bu oldu).
+            # ⚠ comm 15 KARAKTERE KIRPILIYOR (ölçüldü): `controller_server`
+            # 17 hane olduğu için çekirdekte `controller_serv` duruyor.
+            # Adlar navigation_launch.py'deki executable'lardan alındı ve
+            # kırpılmış hâlleriyle yazıldı — kısaltmalar yazım hatası değil.
+            _nav2_ayakta() {
+                pgrep "^(controller_serv|planner_server|bt_navigator|behavior_server|smoother_server|velocity_smooth|waypoint_follow|lifecycle_manag)$" \
+                    >/dev/null 2>&1
+            }
+            _bekle=0
+            while _nav2_ayakta && [ "$_bekle" -lt 15 ]; do
+                sleep 1
+                _bekle=$((_bekle + 1))
+            done
+            if _nav2_ayakta; then
+                echo "   Nav2 düğümleri ${_bekle}s'de kapanmadı — adıyla kapatılıyor."
+                for _n in controller_server planner_server bt_navigator \
+                          behavior_server smoother_server velocity_smoother \
+                          waypoint_follower lifecycle_manager; do
+                    pkill -f "$_n" 2>/dev/null
+                done
+                sleep 3
+            fi
             ros2 launch nav2_bringup navigation_launch.py \
                 use_sim_time:=false \
                 params_file:="$WS/config/nav2_params.yaml" \
