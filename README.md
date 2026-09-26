@@ -573,6 +573,17 @@ ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose \
 
 ---
 
+## Lisans
+
+[Apache License 2.0](LICENSE). Kullanabilir, değiştirebilir ve dağıtabilirsiniz;
+telif bildirimini ve [`NOTICE`](NOTICE) dosyasını korumanız gerekir.
+
+Depoda dağıtılmayan iki şey var: sürüş kartının firmware kaynağı ve eğitilmiş
+model ağırlıkları (`models/`). Çalışma zamanı bağımlılıkları (ROS 2, Nav2,
+slam_toolbox, OpenCV ve diğerleri) ayrıca kurulur ve her biri kendi lisansıyla
+dağıtılır. YOLO çıkarımının isteğe bağlı Ultralytics yolu AGPL-3.0'dır ve bu
+depo onu dağıtmaz — ayrıntı [`requirements.txt`](requirements.txt) içinde.
+
 ## Katkıda bulunanlar
 
 ### Ahmet Efe NEZLİ ([@dwifk0](https://github.com/dwifk0)) — araç elektroniği ve sürüş kartı

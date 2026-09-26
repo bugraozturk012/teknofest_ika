@@ -7,11 +7,14 @@ dosyasındadır.
 --------------------------------------------------------------------------
 KATKILAR
 
-Sürüş kartı (Nucleo-F767ZI) ve Jetson ↔ kart arayüz sözleşmesi:
+Sürüş kartı (Nucleo-F767ZI), Jetson ↔ kart arayüz sözleşmesi ve açılış
+servislerinin bir bölümü:
 
     Ahmet Efe Nezli (@dwifk0)
       donanim/PROTOKOL_F767.md
       teknofest_ika/gomulu/f767_protokol.py
+      scripts/lydia_startup.sh  (pano besleyen servislerin kalıcı hâle
+                                 getirilmesi; dosyanın geri kalanı ayrı yazar)
 
 Yazar, bu katkısının deponun lisansıyla yayımlanmasına onay vermiştir.
 Sürüş kartının firmware kaynağı bu depoda yer almaz; adı geçen dosyalar
