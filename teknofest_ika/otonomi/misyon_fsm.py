@@ -141,9 +141,6 @@ from teknofest_ika.otonomi.topics import (
     IC_DUVAR_MIN_ILERI_M,
     PLANLAYICI_DONUS_YARICAPI_M,
     KAYAN_ODOM_BAYATLAMA_S, LIDAR_MONTAJ_YAW_RAD,
-    DUZ_BASLANGIC_MESAFE_M, DUZ_BASLANGIC_HIZ_MS, DUZ_BASLANGIC_KP,
-    DUZ_DIREKSIYON_PAYI, DUZ_IMU_BAYATLAMA_S,
-    DUZ_YAW_DONMUS_S, DUZ_YAW_DONMUS_M,
 )
 from teknofest_ika.otonomi.pure_logic import (
     DetectionsStore, stop_check as _stop_check_pure, hizlanma_hiz_profili,
@@ -157,8 +154,6 @@ from teknofest_ika.otonomi.pure_logic import (
     olcum_bayat_mi, yol_artimi, hedef_yeniden_gonderilsin_mi,
     hedef_ulasilabilir_mi,
     quat_yaw, arac_hedefini_odoma_tasi,
-    duz_git_omega, duz_baslangic_tuketimi, duz_bacak_iptal,
-    duz_yaw_donmus,
 )
 
 # §6.10: dik eğim çıkış/iniş noktalarında STOP tabelası kaçırılsa bile
@@ -1829,295 +1824,6 @@ class HizlanmaState(smach.State):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# DÜZ BAŞLANGIÇ — LiDAR'sız ilk bacak (IMU + enkoder)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class DuzBaslangicState(smach.State):
-    """
-    Otonom başlar başlamaz parkurun düz ilk şeridini baş açısı tutarak sürer.
-    Girdisi İKİ sensör: yön `/imu/data`, yol `/odom`. Tarama, harita, Nav2 ve
-    kayan hedef bu bacakta hiç çalışmaz.
-
-    Neden ayrı bir bacak: kayan hedef de Nav2 da tek duvar kaynağı olarak
-    taramaya bağlı. Tarama yoksa ya da açısı kalibre değilse ikisi de ya hedef
-    üretemez ya da yanlış üretir; düz bir şeritte ise yönü korumak için duvara
-    bakmak gerekmiyor — şerit düz olduğu sürece sabit baş açısı şeridi takip
-    etmekle aynı şeydir.
-
-    Ne yapmaz: YAN KONUMU düzeltmez (bkz. pure_logic.duz_git_omega) ve engel
-    görmez. Şeridin 3 m'sinde araç 1,17 m yer kaplıyor, yani her yanda 0,915 m
-    pay var; 20 m'de 1° baş açısı hatası 0,35 m, 2° hatası 0,70 m yan kayma
-    demek. Pay bu yüzden baş açısı hatasının 2°'nin altında tutulmasına bağlı
-    ve IMU susarsa bacak İPTAL edilir — açık döngüde sürmek payı tüketir.
-
-    Aşama çizelgesini KISALTIR: kat edilen yol çizelgenin başından düşülür ve
-    normal sistem kaldığı aşamadan sürer (userdata.wp_index + o aşamanın kalan
-    mesafesi). Çizelgeye eklemek bütün parkuru kaydırırdı.
-
-    Geçişler: 'completed' → NAVIGATE
-              'failed'    → ERROR_RECOVERY
-              'e_stop'    → MISSION_ABORT
-    """
-
-    CMD_HZ           = 10.0   # Hz
-    ODOM_BAYATLAMA_S = 1.0    # s — /odom bu süre gelmezse yol ölçülemiyor
-    ODOM_ILERLEME_S  = 4.0    # s — bu süre sonunda ilerleme yoksa iptal
-    ODOM_ILERLEME_M  = 0.20   # m
-    # Timeout donanım arızasına karşı üst sınır, kontrol parametresi değil:
-    # en kötü hâlde ortalama hızın komut edilenin %40'ı olduğu varsayılır
-    # (kalkış sürtünmesi + sulu yolda patinaj).
-    TIMEOUT_PAYI     = 0.40
-    # Bu açıyı aşan bir sapma pay hesabının dışına çıkmış demektir: 20 m'de
-    # 6° baş açısı 2,1 m yan kayma, şerit yarısı 1,5 m. Düzeltmenin toparlaması
-    # beklenmez, bacak bırakılır ve taramalı normal sisteme dönülür.
-    SAPMA_SINIR_RAD  = math.radians(6.0)
-    # Sebep kodu → sahada okunacak metin. Kodlar saf fonksiyondan geliyor,
-    # metin burada: log cümlesini pure_logic'e koymak onu ROS'a bağlardı.
-    _IPTAL_METNI = {
-        'odom_bayat':   '/odom bayat, yol ölçülemiyor',
-        'imu_bayat':    '/imu/data bayat, baş açısı bilinmiyor — bu bacağın '
-                        'tek geri beslemesi o, açık döngüde sürülmez',
-        'ilerleme_yok': 'komut verildi ama ilerleme yok — odometri donmuş ya '
-                        'da araç hareket etmiyor',
-        'sapma_asildi': 'baş açısı sınırı aştı, bacak bırakılıyor ve taramalı '
-                        'sisteme dönülüyor',
-        'yaw_donmus':   'yaw paketi akıyor ama DEĞERİ kıpırdamıyor — bacağın '
-                        'geri beslemesi ölü, açık döngüde sürülmez',
-    }
-
-    def __init__(self, node: Node, det_store: DetectionsStore,
-                 saat: 'MisyonSaati', mesafe_m: float, hiz: float):
-        smach.State.__init__(self, outcomes=['completed', 'failed', 'e_stop'],
-                             input_keys=['waypoints', 'wp_index'],
-                             output_keys=['waypoints', 'wp_index'])
-        self.node      = node
-        self.det_store = det_store
-        self.saat      = saat
-        self._mesafe   = float(mesafe_m)
-        self._hiz      = float(hiz)
-        # Eğrilik tavanı dönüş yarıçapının payı kadar. Dingil arası burada
-        # ikinci bir kopya olarak tutulmuyor: κ_max = 1/R_min zaten ortak.
-        self._kappa_limit = DUZ_DIREKSIYON_PAYI / PLANLAYICI_DONUS_YARICAPI_M
-
-        self._cmd_pub = node.create_publisher(Twist, CMD_VEL_TOPIC, 10)
-
-        self._lock      = threading.Lock()
-        self._pos       = None   # (x, y) — son odom konumu
-        self._vx        = 0.0    # m/s
-        self._son_odom  = 0.0    # monotonik
-        self._yaw       = None   # rad
-        self._son_imu   = 0.0    # monotonik
-
-        node.create_subscription(Odometry, ODOM_TOPIC, self._on_odom, 10)
-        node.create_subscription(Imu, IMU_TOPIC, self._on_imu, 10)
-
-    def _on_odom(self, msg: Odometry):
-        with self._lock:
-            self._pos = (msg.pose.pose.position.x, msg.pose.pose.position.y)
-            self._vx  = msg.twist.twist.linear.x
-            self._son_odom = time.monotonic()
-
-    def _on_imu(self, msg: Imu):
-        q = msg.orientation
-        with self._lock:
-            self._yaw = quat_yaw(q.x, q.y, q.z, q.w)
-            self._son_imu = time.monotonic()
-
-    def _oku(self):
-        """(yol_konumu, vx, yaw, odom_yasi, imu_yasi) — tek kilit altında."""
-        simdi = time.monotonic()
-        with self._lock:
-            return (self._pos, self._vx, self._yaw,
-                    simdi - self._son_odom, simdi - self._son_imu)
-
-    @staticmethod
-    def _yol(baslangic, poz) -> float:
-        """
-        Başlangıç noktasından ÖKLİD uzaklığı. Kayan hedef yolu |Δkonum|
-        toplayarak ölçüyor ve o yöntem duran araçta bile poz gürültüsünü
-        mesafe olarak biriktiriyor (bkz. topics.KAYAN_ODOM_BAYATLAMA_S'in
-        üstündeki not). Düz bir bacakta iki ölçüm aynı sayıyı veriyor, ama
-        Öklid olanı gürültüyle büyümüyor: bacak bu yüzden onu kullanıyor.
-        """
-        if poz is None:
-            return 0.0
-        dx = poz[0] - baslangic[0]
-        dy = poz[1] - baslangic[1]
-        return math.sqrt(dx * dx + dy * dy)
-
-    def _cizelgeyi_dus(self, userdata, tuketilen: float) -> None:
-        """
-        Kat edilen yolu aşama çizelgesinden düşer ve normal sistemin süreceği
-        ilk aşamayı işaret eder. Tamamen yenen aşamalar atlanır; ilk yarım
-        kalan aşamanın `mesafe_m`'si kalanla değiştirilir.
-        """
-        wps = userdata.waypoints
-        mesafeler = [float(w.get('mesafe_m', 0.0) or 0.0) for w in wps]
-        indeks, kalan = duz_baslangic_tuketimi(mesafeler, tuketilen)
-
-        atlanan = [w['label'] for w in wps[:indeks]]
-        if atlanan:
-            self.node.get_logger().warn(
-                f'[DÜZ] Çizelgeden düşülen aşamalar: {", ".join(atlanan)} — '
-                f'fiziksel olarak üzerinden geçildi, ama bu aşamalara bağlı '
-                f'arazi profili UYGULANMADI.'
-            )
-        if indeks >= len(wps):
-            self.node.get_logger().error(
-                f'[DÜZ] {tuketilen:.1f} m çizelgenin tamamını ({sum(mesafeler):.1f} m) '
-                f'yedi — düz bacak parkurdan uzun. DUZ_BASLANGIC_MESAFE_M düşürülmeli.'
-            )
-            userdata.wp_index = len(wps)
-            return
-
-        wps[indeks]['mesafe_m'] = kalan
-        userdata.wp_index = indeks
-        self.node.get_logger().info(
-            f'[DÜZ] Normal sistem {wps[indeks]["label"]} aşamasından sürüyor, '
-            f'kalan {kalan:.1f} m (yazılı {mesafeler[indeks]:.1f} m).'
-        )
-
-    def execute(self, userdata):
-        if hasattr(self.node, '_fsm_state_pub'):
-            self.node._fsm_state_pub.publish(String(data='DUZ_BASLANGIC'))
-
-        twist = Twist()
-        dt    = 1.0 / self.CMD_HZ
-
-        # Başlangıç referansları: konum odom'dan, baş açısı IMU'dan. İkisi de
-        # zorunlu — yaw referansı alınamazsa düzeltilecek bir hata da yoktur.
-        deadline_init = time.monotonic() + 3.0
-        baslangic = yaw_ref = None
-        while time.monotonic() < deadline_init:
-            poz, _, yaw, odom_yas, imu_yas = self._oku()
-            if poz is not None and yaw is not None \
-                    and odom_yas < self.ODOM_BAYATLAMA_S \
-                    and imu_yas < DUZ_IMU_BAYATLAMA_S:
-                baslangic, yaw_ref = poz, yaw
-                break
-            time.sleep(0.05)
-
-        if baslangic is None or yaw_ref is None:
-            poz, _, yaw, odom_yas, imu_yas = self._oku()
-            self.node.get_logger().error(
-                f'[DÜZ] Başlanamadı — odom {"yok" if poz is None else f"{odom_yas:.1f}s bayat"}, '
-                f'IMU {"yok" if yaw is None else f"{imu_yas:.1f}s bayat"}. '
-                f'Bu bacağın iki girdisi bunlar; açık döngüde sürülmez.'
-            )
-            return 'failed'
-
-        self.node.get_logger().info(
-            f'[DÜZ] Başladı — {self._mesafe:.1f} m @ {self._hiz:.2f} m/s, '
-            f'baş açısı referansı {math.degrees(yaw_ref):+.1f}°. '
-            f'LiDAR ve Nav2 kullanılmıyor.'
-        )
-
-        baslama  = time.monotonic()
-        deadline = baslama + self._mesafe / max(1e-3, self._hiz * self.TIMEOUT_PAYI)
-        sonuc    = 'completed'
-        yol      = 0.0
-        # Yaw'ın kaç saniye ve kaç metre boyunca BİT OLARAK aynı kaldığını
-        # izlemek için çapa. Değer değişince yenilenir.
-        capa_yaw, capa_zaman, capa_yol = yaw_ref, baslama, 0.0
-
-        while rclpy.ok():
-            if durdurma_gerekli(self.det_store):
-                self.node.get_logger().error('[DÜZ] E-STOP — durduruluyor.')
-                sonuc = 'e_stop'
-                break
-
-            if self.det_store.get_field('manual_mod', False):
-                self.node.get_logger().warn(
-                    '[DÜZ] Manuel mod — RC devraldı, bekleniyor.',
-                    throttle_duration_sec=2.0)
-                twist.linear.x = 0.0
-                twist.angular.z = 0.0
-                self._cmd_pub.publish(twist)
-                time.sleep(0.1)
-                # Manuel duraklama bütçeden sayılmaz; sayılsaydı deadline
-                # kontrolü bu daldan sonra geldiği için RC manuelde kaldığı
-                # sürece döngü sonsuza giderdi.
-                deadline += 0.1
-                baslama  += 0.1
-                continue
-
-            if self.saat.doldu():
-                self.node.get_logger().error(
-                    '[DÜZ] §6.12 koşu süresi doldu — fren.')
-                break
-
-            if time.monotonic() > deadline:
-                self.node.get_logger().warn(
-                    f'[DÜZ] Timeout — {yol:.1f}/{self._mesafe:.1f} m.')
-                break
-
-            poz, vx, yaw, odom_yas, imu_yas = self._oku()
-            yol   = self._yol(baslangic, poz)
-            # yaw bilinmiyorken sapma hesaplanamaz; kapı zaten onu ilk eliyor
-            # ve 0 değeri yalnız çağrıyı tamamlamak için.
-            sapma = aci_sarmala(yaw - yaw_ref) if yaw is not None else 0.0
-
-            # Kapıların tamamı ve hangisinin öncelikli olduğu
-            # pure_logic.duz_bacak_iptal'de; test_birim.py onu doğrudan
-            # sürüyor. Sıra önemli: bayat yaw ile hesaplanan sapma gerçeği
-            # değil son bilinen değeri ölçer.
-            iptal = duz_bacak_iptal(
-                odom_yas, imu_yas, yaw is not None, yol,
-                time.monotonic() - baslama, sapma,
-                self.ODOM_BAYATLAMA_S, DUZ_IMU_BAYATLAMA_S,
-                self.ODOM_ILERLEME_S, self.ODOM_ILERLEME_M,
-                self.SAPMA_SINIR_RAD)
-            # Yaw değişmediği sürece çapa duruyor; değişince yenilenir.
-            # Karşılaştırma ham değerle: kart 0,1° adımlarla gönderiyor, yani
-            # "aynı" burada gerçekten bit olarak aynı demek.
-            if yaw is not None and yaw != capa_yaw:
-                capa_yaw, capa_zaman, capa_yol = yaw, time.monotonic(), yol
-            elif iptal is None and duz_yaw_donmus(
-                    time.monotonic() - capa_zaman, yol - capa_yol,
-                    DUZ_YAW_DONMUS_S, DUZ_YAW_DONMUS_M):
-                iptal = ('yaw_donmus', 'failed')
-
-            if iptal is not None:
-                sebep, karar = iptal
-                self.node.get_logger().error(
-                    f'[DÜZ] {self._IPTAL_METNI[sebep]} — {yol:.1f}/'
-                    f'{self._mesafe:.1f} m, sapma {math.degrees(sapma):+.1f}°, '
-                    f'odom {odom_yas:.1f}s / IMU {imu_yas:.1f}s yaşında.')
-                if karar == 'failed':
-                    sonuc = 'failed'
-                break
-
-            if yol >= self._mesafe:
-                self.node.get_logger().info(
-                    f'[DÜZ] {yol:.1f} m tamamlandı, son sapma '
-                    f'{math.degrees(sapma):+.1f}°.')
-                break
-
-            twist.linear.x  = self._hiz
-            twist.angular.z = duz_git_omega(yaw, yaw_ref, vx, DUZ_BASLANGIC_KP,
-                                            self._kappa_limit)
-            self._cmd_pub.publish(twist)
-
-            self.node.get_logger().info(
-                f'[DÜZ] yol={yol:.1f}/{self._mesafe:.1f} m  '
-                f'sapma={math.degrees(sapma):+.1f}°  ω={twist.angular.z:+.3f}',
-                throttle_duration_sec=1.0)
-            time.sleep(dt)
-
-        twist.linear.x  = 0.0
-        twist.angular.z = 0.0
-        for _ in range(3):
-            self._cmd_pub.publish(twist)
-            time.sleep(dt)
-
-        # Kat edilen yol her çıkışta düşülür: yarıda kesilse de araç o kadar
-        # ilerledi ve çizelge onu saymazsa normal sistem aşamaları geç bitirir.
-        self._cizelgeyi_dus(userdata, yol)
-        self.node.get_logger().info(f'[DÜZ] Tamamlandı → {sonuc} ({yol:.1f} m).')
-        return sonuc
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # STATE 6 — RAMPA  (§6.10 dik eğim, Nav2 baypas)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2820,16 +2526,6 @@ def main():
     # §6.10 rampa hızları — sahada ölçülecek, waypoints.yaml'dan canlı okunur.
     rampa_tirmanis     = float(parametreler.get('rampa_tirmanis_hiz', 0.60))
     rampa_inis         = float(parametreler.get('rampa_inis_hiz',     0.40))
-    # Düz başlangıç: LiDAR'sız ilk bacak. 0 = kapalı, normal akış baştan sürer.
-    # Açılış betiği DUZ_BASLANGIC_M ile eziyor.
-    node.declare_parameter('duz_baslangic_m',
-                           float(parametreler.get('duz_baslangic_m',
-                                                  DUZ_BASLANGIC_MESAFE_M)))
-    node.declare_parameter('duz_baslangic_hiz',
-                           float(parametreler.get('duz_baslangic_hiz',
-                                                  DUZ_BASLANGIC_HIZ_MS)))
-    duz_mesafe = float(node.get_parameter('duz_baslangic_m').value)
-    duz_hiz    = float(node.get_parameter('duz_baslangic_hiz').value)
     node.get_logger().info(f'Aşama timeout: {stage_timeout:.0f}s | Başlangıç bekleme: {baslangic_bekleme:.0f}s (waypoints.yaml)')
 
     # ── Hedefleme yolu: 'harita' | 'kayan' | 'oto' ────────────────────────
@@ -2903,32 +2599,11 @@ def main():
     sm.userdata.retry_count = 0
 
     with sm:
-        # Düz başlangıç açıkken IDLE oraya çıkar. Kapalıyken state hiç
-        # eklenmez: eklenip mesafesi 0 olsa bacak anında biter ama çizelgeyi
-        # yine de dolaşır ve logda yanıltıcı bir "düşüldü" satırı bırakır.
         smach.StateMachine.add(
             'IDLE',
             IdleState(node, saat, baslangic_bekleme),
-            transitions={'started':
-                         'DUZ_BASLANGIC' if duz_mesafe > 0.0 else 'NAVIGATE'}
+            transitions={'started': 'NAVIGATE'}
         )
-
-        if duz_mesafe > 0.0:
-            node.get_logger().warn(
-                f'[DÜZ] Düz başlangıç AÇIK — ilk {duz_mesafe:.1f} m '
-                f'{duz_hiz:.2f} m/s ile yalnız IMU + enkoder ile sürülecek; '
-                f'LiDAR, Nav2 ve kayan hedef bu bacakta kullanılmıyor. '
-                f'Kat edilen yol aşama çizelgesinden DÜŞÜLÜR.'
-            )
-            smach.StateMachine.add(
-                'DUZ_BASLANGIC',
-                DuzBaslangicState(node, det_store, saat, duz_mesafe, duz_hiz),
-                transitions={
-                    'completed': 'NAVIGATE',
-                    'failed':    'ERROR_RECOVERY',
-                    'e_stop':    'MISSION_ABORT',
-                }
-            )
 
         smach.StateMachine.add(
             'NAVIGATE',

@@ -794,10 +794,15 @@ KART_KIP_TOPIC = "/kart/kip"
 # Kart arıza bayrakları (UInt16): 0x35 v0'daki HATA_* biti kümesi.
 KART_HATA_TOPIC = "/kart/hata"
 
-# Kart sürüş durum bayrakları (UInt16): 0x36 v1'deki DRM_* biti kümesi.
+# Kartın KENDİ sürüş durumu (UInt16): 0x36 v1'deki DRM_* kümesi — SwA kesme,
+# SwB taret, geri vites, yön değiştirme kilidi, ışık, lazer. Aracın neden
+# kımıldamadığı sorusunun ilk bakılacak yeri: DRM_KESME tek başına bütün
+# hareketi durdurur ve sebebi kumandadadır, yazılımda değil.
+# KART_LINK_TOPIC'teki JDR_* kümesiyle karıştırılmamalı; o kümede kartın
+# Jetson'a dair gördükleri var, burada kartın kendi sürüş durumu.
 KART_DURUM_TOPIC = "/kart/durum"
 
-# Kartın Jetson'a dair gördüğü bayraklar (UInt16): 0x39 v1'deki JDR_* kümesi.
+# Kartın JETSON'a dair gördüğü bayraklar (UInt16): 0x39 v1'deki JDR_* kümesi.
 # JDR_LINK düşükse kart bizi canlı görmüyordur ve komutlarımız yok sayılıyordur;
 # "gönderiyorum ama dinlemiyor" durumunun tek görünür yeri burasıdır.
 KART_LINK_TOPIC = "/kart/link"
@@ -907,37 +912,3 @@ CONE_CLOUD_TOPIC = "/cone_cloud"   # PointCloud2 → Nav2 ObstacleLayer
 # Veri paketi kayıt kontrolü
 KAYIT_BASLAT_TOPIC = "/veri_paketi/kayit_baslat"  # Bool (True=başlat)
 KAYIT_DURUMU_TOPIC = "/veri_paketi/kayit_durumu"  # Bool (True=devam ediyor)
-
-# ── Düz başlangıç (LiDAR'sız ilk bacak) ──────────────────────────────────────
-# Parkurun ilk şeridi CAD'de düz: istasyon 1·2·3 hepsi y=0 ve yaw=-pi, ilk
-# viraj ancak istasyon 4'te (y=+10). Kümülatif mesafe istasyon 3'e 22,2 m,
-# yani 20 m düz sürüş şeridin içinde kalıyor ve virajı hiç görmüyor.
-#
-# 🔑 Bu bacak aşama çizelgesine EKLENMEZ, çizelgeden DÜŞÜLÜR
-# (pure_logic.duz_baslangic_tuketimi). Kayan hedef modunda aşamalar kat edilen
-# yola bakıyor; başa 20 m eklemek rampayı, atışı ve hızlanmayı 20 m ileri
-# kaydırırdı.
-DUZ_BASLANGIC_MESAFE_M = 20.0   # [m] 0 = kapalı, normal akış baştan sürer
-# Bu bacak SULU_YOL ve TASLI_YOL'un üzerinden geçiyor (§6.4 su, §6.3 çakıl) ve
-# o aşamalara bağlı arazi profili uygulanmıyor — hız burada seçilir, μ≈0,3'lük
-# sulu yola göre. Kart 0,20 m/s'nin altını tabana yükseltiyor, altına inmenin
-# anlamı yok.
-DUZ_BASLANGIC_HIZ_MS = 0.50     # [m/s]
-# Baş açısı hatasına oransal kazanç [1/s]: 1,0 iken 2° sapma 0,035 rad/s
-# ister, payın (aşağıda) içinde kalır.
-DUZ_BASLANGIC_KP = 1.0
-# Düzeltme direksiyonun tamamını kullanmaz: en fazla dönüş yarıçapının
-# karşılığı eğriliğin bu kadarı. 0,25 → κ 0,100 1/m ≈ 8,2° teker açısı.
-# Tam kilit düz giden bir araçta yalnız salınım üretir.
-DUZ_DIREKSIYON_PAYI = 0.25
-# IMU 50 Hz; bu süre gelmezse baş açısı bilinmiyor demektir ve bacağın tek
-# geri beslemesi odur — açık döngüde 20 m sürmek aracı duvara yazar.
-DUZ_IMU_BAYATLAMA_S = 0.5       # [s]
-# Bayatlık kapısının görmediği arıza: paket akarken İÇİNDEKİ açının donması.
-# 11 Eylül'de araçta yaw 2031 örneğin hepsinde tam 0,000 okundu — araç durduğu
-# için meşru da olabilir, ama hareket hâlinde aynısı olursa bacak sapmayı hep
-# 0 görür ve düzeltme yapmadan sürer. İki eşik BİRLİKTE aranıyor: duruyorken
-# sabit yaw normaldir, kart 0,1° adımlarla gönderdiği için kısa bir düzlükte
-# aynı basamakta kalmak da normaldir.
-DUZ_YAW_DONMUS_S = 4.0          # [s]
-DUZ_YAW_DONMUS_M = 2.0          # [m]
