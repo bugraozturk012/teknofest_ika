@@ -21,7 +21,7 @@
 11. [Parkur Aşamaları](#11-parkur-aşamaları)
 12. [Kurulum](#12-kurulum)
 13. [Çalıştırma](#13-çalıştırma)
-14. [Bekleyen Kalibrasyonlar](#14-bekleyen-kalibrasyonlar)
+14. [Ölçümler ve bekleyen kalibrasyonlar](#14-ölçümler-ve-bekleyen-kalibrasyonlar)
 
 ---
 
@@ -86,10 +86,15 @@ karşılıkları yok.
 ### Ackermann Parametreleri
 
 ```
-Wheelbase        : ölçülecek [m]
-Maks. steer açısı: ölçülecek [rad]
-Min. dönüş yarı  : L / tan(δ_max)
+Dingil arası (L)  : 1.44 m       mezürle ölçüldü
+Maks. steer açısı : 30° (0.52 rad)  ⚠ mekanik uç ölçülmedi, muhafazakâr sınır
+Min. dönüş yarıçapı: L / tan(δ_max) = 2.49 m
 ```
+
+Direksiyon kolonu ile tekerlek arasındaki oran **13.091** olarak ölçüldü ve karta
+`0x09` ayar paketiyle gönderiliyor. Bu oranla kolonun ±750° sınırı tekerde ±57°
+demek; iki ölçümden biri tutarsız olduğu için `max_steering_angle` 30°'de
+bırakıldı — kelepçenin rahat içinde kalıyor ve `minimum_turning_radius` geçerli.
 
 ---
 
@@ -169,8 +174,10 @@ gelmezse mod manuele döner.
 │   │   ├── watchdog.py             # Kritik topic izleyici (/e_stop dahil)
 │   │   └── pure_logic.py           # rclpy-bağımsız kritik hesaplamalar (test_birim.py bunu kullanır)
 │   ├── gomulu/
-│   │   ├── seri_kopru.py           # Arduino binary seri köprü
-│   │   └── lora_gcs.py             # LoRa GCS telemetri
+│   │   ├── seri_kopru.py           # Sürüş kartı (F767) binary seri köprüsü
+│   │   ├── f767_protokol.py        # Kart arayüz sözleşmesi — paket ve bayrak tanımları
+│   │   ├── taret_rc_koprusu.py     # Taret kartı seri köprüsü
+│   │   └── bms_koprusu.py          # BMS BLE → HTTP köprüsü
 │   └── gorsel/
 │       ├── scan_relay.py           # Lidar timestamp/frame düzeltici
 │       ├── preprocessing_node.py   # Kamera ön işleme
@@ -180,7 +187,13 @@ gelmezse mod manuele döner.
 │       ├── servo_controller_node.py# PCA9685 servo sürücü
 │       ├── kayar_engel_kalman.py   # Kalman filtreli engel takibi
 │       ├── kayar_engel_costmap.py  # Dinamik costmap yayıncı
-│       └── cone_fusion_node.py     # Lidar + kamera koni füzyonu
+│       ├── cone_fusion_node.py     # Lidar + kamera koni füzyonu
+│       ├── lane_detection_node.py  # Şerit tespiti
+│       └── map_image_node.py       # /map → pano görüntüsü
+│   └── utils/
+│       ├── tensorrt_inferer.py     # TensorRT çıkarım motoru
+│       ├── camera_model.py         # Pinhole projeksiyon
+│       └── pid_controller.py       # Integral windup korumalı PID
 ├── launch/
 │   ├── gercek_arac.launch.py       # Gerçek araç — tam stack
 │   └── gercek_harita.launch.py     # Gerçek araç — harita alma
@@ -188,10 +201,14 @@ gelmezse mod manuele döner.
 │   ├── nav2_params.yaml            # Gerçek araç Nav2 parametreleri
 │   ├── ekf.yaml                    # Gerçek araç EKF konfigürasyonu
 │   ├── mapper_params_online_sync.yaml  # SLAM Toolbox konfigürasyonu
-│   └── waypoints.yaml              # Parkur waypoint koordinatları
+│   ├── waypoints.yaml              # Parkur aşamaları: mesafe, süre, arazi
+│   └── bt/                         # Kendi davranış ağaçlarımız (Spin'siz)
 ├── urdf/
 │   └── arac.urdf                   # Araç URDF (robot_state_publisher)
-├── maps/                           # Kaydedilen SLAM haritaları
+├── scripts/
+│   ├── lydia_startup.sh            # Araçtaki açılış otoritesi (systemd buradan)
+│   ├── web_dashboard.py            # Araç panosu
+│   └── parkur_cad/                 # STEP ayrıştırma ve geçilebilirlik analizi
 ├── models/
 │   └── best.pt                     # YOLO model (15 sınıf)
 ├── package.xml
@@ -216,7 +233,7 @@ başlatır — aynı işi tek satırda yapar. Yani sahada koşan zincirde `scan_
 /scan_raw (BEST_EFFORT) → filtre (300–1500 nokta) → timestamp fix → frame_id='lidar_link' → /scan_lidar (RELIABLE)
 ```
 
-### 5.2 `seri_kopru.py` — Arduino ↔ ROS2 Köprüsü
+### 5.2 `seri_kopru.py` — Sürüş kartı (Nucleo-F767ZI) ↔ ROS 2 köprüsü
 
 **Binary Protokol (8 byte):**
 ```
@@ -251,7 +268,7 @@ bizim frenimizin üstüne basabilir ama çözemez.
 
 ```
 κ = ω / v            eğrilik, |κ| ≤ 1/R_min'e kırpılır
-δ = arctan(L × κ)    R_min = L / tan(δ_max) = 2.42 m
+δ = arctan(L × κ)    R_min = L / tan(δ_max) = 2.49 m   (L = 1.44 m)
 
 Giriş : /cmd_vel  (geometry_msgs/Twist)
 Çıkış : /ackermann_cmd  (ackermann_msgs/AckermannDriveStamped)
@@ -265,15 +282,20 @@ Doyma her seferinde loga uyarı olarak basılır.
 
 YOLO tabela tespitine göre Nav2 hız ve costmap parametrelerini anlık günceller. 3 ardışık aynı tespit eşiği sonrası profil değişir.
 
-| Profil | Hız (m/s) | Inflation (m) |
+| Profil | `desired_linear_vel` (m/s) | `inflation_radius` (m) |
 |---|---|---|
-| normal | 2.0 | 0.40 |
-| wet | 0.8 | 0.55 |
-| gravel | 0.7 | 0.45 |
-| slope | 0.5 | 0.65 |
-| rough | 0.4 | 0.60 |
-| slow | 0.3 | 0.40 |
-| fast | 3.0 | 0.35 |
+| normal | 0.65 | 0.40 |
+| wet | 0.50 | 0.55 |
+| gravel | 0.50 | 0.45 |
+| slope | 0.45 | 0.65 |
+| obstacle | 0.60 | 0.50 |
+| rough | 0.45 | 0.60 |
+| slow | 0.45 | 0.40 |
+| fast | 0.90 | 0.35 |
+
+Hızların tavanı sürüş kartının sınırıdır (1.50 m/s). `normal` profilinin 0.65
+değeri sahada doğrulanmış en yüksek otonom hız; aracın tam gaz karşılığı
+1.94 m/s ölçüldü ama o hız otonomda hiç denenmedi.
 
 ### 5.5 `misyon_fsm.py` — Görev Durum Makinesi
 
@@ -285,7 +307,7 @@ YOLO tabela tespitine göre Nav2 hız ve costmap parametrelerini anlık güncell
          [ERROR_RECOVERY]
 ```
 
-### 5.6 YOLO Sınıf Tablosu (16 sınıf, alfabetik)
+### 5.6 YOLO Sınıf Tablosu (15 sınıf, alfabetik)
 
 | class_id | Model Adı | Parkur Anlamı | Terrain |
 |---|---|---|---|
@@ -365,9 +387,9 @@ map
 
 ```yaml
 planner: SmacPlannerHybrid
-  motion_model: DUBIN            # Sadece ileri — geri harekete izin vermez
-  allow_reverse_expansion: false
-  minimum_turning_radius: 2.42   # L/tan(δ_max) = 1.40/tan(30°)
+  motion_model_for_search: REEDS_SHEPP   # İleri + geri yay (geri vites cezalı)
+  allow_reverse_expansion: true          # REEDS_SHEPP'in geri yayı için gerekli
+  minimum_turning_radius: 2.49           # L/tan(δ_max) = 1.44/tan(30°)
 
 controller: RegulatedPurePursuitController
   use_rotate_to_heading: false   # Ackermann yerinde dönemez
@@ -475,21 +497,29 @@ HEDEFLEME_MODU=kayan NAV2_AKTIF=1 ENKODER_AKTIF=1 ./scripts/lydia_startup.sh
 
 ## 11. Parkur Aşamaları
 
-| Sıra | Waypoint | Arazi | Özel |
-|---|---|---|---|
-| 1 | SULU_YOL | wet | — |
-| 2 | TASLI_YOL | gravel | — |
-| 3 | YAN_EGIM | slope | — |
-| 4 | DIK_ENGEL | obstacle | Nav2 kaçınır |
-| 5 | KONİLİ_YOL | normal | — |
-| 6 | KAYAR_ENGEL | normal | Yön bekle max 10s |
-| 7 | ENGEBELİ_ARAZİ | rough | — |
-| 8 | DIK_EGIM_GIRIS | rough | **2s dur** |
-| 9 | DIK_EGIM_CIKIS | normal | **2s dur** |
-| 10 | ATIS_BOLGESI | slow | Hedef ±5px → ateş |
-| 11 | HIZLANMA | fast | 10m/s, 30m |
+Aşama, waypoint koordinatına varışla değil **`mesafe_m` kadar yol kat edilmesiyle**
+biter. Mesafeler parkur CAD'inden planlayıcıyla ölçüldü (kuş uçuşu değil, gerçek yol
+uzunluğu); süreler o mesafelerden türetildi.
 
-> ⚠️ `waypoints.yaml` koordinatları 0.0 placeholder — saha haritasından güncellenecek.
+| Sıra | Aşama | Mesafe | Süre | Arazi | Özel |
+|---|---|---|---|---|---|
+| 1 | SULU_YOL | 10,0 m | 50 s | wet | — |
+| 2 | TASLI_YOL | 7,2 m | 40 s | gravel | — |
+| 3 | YAN_EGIM | 5,0 m | 25 s | slope | — |
+| 4 | DIK_ENGEL | 22,0 m | 90 s | obstacle | Nav2 kaçınır |
+| 5 | KONİLİ_YOL | 5,0 m | 25 s | normal | Nav2 costmap |
+| 6 | KAYAR_ENGEL | 9,8 m | 65 s | normal | Yön beklemesi |
+| 7 | ENGEBELİ_ARAZİ | 15,7 m | 65 s | rough | §6.9 koridor ortalaması |
+| 8 | DIK_EGIM_GIRIS | 13,0 m | 65 s | rough | **2 s dur** · Nav2 baypas |
+| 9 | ATIS_BOLGESI | 2,5 m | 25 s | slow | Nişan onayı → ateş |
+| 10 | DIK_EGIM_CIKIS | 2,5 m | 25 s | normal | **2 s dur** · Nav2 baypas |
+| 11 | HIZLANMA_PARKURU | 19,2 m | 65 s | fast | Nav2 baypas · 30 m puanlanan + 10 m durma payı |
+
+Toplam 111,9 m yol, 540 s aşama bütçesi; koşu süresi tavanı 900 s.
+
+> ⚠️ `waypoints.yaml`'daki `waypoint:` koordinatları 11/11 hâlâ (0,0). Kayan hedef
+> modu koordinat kullanmadığı için bu bloker değil — aşamalar mesafeyle bitiyor.
+> `waypoint_cad:` alanları ise parkur CAD'inden çıkarılmış durumda.
 
 ---
 
@@ -558,18 +588,32 @@ ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose \
 
 ---
 
-## 14. Bekleyen Kalibrasyonlar
+## 14. Ölçümler ve bekleyen kalibrasyonlar
 
-| Görev | Dosya | Parametre |
+### Ölçülenler
+
+| Ölçüm | Değer | Nerede |
 |---|---|---|
-| **Enkoder ölçek katsayısı** | sürüş kartı `config.h` | Aracı mezürle ölçülü bir mesafe kadar it, `/enkoder/ham` sayımına böl. Bu tek sayı dişli oranını ve tekerlek çevresini birlikte içerir. Ölçülene kadar kart `0x31` hız alanını bilerek `0` basıyor — **odometri, EKF ve Nav2 zinciri buna bağlı** |
-| Dingil arası | `ackermann_converter.py`, `urdf/arac.urdf`, `config/*.yaml`, `launch/gercek_arac.launch.py` | Hepsi 1,40 m **yer tutucusuyla** senkron; gerçek ölçüm gelince **hepsi birlikte** güncellenmeli |
-| Maks. steer açısı ve direksiyon kutusu redüksiyonu | `ackermann_converter.py`, sürüş kartı | Kart kolon/teker oranı için `1,0` yer tutucusu kullanıyor: otonom direksiyonun **yönü doğru, büyüklüğü değil** |
-| Min. dönüş yarıçapı | `nav2_params.yaml` | `minimum_turning_radius` — dingil arasından türer |
-| LiDAR konumu | `scripts/lydia_startup.sh`, `urdf/arac.urdf` | Zeminden yükseklik ve arka akstan ileri mesafe; ölçülmeden engeller ~0,8 m yanlış yere konuyor |
-| BNO055 montaj yönü | — | Kart eksen dönüşümünü yapacak; üç işaret ölçümü gelmeden `imu_guvenlik` kapalı kalıyor |
-| Parkur waypoint koordinatları | `waypoints.yaml` | 11 nokta hâlâ (0,0). FSM mesafe tabanlı çalıştığı için bloker değil |
-| TensorRT engine | `models/best.engine` | `export_tensorrt.py` ile üret |
+| Dingil arası | **1,44 m** | `ackermann_converter.py`, `urdf/arac.urdf`, `nav2_params.yaml`, `gercek_arac.launch.py` — dördü senkron |
+| Min. dönüş yarıçapı | **2,49 m** | `nav2_params.yaml` — dingil arasından türer |
+| Gövde ölçüleri | **1,83 × 1,22 m** | Nav2 footprint (yarım en 0,610 + 0,05 padding) |
+| Direksiyon kolon/teker oranı | **13,091** | karta `0x09` ayarıyla gönderiliyor |
+| LiDAR tarama düzlemi | zeminden **0,60 m** | `lydia_startup.sh` statik TF, `urdf/arac.urdf` ile tutarlı |
+| LiDAR montaj açısı | **93,3°** | sahada huniyle çift yönlü kalibre edildi |
+| Aşama mesafeleri | 11/11 dolu | parkur CAD'inden planlayıcıyla ölçüldü |
+
+### Bekleyenler
+
+| Görev | Nerede | Not |
+|---|---|---|
+| 🔴 **Odometri ölçeği** | kart `0x09`: `tekerlek_cevre_mm` + `gosterge_darbe_tur` | **En kritik madde.** Kart hız alanını (`0x31`) ölçek girilmeden bilerek `0` basıyor; `/odom` → EKF → aşama mesafesi zinciri buna bağlı. Çevre **yük altında** ölçülmeli: havalı lastik çöktüğü için geometrik `π·d` gerçekten %2–4 büyük. ⚠ Kart hızı iki kaynaktan alıyor (mil enkoderi ya da gösterge ucu) ve canlı olanı kendisi seçiyor; hangisinin bağlı olduğu aracı iterek `/enkoder/ham` sayımından anlaşılır. Sayım dönerken hız alanı 0 kalıyorsa köprü **"ÖLÇEK UYGULANMIYOR"** basar |
+| 🔴 **BNO055 yaw doğrulaması** | — | EKF'in tek yön kaynağı. Son ölçümde yaw bütün örneklerde tam `0,000` ve kalibrasyon eşiğin altındaydı; araç durduğu için meşru da olabilir, **çevirmeden ayırt edilemez**. `imu_guvenlik` bu yüzden kapalı |
+| 🔴 **Direksiyon işareti** | kart `0x09`: `direksiyon_isaret` | Yalnız `+1` / `−1` kabul edilir, ölçülmedi. Ters işarette düzeltme hatayı büyütür; ilk deneme **tekerlekler yerden kesik** yapılmalı |
+| 🟠 Maks. steer açısı | `ackermann_converter.py` | 30° muhafazakâr sınır. Mekanik uç ölçülmedi; kolon ±750° ile 13,091 oranı tekerde ±57° veriyor ve iki ölçümden biri tutarsız |
+| 🟠 Rampa hızları | `waypoints.yaml` | Tırmanış 0,60 / iniş 0,40 m/s — ikisi de ölçülmedi |
+| 🟠 Fren kalibrasyonu | `topics.py` | Fren oranı sabitleri ve tork oturma penceresi muhafazakâr yer tutucu |
+| ⚪ Parkur waypoint koordinatları | `waypoints.yaml` | 11 nokta (0,0). Kayan hedef modu koordinat kullanmadığı için bloker değil |
+| ⚪ TensorRT engine | `models/best.engine` | `scripts/export_tensorrt.py` ile üretilir; depoda dağıtılmıyor |
 
 ---
 
