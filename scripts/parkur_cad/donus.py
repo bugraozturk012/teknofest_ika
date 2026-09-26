@@ -1,3 +1,6 @@
+# Copyright 2026 Buğra Öztürk
+# SPDX-License-Identifier: Apache-2.0
+
 """Parkurun dönüş yarıçapı ve koni slalomu geçilebilirlik analizi.
 
     python3 donus.py            # rapor + donus_raporu.png

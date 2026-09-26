@@ -1,3 +1,6 @@
+# Copyright 2026 Buğra Öztürk
+# SPDX-License-Identifier: Apache-2.0
+
 """Kayan hedef üreticisini parkur CAD'ine karşı doğrular — araç gerekmez.
 
     python3 koridor_dogrula.py

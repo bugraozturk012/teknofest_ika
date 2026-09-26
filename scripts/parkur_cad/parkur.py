@@ -1,3 +1,6 @@
+# Copyright 2026 Buğra Öztürk
+# SPDX-License-Identifier: Apache-2.0
+
 """STEP montajını çözer, her bileşenin dünya konumunu ve gerçek geometri sınır
 kutusunu verir.
 

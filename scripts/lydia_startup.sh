@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright 2026 Buğra Öztürk
+# SPDX-License-Identifier: Apache-2.0
+
 # lydia_startup.sh — LYDİA açılış yığını (systemd: lydia_autostart.service)
 #
 # Ağ hazır olduğunda tüm algı, kontrol ve izleme düğümlerini sırayla başlatır.

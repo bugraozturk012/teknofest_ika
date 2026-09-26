@@ -1,3 +1,6 @@
+# Copyright 2026 Buğra Öztürk
+# SPDX-License-Identifier: Apache-2.0
+
 """Bariyerlerden şerit ortasını ve tabelalardan waypoint'leri çıkarır.
 CAD çerçevesinde — saha dönüşümü uygulanmadan Nav2'de kullanılamaz.
 

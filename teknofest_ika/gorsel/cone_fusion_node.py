@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 Buğra Öztürk
+# SPDX-License-Identifier: Apache-2.0
+
 """
 cone_fusion_node.py — Cone Detection + LiDAR Fusion + Nav2 Costmap LETHAL PointCloud2
 Uses message_filters.ApproximateTimeSynchronizer

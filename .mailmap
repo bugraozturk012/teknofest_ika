@@ -1,0 +1,5 @@
+# Aynı kişinin farklı commit adlarını tek kanonik ada toplar.
+# git log, git shortlog ve katkı sayan araçlar bunu okur; geçmiş
+# yeniden yazılmaz, yalnız görüntüleme düzelir.
+Buğra Öztürk <ozturkbugra684@gmail.com> <ozturkbugra684@gmail.com>
+Ahmet Efe Nezli <ahmetefenezli@gmail.com> <ahmetefenezli@gmail.com>

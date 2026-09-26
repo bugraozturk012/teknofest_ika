@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 Buğra Öztürk
+# SPDX-License-Identifier: Apache-2.0
+
 """
 ackermann_converter.py — cmd_vel → AckermannDriveStamped Dönüştürücü
 LYDİA İKA Projesi | ROS2 Humble

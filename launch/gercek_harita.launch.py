@@ -1,3 +1,6 @@
+# Copyright 2026 Buğra Öztürk
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Gerçek Araç — Harita Alma Launch Dosyası
 =========================================

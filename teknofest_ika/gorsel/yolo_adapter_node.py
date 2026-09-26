@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 Buğra Öztürk
+# SPDX-License-Identifier: Apache-2.0
+
 """
 yolo_adapter_node.py — Detection2DArray → /ika/detections JSON + /yolo/class_id köprüsü
 

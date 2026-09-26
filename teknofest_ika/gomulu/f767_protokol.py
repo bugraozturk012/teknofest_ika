@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 Ahmet Efe Nezli
+# SPDX-License-Identifier: Apache-2.0
+
 """
 f767_protokol.py — F767ZI sürüş + sensör kartının arayüz tanımları.
 

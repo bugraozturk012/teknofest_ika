@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 Buğra Öztürk
+# SPDX-License-Identifier: Apache-2.0
+
 """
 targeting_node.py — Autonomous Shooting: HSV + Hough Circle + PID
 Publishes targeting error, status, and turret commands.

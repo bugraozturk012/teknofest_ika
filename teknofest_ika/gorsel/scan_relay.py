@@ -1,3 +1,6 @@
+# Copyright 2026 Buğra Öztürk
+# SPDX-License-Identifier: Apache-2.0
+
 """
 scan_relay.py — Lidar Scan Timestamp ve Frame Düzeltici
 ========================================================

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 Buğra Öztürk
+# SPDX-License-Identifier: Apache-2.0
+
 """
 lane_detection_node.py — Classical Lane Detection using Hough Lines + Bird's Eye View
 Publishes lane center offset (std_msgs/Float64)

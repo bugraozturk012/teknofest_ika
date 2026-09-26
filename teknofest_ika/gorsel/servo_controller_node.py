@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 Buğra Öztürk
+# SPDX-License-Identifier: Apache-2.0
+
 """
 servo_controller_node.py — Hardware Turret Control (PCA9685 PWM)
 Vector3.x = yaw_deg offset, .y = pitch_deg offset  (z yoksayılır)

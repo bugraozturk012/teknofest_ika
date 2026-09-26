@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 Buğra Öztürk
+# SPDX-License-Identifier: Apache-2.0
+
 """
 sensor_dogrula.py — Enkoder ve IMU Doğrulama
 =============================================

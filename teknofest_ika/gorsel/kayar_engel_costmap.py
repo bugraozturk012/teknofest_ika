@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 Buğra Öztürk
+# SPDX-License-Identifier: Apache-2.0
+
 """
 kayar_engel_costmap.py — Kayar Engel → Nav2 Costmap Köprüsü
 =============================================================
