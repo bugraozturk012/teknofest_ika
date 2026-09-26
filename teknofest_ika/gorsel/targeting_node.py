@@ -22,6 +22,8 @@ from teknofest_ika.otonomi.topics import (
     TARGETING_ENABLE_TOPIC, TARGETING_STATUS_TOPIC,
     TARGETING_ERROR_TOPIC, TURRET_CMD_TOPIC,
     CAMERA_TARET_PROCESSED_TOPIC, TARGETING_DEBUG_TOPIC,
+    NISAN_HSV_ALT, NISAN_HSV_UST, NISAN_HSV_ALT2, NISAN_HSV_UST2,
+    NISAN_HOUGH_MAX_YARICAP,
     SHOOT_CMD_TOPIC, LASER_FIRE_DURATION, MOD_AKTIF_TOPIC,
     YOLO_CLASSES, CLASS_HEDEF_TAHTASI,
 )
@@ -43,11 +45,11 @@ class TargetingNode(Node):
     def __init__(self):
         super().__init__("targeting_node")
 
-        # HSV parameters for target color (default: red target)
-        self.declare_parameter("hsv_lower", [0, 100, 100])
-        self.declare_parameter("hsv_upper", [10, 255, 255])
-        self.declare_parameter("hsv_lower2", [160, 100, 100])  # red wrap-around
-        self.declare_parameter("hsv_upper2", [179, 255, 255])
+        # Nişan halkası HSV aralığı — kalibre edilmiş değerler topics.py'de.
+        self.declare_parameter("hsv_lower",  NISAN_HSV_ALT)
+        self.declare_parameter("hsv_upper",  NISAN_HSV_UST)
+        self.declare_parameter("hsv_lower2", NISAN_HSV_ALT2)
+        self.declare_parameter("hsv_upper2", NISAN_HSV_UST2)
 
         # Hough Circle parameters
         self.declare_parameter("hough_dp", 1.2)
@@ -55,7 +57,7 @@ class TargetingNode(Node):
         self.declare_parameter("hough_param1", 100)
         self.declare_parameter("hough_param2", 30)
         self.declare_parameter("hough_min_radius", 10)
-        self.declare_parameter("hough_max_radius", 200)
+        self.declare_parameter("hough_max_radius", NISAN_HOUGH_MAX_YARICAP)
 
         # PID gains
         self.declare_parameter("pid_yaw", [0.5, 0.0, 0.1])

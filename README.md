@@ -47,13 +47,13 @@ LYDİA, Teknofest İnsansız Kara Aracı yarışması için geliştirilmiş tam 
 │  │ YDLidar   │          │           │ seri_kopru              │ │
 │  │ Tmini Pro │          │           │ (binary protokol)       │ │
 │  └───────────┘          │           └────────────┬────────────┘ │
-│                         │                        │ USB Seri    │
+│                         │                        │ ST-LINK VCP │
 └─────────────────────────┼────────────────────────┼─────────────┘
                           │                        │
                     Nav2 Action              ┌─────┴──────────────┐
-                    NavigateToPose           │  Arduino Mega 2560  │
-                                             │  + Nano (IMU/servo) │
-                                             │  VESC Flipsky 75100 │
+                    NavigateToPose           │  Nucleo-F767ZI      │
+                                             │  motor·fren·direksiyon │
+                                             │  RC · BNO055 · enkoder │
                                              └────────────────────┘
 ```
 
@@ -64,17 +64,24 @@ LYDİA, Teknofest İnsansız Kara Aracı yarışması için geliştirilmiş tam 
 | Bileşen | Model / Değer |
 |---|---|
 | Ana işlemci | NVIDIA Jetson Orin Nano |
-| Motor sürücü | VESC Flipsky 75100 |
-| Ana MCU | Arduino Mega 2560 |
-| IMU/Servo MCU | Arduino Nano |
+| Sürüş kartı | Nucleo-F767ZI — motor, fren, direksiyon, RC, IMU, enkoder |
+| Motor sürücü | Pilmak 48 V 1200 W BLDC |
+| Gaz DAC | MCP4725 (12 bit) |
+| Fren | BTS7960B H-köprü, vidalı aktüatör |
+| Direksiyon | Step motor + DM860H sürücü (açık çevrim, homing yok) |
 | LiDAR | YDLidar Tmini Pro (2D, 360°, 10Hz) |
 | Kamera | IMX258 OIS (×1 ön) + Microcase 720P (×3) |
-| IMU | MPU9250 (6-eksen, Madgwick AHRS) |
-| Enkoder | AS5600 manyetik enkoder (10-bit, 1024 tick/tur) |
-| RC Kumanda | Flysky FS-i6X |
-| E-STOP | Schneider XB5AS84W3B5 (NC kontağı → GPIO pin 7) |
-| LoRa | LR02 433MHz → /dev/lora |
+| Derinlik | Orbbec Gemini 335L (karar verildi, sipariş edilmedi) |
+| IMU | BNO055 (NDOF, kartta) |
+| Enkoder | E6B2-CWZ6C 600 P/R kuadratür ×4 = 2400 sayım/tur, motor miline 1:1 |
+| RC Kumanda | Flysky FS-i6X — CH1 direksiyon · CH2 gaz · CH3 fren · CH7 kesme · CH8 taret · CH9 mod · CH10 ışık |
+| E-STOP | Schneider XB5AS84W3B5 — mekanik kontak 48 V'u keser, NC blok karta gider |
+| Gövde | 1,90 × 1,16 × 0,76 m |
 | Kinematik | Ackermann (otomobil tipi direksiyon) |
+
+⚠ Jetson'ın GPIO'suna E-STOP hattı **bağlı değil**; durum karttan `0x34` ile
+geliyor. Gaz voltajı, fren zamanlaması ve kalkış itişi kartın işi — köprüde
+karşılıkları yok.
 
 ### Ackermann Parametreleri
 
@@ -104,9 +111,10 @@ Min. dönüş yarı  : L / tan(δ_max)
 ### Topic Akışı
 
 ```
-YDLidar → /scan_raw → scan_relay → /scan_lidar → SLAM, Nav2 costmap
-RC → /rc_input → mod_yoneticisi → mod kararı
-Nav2 → /cmd_vel → mod_yoneticisi → /mux/cmd_vel → ackermann_converter → /ackermann_cmd → seri_kopru → Arduino
+YDLidar → /scan → preprocessing_node → /scan/filtered → SLAM, Nav2 costmap
+         (ham /scan aracın arkasındaki gövde dönüşlerini de taşıyor)
+sürüş kartı → /kart/kip → mod_yoneticisi → mod kararı (karar kartta)
+Nav2 → /cmd_vel → mod_yoneticisi → /mux/cmd_vel → ackermann_converter → /ackermann_cmd → seri_kopru → sürüş kartı
 /camera/image_raw → preprocessing_node → yolo_detection_node → /detections/yolo
 /detections/yolo → yolo_adapter_node → /ika/detections (JSON) → misyon_fsm
                                       → /yolo/class_id (UInt8) → terrain_adapter → Nav2 param güncelle
@@ -116,20 +124,30 @@ misyon_fsm → Nav2 NavigateToPose action → otonom sürüş
 
 ### E-STOP Mimarisi
 
+Üç katman var ve yalnız sonuncusu yazılımda: mantar butonun mekanik kontağı
+48 V'u doğrudan kesiyor, NC blok sürüş kartının pinine gidiyor, kart durumu
+`0x34` ile bildiriyor. Jetson'ın GPIO'suna hiçbir hat bağlı değil.
+
 ```
-Schneider GPIO (pin 7)    ──┐
-imu_guvenlik (roll>20°)   ──► e_stop_node → /e_stop (20Hz) → watchdog izler
-seri_kopru PKT_ESTOP_IN   ──┘   (OR mantığı)              → /e_stop/gpio_fault
-lora_gcs GCS komutu       ──┘                                (GPIO kurulum hatası)
+kart 0x34 (fiziksel buton) ──┐
+imu_guvenlik (roll>20°)    ──► e_stop_node → /e_stop (20Hz) → watchdog izler
+kumanda kesmesi (DRM_KESME)──┘   (OR mantığı — hepsi temiz demeden düşmez)
+GCS komutu                 ──┘
 ```
 
 ### Mod Sistemi
 
-| RC ch5 | Mod | Davranış |
+| Kart kipi (`0x39`) | Mod | Davranış |
 |---|---|---|
-| < 1300µs | MANUAL (0) | RC doğrudan sürer |
-| 1300–1700µs | SEMI_AUTO (1) | Nav2 + RC override |
-| > 1700µs | FULL_AUTO (2) | Tam otonom |
+| 0 | MANUAL | Kart kumandadan doğrudan sürer, Jetson komutunu yok sayar |
+| 1 | — | Sözleşmede tanımlı, kullanılmıyor |
+| 2 | FULL_AUTO | Tam otonom |
+
+Kip anahtarını (SwC/CH9) **sürüş kartı okuyor ve kararı kart veriyor**;
+Jetson'ın oyu yok. Sıralama güvenlik > kumanda > Jetson. `mod_yoneticisi`
+kararı `/kart/kip`'ten alır, ham kanal eşiklemez — anahtar üç konumlu ve
+kullanılmayan orta konum eski eşiğin üstüne düşüyordu. Kip 0,5 saniye
+gelmezse mod manuele döner.
 
 ---
 
@@ -162,7 +180,6 @@ lora_gcs GCS komutu       ──┘                                (GPIO kurulum
 │       ├── servo_controller_node.py# PCA9685 servo sürücü
 │       ├── kayar_engel_kalman.py   # Kalman filtreli engel takibi
 │       ├── kayar_engel_costmap.py  # Dinamik costmap yayıncı
-│       ├── koni_costmap.py         # Koni costmap yayıncı
 │       └── cone_fusion_node.py     # Lidar + kamera koni füzyonu
 ├── launch/
 │   ├── gercek_arac.launch.py       # Gerçek araç — tam stack
@@ -174,14 +191,7 @@ lora_gcs GCS komutu       ──┘                                (GPIO kurulum
 │   └── waypoints.yaml              # Parkur waypoint koordinatları
 ├── urdf/
 │   └── arac.urdf                   # Araç URDF (robot_state_publisher)
-├── meshes/
-│   ├── govde.stl
-│   └── tekerlek.stl
 ├── maps/                           # Kaydedilen SLAM haritaları
-├── arduino/                       # Mega 2560 firmware (PlatformIO)
-│   ├── src/main.cpp
-│   ├── include/config.h
-│   └── platformio.ini
 ├── models/
 │   └── best.pt                     # YOLO model (15 sınıf)
 ├── package.xml
@@ -195,6 +205,12 @@ lora_gcs GCS komutu       ──┘                                (GPIO kurulum
 ### 5.1 `scan_relay.py` — Lidar Düzeltici
 
 YDLidar Tmini Pro'nun [0x202] hatasında ürettiği bozuk scan'leri (timestamp=0, frame=laser_frame, değişken nokta sayısı) düzelterek SLAM ve Nav2 costmap'e iletir.
+
+Yalnızca `launch/gercek_arac.launch.py` yolunda kullanılır. Araçta otorite
+`scripts/lydia_startup.sh` ve o, sürücüyü `/scan_raw`'a remap edip relay'i araya
+koymak yerine `preprocessing_node`'u doğrudan `-r /scan_lidar:=/scan` ile
+başlatır — aynı işi tek satırda yapar. Yani sahada koşan zincirde `scan_relay`
+**yoktur**; `/scan_raw` topic'ine hiçbir şey yayın yapmaz.
 
 ```
 /scan_raw (BEST_EFFORT) → filtre (300–1500 nokta) → timestamp fix → frame_id='lidar_link' → /scan_lidar (RELIABLE)
@@ -210,25 +226,40 @@ CRC = CMD ^ v0_H ^ v0_L ^ v1_H ^ v1_L
 
 | Yön | Komut | Açıklama |
 |---|---|---|
-| Jetson→MCU | PKT_SURUCU (0x01) | hız [mm/s] + direksiyon [centideg] |
-| Jetson→MCU | PKT_DUR (0x02) | Acil dur |
-| Jetson→MCU | PKT_LAZER (0x03) | Lazer ateş |
-| Jetson→MCU | PKT_HB (0x04) | Heartbeat |
-| Jetson→MCU | PKT_SERVO_PAN (0x05) | Taret yatay |
-| Jetson→MCU | PKT_SERVO_TLT (0x06) | Taret dikey |
-| MCU→Jetson | PKT_ENC (0x10) | Enkoder (AS5600) |
-| MCU→Jetson | PKT_IMU_YP (0x11) | Yaw + Pitch |
-| MCU→Jetson | PKT_RC (0x20) | RC kanal verileri |
-| MCU→Jetson | PKT_ESTOP_IN (0x22) | Fiziksel e-stop |
+| Jetson→kart | `0x01` PKT_J_SURUCU | hız [mm/s] + direksiyon [1/100°], ROS işareti (+ sol) |
+| Jetson→kart | `0x02` PKT_J_DUR | gaz rölanti + tam fren; KİLİT kurar, direksiyon açısına dokunmaz |
+| Jetson→kart | `0x03` PKT_J_LAZER | lazer aç/kapa |
+| Jetson→kart | `0x04` PKT_J_HB | heartbeat (yan etkisi olmayan tek paket) |
+| Jetson→kart | `0x05` / `0x06` | taret pan / tilt [0–180°], 90° = dur |
+| Jetson→kart | `0x07` PKT_J_ESTOP | Jetson E-STOP ilan eder |
+| Jetson→kart | `0x08` PKT_J_FREN | fren [‰ 0–1000], işaretsiz |
+| kart→Jetson | `0x30` enkoder sayımı (int32) · `0x31` ileri hız [mm/s] |
+| kart→Jetson | `0x32` yaw/roll · `0x33` pitch + kalibrasyon |
+| kart→Jetson | `0x34` E-STOP · `0x35` `HATA_*` + çalışma süresi |
+| kart→Jetson | `0x36` gaz [‰] + `DRM_*` · `0x37` gaz [mV] + fren [‰] |
+| kart→Jetson | `0x38` kartın anladığı komut · `0x39` kip + `JDR_*` |
+| kart→Jetson | `0x3A` ham CH1/CH9 · `0x3B` sürüm · `0x3C` alınan/bozuk paket |
+
+**Davranış kuralları:** Heartbeat penceresi 700 ms ve XOR'u tutan **her** paket
+onu tazeler; bozuk çerçeveler bilerek tazelemez. `PKT_J_DUR` bir kilittir,
+yalnız taze bir `PKT_J_SURUCU` çözer. Kart otonom dalda hızı kırpar: tavan
+1,50 m/s, taban 0,20 m/s (altındaki sıfır olmayan komutlar tabana yükseltilir),
+0,01 altı rölanti. Fren kaynakları arasında **büyük olan** kazanır — operatör
+bizim frenimizin üstüne basabilir ama çözemez.
 
 ### 5.3 `ackermann_converter.py` — Kinematik Dönüştürücü
 
 ```
-δ = arctan(L × ω / v)
+κ = ω / v            eğrilik, |κ| ≤ 1/R_min'e kırpılır
+δ = arctan(L × κ)    R_min = L / tan(δ_max) = 2.42 m
 
 Giriş : /cmd_vel  (geometry_msgs/Twist)
 Çıkış : /ackermann_cmd  (ackermann_msgs/AckermannDriveStamped)
 ```
+
+İstenen yay R_min'den darsa direksiyon doyar ve hız taşma oranında düşürülür
+(`viraj_taban_hizi` = 0.45 m/s kalkış sürtünmesi tabanının altına inilmez).
+Doyma her seferinde loga uyarı olarak basılır.
 
 ### 5.4 `terrain_adapter.py` — Arazi Parametre Adaptörü
 
@@ -296,15 +327,30 @@ map
 
 | Topic | Tip | Yayıncı | Abone |
 |---|---|---|---|
-| `/scan_raw` | LaserScan | ydlidar_node | scan_relay |
-| `/scan_lidar` | LaserScan | scan_relay | SLAM, costmap |
+| `/scan` | LaserScan | ydlidar_node | preprocessing_node (boot `-r /scan_lidar:=/scan`) |
+| `/scan/filtered` | LaserScan | preprocessing_node | SLAM, Nav2 costmap, cone_fusion, kayar_engel |
+| `/scan_raw` | LaserScan | ydlidar_node (yalnız launch yolunda) | scan_relay |
+| `/scan_lidar` | LaserScan | scan_relay (yalnız launch yolunda) | preprocessing_node |
 | `/cmd_vel` | Twist | Nav2 RPP | mod_yoneticisi |
 | `/mux/cmd_vel` | Twist | mod_yoneticisi | ackermann_converter |
 | `/ackermann_cmd` | AckermannDriveStamped | ackermann_converter | seri_kopru |
 | `/odometry/filtered` | Odometry | EKF | Nav2, SLAM |
-| `/rc_input` | Joy | seri_kopru | mod_yoneticisi |
-| `/e_stop` | Bool | e_stop_node | mod_yoneticisi, seri_kopru, watchdog |
-| `/e_stop/gpio_fault` | Bool | e_stop_node | (izleme/GCS — fiziksel buton donanım hatası) |
+| `/rc_input` | Float32MultiArray | seri_kopru | mod_yoneticisi, taret_rc_koprusu, web_dashboard |
+| `/e_stop` | Bool | e_stop_node | mod_yoneticisi, seri_kopru, misyon_fsm, watchdog |
+| `/e_stop/gpio_fault` | Bool | e_stop_node | web_dashboard |
+| `/kart/kip` | UInt8 | seri_kopru | mod_yoneticisi — sürüş kipi (`0x39`) |
+| `/kart/hata` | UInt16 | seri_kopru | misyon_fsm, web_dashboard — `HATA_*` (`0x35`) |
+| `/kart/durum` | UInt16 | seri_kopru | mod_yoneticisi, web_dashboard — `DRM_*` (`0x36`) |
+| `/kart/link` | UInt16 | seri_kopru | web_dashboard — `JDR_*` (`0x39`) |
+| `/kart/surus` | Int16MultiArray | seri_kopru | web_dashboard — gaz [mV], fren [‰] (`0x37`) |
+| `/kart/kabul` | Int16MultiArray | seri_kopru | web_dashboard — kartın anladığı komut (`0x38`) |
+| `/kart/surum` | UInt16MultiArray | seri_kopru | web_dashboard — protokol, yapı (`0x3B`) |
+| `/kart/hat` | UInt16MultiArray | seri_kopru | web_dashboard — alınan, bozuk (`0x3C`) |
+| `/kart/calisma_suresi` | UInt16 | seri_kopru | web_dashboard — kart reseti buradan görülür (`0x35`) |
+| `/enkoder/ham` | Int32 | seri_kopru | web_dashboard, sensor_dogrula — ham sayım (`0x30`) |
+| `/sensor/fault` | String | watchdog | web_dashboard |
+| `/misyon/kalan_sure` | Float32 | misyon_fsm | web_dashboard (§6.12 koşu saati) |
+| `/veri_paketi/kayit_durumu` | Bool | veri_paketi | web_dashboard |
 | `/speed_limit` | Float32 | imu_guvenlik | terrain_adapter, mod_yoneticisi |
 | `/yolo/class_id` | UInt8 | yolo_adapter | terrain_adapter |
 | `/ika/detections` | String (JSON) | yolo_adapter | misyon_fsm |
@@ -319,21 +365,63 @@ map
 
 ```yaml
 planner: SmacPlannerHybrid
-  motion_model: DUBIN       # Sadece ileri — geri harekete izin vermez
-  minimum_turning_radius: 1.75  # Ölçülecek
+  motion_model: DUBIN            # Sadece ileri — geri harekete izin vermez
+  allow_reverse_expansion: false
+  minimum_turning_radius: 2.42   # L/tan(δ_max) = 1.40/tan(30°)
 
 controller: RegulatedPurePursuitController
-  use_rotate_to_heading: false  # Ackermann yerinde dönemez
-  desired_linear_vel: 2.0
+  use_rotate_to_heading: false   # Ackermann yerinde dönemez
+  desired_linear_vel: 0.65       # terrain_adapter çalışma anında 0.45–0.90 yazar
 ```
+
+### Davranış Ağacı — neden kendi ağacımız var
+
+Nav2'nin stok ağaçları kurtarma dalında `<Spin>` kullanıyor. Ackermann araç
+yerinde dönemediği için `nav2_spin_action_bt_node` yüklenmiyor; tanınmayan
+düğüm ise ağacın ayrıştırılamamasına ve **bt_navigator'ın aktive olamamasına**
+yol açıyor. Sonuç yalnız kurtarmanın değil Nav2'nin tamamının düşmesi:
+
+```
+[bt_navigator] Node not recognized: Spin
+[lifecycle_manager] Failed to bring up all requested nodes. Aborting bringup.
+```
+
+Bu yüzden `config/bt/` altında Spin'siz iki ağaç var ve `nav2_params.yaml`
+onlara **tam yolla** işaret ediyor. İkisi de gerekli: `navigators` yalnız
+`navigate_to_pose` dese bile bt_navigator through_poses ağacını da yüklüyor.
+
+Çalışma alanı taşınırsa güncellenecek yer: `nav2_params.yaml` içindeki iki
+`default_nav_*_bt_xml` satırı.
+
+### Kurtarma sırası ve geri gitme
+
+`RoundRobin` her başarısızlıkta sıradaki davranışı dener:
+
+1. **costmap temizle** — hayalet engel yüzünden plan üretilemiyorsa
+2. **geri git** (`BackUp` 0,5 m @ 0,5 m/s) — poz planlanamaz hâle geldiyse.
+   İleri-yönlü planlayıcıda R_min'den dar çıkış gerektiren bir pozdan hiçbir
+   ileri yay çıkmaz; araç kımıldamadan tekrar denemek aynı sonucu verir.
+3. **bekle** (3 s) — §6.8 kayar engel gibi geçici bir engel varsa
+
+Geri gitme beklemeden önce geliyor: bekleme yalnız hareketli engelde işe yarar,
+planlanamaz pozda geçen her saniye koşu saatinden gider.
+
+Sayılar aracın ölçülen gerçeğinden: araç **0,45 m/s altında yerinden kalkmıyor**,
+bu yüzden `backup_speed` 0,5 ve `velocity_smoother.min_velocity[0]` −0,50.
+Stok değer (0,05 m/s) bu araçta iki kere ölüdür — smoother'ın deadband'i (0,05)
+sıfırlar, kalkış sürtünmesi de geçirmez.
+
+⚠️ **Otonom geri gitme YALNIZ bu kurtarmadır.** Planlayıcı geri vites kullanmaz
+ve kullanmamalı: LiDAR gövdeye takıldığı için aracın arkası kör, §6.12 geri
+kamera da takılı değil.
 
 ---
 
 ## 9. Sensör Füzyonu (EKF)
 
 ```
-/odom (dead reckoning)   ──▶ EKF ──▶ /odometry/filtered
-/imu/data (MPU9250)      ──┘          child_frame: base_footprint
+/odom (kart 0x31 hızı)   ──▶ EKF ──▶ /odometry/filtered
+/imu/data (BNO055, kart) ──┘          child_frame: base_footprint
 ```
 
 ---
@@ -345,11 +433,34 @@ controller: RegulatedPurePursuitController
 | Durum | Açıklama |
 |---|---|
 | IDLE | `/mission_start True` bekler |
-| NAVIGATE | waypoints.yaml'dan sıradaki hedefe Nav2 ile gider |
+| NAVIGATE | sıradaki aşamayı sürer (hedefleme yolu aşağıda) |
 | SHOOT_APPROACH | ATIS waypoint'ine yaklaşır, hedef onayı bekler |
 | SHOOT | `hedef_hata ≤ ±5px` ise `/shoot_command True` |
 | HIZLANMA | Nav2 bypass — direkt /cmd_vel, 10m/s, 30m mesafe |
-| ERROR_RECOVERY | Nav2 timeout/hata → geri dönüş |
+| ERROR_RECOVERY | navigasyon hatası → 2 deneme, sonra sonraki aşama |
+
+**Hedefleme Yolu (`hedefleme_modu`)**
+
+NAVIGATE aşamayı iki yoldan biriyle sürer. Seçim koşu başında bir kez yapılır
+ve gerekçesiyle loglanır.
+
+| mod | hedef nereden | aşama ne zaman biter | ön koşul |
+|---|---|---|---|
+| `harita` | `waypoints.yaml` → `waypoint:` (map çerçevesi) | Nav2 hedefe varınca | `parkur_cad.donusum` ölçülmüş ve koordinatlar doldurulmuş olmalı |
+| `kayan` | her 1,5 s'de LiDAR taramasından üretilir | `mesafe_m` kadar yol kat edilince | odometri (enkoder) |
+| `oto` | waypoint'ler doluysa `harita`, hepsi (0,0) ise `kayan` | — | — |
+
+Kayan hedef haritaya da waypoint koordinatına da ihtiyaç duymaz: hedef araç
+çerçevesinde doğar, `odom` çerçevesine taşınıp Nav2'ye verilir ve bir sonraki
+döngüde yenisiyle değiştirilir. Düz şeritte koridorun merkez çizgisi, U
+dönüşünde aşamanın `viraj` alanında yazan iç duvar takip edilir; merkez çizgisi
+hedef veremediği anda iç duvara düşülür.
+
+Sahada değiştirmek için:
+
+```bash
+HEDEFLEME_MODU=kayan NAV2_AKTIF=1 ENKODER_AKTIF=1 ./scripts/lydia_startup.sh
+```
 
 **Özel Durumlar:**
 - `DIK_EGIM_GIRIS/CIKIS`: STOP tabelasında 2s dur (Şartname §6.10). STOP
@@ -405,7 +516,9 @@ echo "source ~/eys3d_ws/install/setup.bash" >> ~/.bashrc
 
 # Workspace build
 cd ~/lydia_ws
-colcon build --packages-select teknofest_ika --symlink-install
+# --symlink-install kullanilmaz: aractaki install/ kopya tabanli, bayrakla
+# derlemek maps/teknofest_harita.pgm uzerinde [Errno 2] verip yarida keser.
+colcon build --packages-select teknofest_ika
 source install/setup.bash
 echo "source ~/lydia_ws/install/setup.bash" >> ~/.bashrc
 ```
@@ -449,13 +562,14 @@ ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose \
 
 | Görev | Dosya | Parametre |
 |---|---|---|
-| Wheelbase ölçümü | `ackermann_converter.py`, `urdf/arac.urdf`, `config/*.yaml`, `launch/gercek_arac.launch.py` | Şu an hepsi 0.55m placeholder ile senkron — gerçek ölçüm yapıldığında **hepsi birlikte** güncellenmeli |
-| Maks. steer açısı | `ackermann_converter.py` | `MAX_STEER_ANGLE` |
-| Min. dönüş yarıçapı | `nav2_params.yaml` | `minimum_turning_radius` |
-| Parkur waypoint koordinatları | `waypoints.yaml` | Tüm x/y değerleri |
-| Enkoder ölçeği | `seri_kopru.py` | `WHEEL_RADIUS`, `TRACK_WIDTH` |
+| **Enkoder ölçek katsayısı** | sürüş kartı `config.h` | Aracı mezürle ölçülü bir mesafe kadar it, `/enkoder/ham` sayımına böl. Bu tek sayı dişli oranını ve tekerlek çevresini birlikte içerir. Ölçülene kadar kart `0x31` hız alanını bilerek `0` basıyor — **odometri, EKF ve Nav2 zinciri buna bağlı** |
+| Dingil arası | `ackermann_converter.py`, `urdf/arac.urdf`, `config/*.yaml`, `launch/gercek_arac.launch.py` | Hepsi 1,40 m **yer tutucusuyla** senkron; gerçek ölçüm gelince **hepsi birlikte** güncellenmeli |
+| Maks. steer açısı ve direksiyon kutusu redüksiyonu | `ackermann_converter.py`, sürüş kartı | Kart kolon/teker oranı için `1,0` yer tutucusu kullanıyor: otonom direksiyonun **yönü doğru, büyüklüğü değil** |
+| Min. dönüş yarıçapı | `nav2_params.yaml` | `minimum_turning_radius` — dingil arasından türer |
+| LiDAR konumu | `scripts/lydia_startup.sh`, `urdf/arac.urdf` | Zeminden yükseklik ve arka akstan ileri mesafe; ölçülmeden engeller ~0,8 m yanlış yere konuyor |
+| BNO055 montaj yönü | — | Kart eksen dönüşümünü yapacak; üç işaret ölçümü gelmeden `imu_guvenlik` kapalı kalıyor |
+| Parkur waypoint koordinatları | `waypoints.yaml` | 11 nokta hâlâ (0,0). FSM mesafe tabanlı çalıştığı için bloker değil |
 | TensorRT engine | `models/best.engine` | `export_tensorrt.py` ile üret |
-| Araçtaki firmware | `arduino/` | Röle direksiyon + CH4 değişikliği Jetson'da, repoya alınmadı |
 
 ---
 

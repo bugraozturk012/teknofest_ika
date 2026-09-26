@@ -20,12 +20,13 @@ from sensor_msgs.msg import Image, LaserScan, PointCloud2, PointField
 from cv_bridge import CvBridge
 import struct
 
+from teknofest_ika.otonomi.pure_logic import tarama_kirpma_penceresi
+from teknofest_ika.otonomi.pure_logic import yagmur_lekeleri
 from teknofest_ika.otonomi.topics import (
-    SCAN_LIDAR_TOPIC,
+    SCAN_LIDAR_TOPIC, LIDAR_MONTAJ_YAW_RAD,
     SCAN_FILTERED_TOPIC,
     CAMERA_PROCESSED_TOPIC,
     CAMERA_IMAGE_TOPIC,
-    CAMERA_FRONT_TOPIC,
     CAMERA_TARET_TOPIC,
     CAMERA_TARET_PROCESSED_TOPIC,
 )
@@ -39,21 +40,36 @@ class PreprocessingNode(Node):
         # Kameralar araca ters monte edilebiliyor; görüntü kaynakta çevrilir ki
         # hem YOLO hem panel düz görsün (model düz görüntüyle eğitildi).
         self.declare_parameter("flip_ana", False)
-        self.declare_parameter("flip_yardimci", False)
         self.declare_parameter("flip_taret", False)
         self.declare_parameter("gaussian_kernel", 5)
         self.declare_parameter("temporal_alpha", 0.3)
         self.declare_parameter("enable_rain_inpaint", True)
         self.declare_parameter("rain_inpaint_radius", 3)
         self.declare_parameter("rain_blob_max_area_px", 120)
+        # Bir karede kaç küçük parlak lekeye kadar "yağmur" sayılacağı.
+        # Gerçek damla sayısı onlarla ölçülür; yüzlerce leke sahnenin
+        # kendi dokusudur ve onarmaya çalışmak hem yanlış hem pahalıdır.
+        self.declare_parameter("rain_max_blob_count", 80)
+        # ⚠️ Bu pencere ARAÇ çerçevesinde tanımlıdır (0° = ileri), tarama
+        # çerçevesinde değil. LiDAR gövdeye 93,3° dönük monte olduğu için ikisi
+        # aynı şey değil: pencere tarama açılarına doğrudan uygulandığında
+        # aracın SAĞ yanı (−131,7°…−41,7°) komple `inf` oluyordu ve bunu
+        # /scan/filtered'ı okuyan herkes miras alıyordu — Nav2'nin iki
+        # costmap'i, kayar engel, koni füzyonu, §6.9 koridor ölçümü. Hiçbiri
+        # hata basmıyordu, yalnız sağdaki bariyer yok sayılıyordu.
         self.declare_parameter("lidar_angle_min_deg", -135.0)
         self.declare_parameter("lidar_angle_max_deg", 135.0)
-        self.declare_parameter("lidar_ma_window", 5)
+        self.declare_parameter("lidar_montaj_yaw_rad", LIDAR_MONTAJ_YAW_RAD)
+        self.declare_parameter("lidar_ma_window", 3)
         self.declare_parameter("depth_ror_nb_points", 6)
         self.declare_parameter("depth_ror_radius", 0.05)
+        # Derinlik nokta bulutu filtresi. Çıktısı (/depth/points/filtered)
+        # yalnız Nav2 costmap katmanına besleniyordu; Nav2 kapalı olduğu
+        # sürece kare başına KD-tree kurup Python'da gezmek boşa CPU demek.
+        # Nav2 geri açıldığında bu parametre true yapılır.
+        self.declare_parameter("derinlik_isle", False)
 
         self._flip_ana = bool(self.get_parameter("flip_ana").value)
-        self._flip_aux = bool(self.get_parameter("flip_yardimci").value)
         self._flip_taret = bool(self.get_parameter("flip_taret").value)
 
         self.gaussian_kernel = self.get_parameter("gaussian_kernel").value
@@ -61,26 +77,35 @@ class PreprocessingNode(Node):
         self.enable_rain = self.get_parameter("enable_rain_inpaint").value
         self.rain_radius = self.get_parameter("rain_inpaint_radius").value
         self.rain_blob_max_area = self.get_parameter("rain_blob_max_area_px").value
+        self.rain_max_blob_count = self.get_parameter("rain_max_blob_count").value
         self.lidar_angle_min = math.radians(self.get_parameter("lidar_angle_min_deg").value)
         self.lidar_angle_max = math.radians(self.get_parameter("lidar_angle_max_deg").value)
         self.lidar_ma_window = self.get_parameter("lidar_ma_window").value
+        self._lidar_yaw = float(self.get_parameter("lidar_montaj_yaw_rad").value)
+        # Pencere bir kez tarama çerçevesine taşınıyor; her taramada 600+ açıyı
+        # çevirmeye gerek yok. alt > ust çıkabilir — pencere ±180°'yi aşıyor
+        # demektir, aşağıda VEYA ile uygulanır.
+        self._kirp_alt, self._kirp_ust = tarama_kirpma_penceresi(
+            self.lidar_angle_min, self.lidar_angle_max, self._lidar_yaw)
+        self._kirp_sarmali = self._kirp_alt > self._kirp_ust
         self.ror_nb_points = self.get_parameter("depth_ror_nb_points").value
         self.ror_radius = self.get_parameter("depth_ror_radius").value
+        self._derinlik_isle = bool(self.get_parameter("derinlik_isle").value)
 
         self.bridge = CvBridge()
         self.ema_main = None
-        self.ema_aux = None
         self.ema_taret = None
         self.lidar_buffer = []
 
         # Publishers
         self.pub_main = self.create_publisher(Image, CAMERA_PROCESSED_TOPIC, 10)
-        self.pub_aux = self.create_publisher(Image, "/camera_aux/image_processed", 10)
         # Nişan kamerası (taret üzeri) — şartname §6.10/§6.14: atış/veri paketi
         # için ayrı bir nişan kamerası gerekli; targeting_node bu çıkışı okur.
         self.pub_taret = self.create_publisher(Image, CAMERA_TARET_PROCESSED_TOPIC, 10)
         self.pub_scan = self.create_publisher(LaserScan, SCAN_FILTERED_TOPIC, 10)
-        self.pub_depth = self.create_publisher(PointCloud2, "/depth/points/filtered", 10)
+        self.pub_depth = (self.create_publisher(
+            PointCloud2, "/depth/points/filtered", 10)
+            if self._derinlik_isle else None)
 
         # Subscribers — gerçek topic adları doğrudan topics.py'den alınır,
         # böylece launch dosyasında unutulabilecek bir remap'e bağımlı kalınmaz
@@ -88,25 +113,22 @@ class PreprocessingNode(Node):
         self.sub_main = self.create_subscription(
             Image, CAMERA_IMAGE_TOPIC,
             self.cb_main_camera, qos_profile_sensor_data)
-        # NOT: CAMERA_FRONT_TOPIC'e artık hiçbir node yayın yapmıyor (ön kamera
-        # ile ana kamera aynı fiziksel cihaza indirgendi, cihaz çakışması
-        # nedeniyle — bkz. gercek_arac.launch.py). Bu abonelik zararsız
-        # şekilde beslenmeden kalır, kaldırılmadı çünkü CAMERA_FRONT_TOPIC
-        # ayrı bir kamera eklenirse yeniden kullanılabilir.
-        self.sub_aux = self.create_subscription(
-            Image, CAMERA_FRONT_TOPIC,
-            self.cb_aux_camera, qos_profile_sensor_data)
         self.sub_taret = self.create_subscription(
             Image, CAMERA_TARET_TOPIC,
             self.cb_taret_camera, qos_profile_sensor_data)
         self.sub_scan = self.create_subscription(
             LaserScan, SCAN_LIDAR_TOPIC,
             self.cb_scan, qos_profile_sensor_data)
-        self.sub_depth = self.create_subscription(
+        # Aboneliğin kendisi koşullu: yayıncı susmasa da işlenmemiş bulut
+        # DDS'ten çekilmez, serileştirme ve KD-tree maliyeti hiç doğmaz.
+        self.sub_depth = (self.create_subscription(
             PointCloud2, "/depth/points",
             self.cb_depth, qos_profile_sensor_data)
+            if self._derinlik_isle else None)
 
-        self.get_logger().info("PreprocessingNode started.")
+        self.get_logger().info(
+            "PreprocessingNode started (derinlik_isle={}).".format(
+                self._derinlik_isle))
 
     # ------------------------------------------------------------------
     # Camera callbacks
@@ -118,14 +140,6 @@ class PreprocessingNode(Node):
         out = self._process_image(cv_img, self.ema_main)
         self.ema_main = out.astype(np.float32)
         self.pub_main.publish(self._msg_yap(out, msg))
-
-    def cb_aux_camera(self, msg: Image):
-        cv_img = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-        if self._flip_aux:
-            cv_img = cv2.flip(cv_img, -1)
-        out = self._process_image(cv_img, self.ema_aux)
-        self.ema_aux = out.astype(np.float32)
-        self.pub_aux.publish(self._msg_yap(out, msg))
 
     def cb_taret_camera(self, msg: Image):
         cv_img = self.bridge.imgmsg_to_cv2(msg, "bgr8")
@@ -162,6 +176,13 @@ class PreprocessingNode(Node):
         return img
 
     def _remove_rain(self, img: np.ndarray) -> np.ndarray:
+        """
+        Lens üzerindeki yağmur damlalarını doldurur.
+
+        🔴 BU YOL AÇIK ARAZİDE CPU'YU DOLDURABİLİR ve iki kapı onu sınırlıyor;
+        ikisi de kaldırılırsa düğüm gerçek zamanın gerisine düşer, /scan
+        filtresi ve nişan görüntüsü birlikte gecikir.
+        """
         # Detect small bright spots (rain drops) using threshold + morphology
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         _, bright_mask = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY)
@@ -174,30 +195,48 @@ class PreprocessingNode(Node):
         # bunlar büyük/bitişik alanlar oluşturur — sadece küçük bağlı
         # bileşenler (rain_blob_max_area_px altı) inpaint maskesine alınır,
         # böylece gerçek nesneler yanlışlıkla bozulmaz.
+        #
+        # 🔑 Maske TEK SEFERDE kuruluyor. Bileşen başına `labels == id`
+        # yazmak her bileşen için TAM GÖRÜNTÜ taraması demek: 640×480'de
+        # 376 bileşenli parlak bir sahnede kare başına ~16 ms, yani iki
+        # kamerada 30 Hz'de tek başına bir çekirdek. np.isin aynı maskeyi
+        # ~0,7 ms'de kuruyor (çıktı birebir aynı, ölçüldü).
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
             bright_mask, connectivity=8)
-        filtered_mask = np.zeros_like(bright_mask)
-        for label_id in range(1, num_labels):  # 0 = arka plan
-            area = stats[label_id, cv2.CC_STAT_AREA]
-            if area <= self.rain_blob_max_area:
-                filtered_mask[labels == label_id] = 255
+        kucuk, sebep = yagmur_lekeleri(
+            stats[:, cv2.CC_STAT_AREA].tolist(),
+            self.rain_blob_max_area, self.rain_max_blob_count)
+        if sebep != 'onar':
+            if sebep == 'cok_leke':
+                self.get_logger().debug(
+                    'Yağmur onarımı atlandı: parlak leke sayısı sınırın '
+                    f'({self.rain_max_blob_count}) üstünde — sahne dokusu, '
+                    'yağmur değil.', throttle_duration_sec=10.0)
+            return img
 
-        if np.count_nonzero(filtered_mask) > 0:
-            img = cv2.inpaint(img, filtered_mask, self.rain_radius, cv2.INPAINT_TELEA)
-        return img
+        filtered_mask = np.where(
+            np.isin(labels, np.asarray(kucuk)), 255, 0).astype(np.uint8)
+        return cv2.inpaint(img, filtered_mask, self.rain_radius, cv2.INPAINT_TELEA)
 
     # ------------------------------------------------------------------
     # LiDAR callback
     # ------------------------------------------------------------------
     def cb_scan(self, msg: LaserScan):
         ranges = np.array(msg.ranges, dtype=np.float32)
-        angles = np.arange(msg.angle_min, msg.angle_max + msg.angle_increment / 2, msg.angle_increment)
+        # Açılar dizinin KENDİ uzunluğundan türetiliyor: angle_max'tan üretmek
+        # yuvarlama yüzünden bir eleman eksik/fazla dizi verebiliyor ve maske
+        # boyutu tutmayınca callback her taramada patlıyordu.
+        tarama_acilari = (msg.angle_min
+                          + np.arange(len(ranges), dtype=np.float32) * msg.angle_increment)
 
-        if len(angles) > len(ranges):
-            angles = angles[:len(ranges)]
-
-        # 1) Angle clipping
-        mask = (angles >= self.lidar_angle_min) & (angles <= self.lidar_angle_max)
+        # 1) Angle clipping — pencere ARAÇ çerçevesinde tanımlı, açılışta
+        #    tarama çerçevesine taşındı (bkz. __init__).
+        if self._kirp_sarmali:
+            mask = ((tarama_acilari >= self._kirp_alt)
+                    | (tarama_acilari <= self._kirp_ust))
+        else:
+            mask = ((tarama_acilari >= self._kirp_alt)
+                    & (tarama_acilari <= self._kirp_ust))
         # We keep full array but set out-of-range to inf so Nav2 ignores them
         filtered = ranges.copy()
         filtered[~mask] = float('inf')
@@ -207,23 +246,34 @@ class PreprocessingNode(Node):
         invalid = ~valid
         filtered[invalid] = float('inf')
 
-        # 3) Moving average on valid ranges (vectorized nan-aware)
+        # 3) Komşu ışınlar arasında MEDYAN — tek ışınlık gürültüyü siler,
+        #    kenarı korur. Ortalama burada yanlış araçtı: koni ve direk gibi
+        #    ince engeller iki üç ışın kaplıyor ve arka planla ortalanınca
+        #    kayboluyorlar; dahası yakın engelle uzak arka plan arasındaki
+        #    sınırda gerçekte var olmayan ara mesafeler üretiliyordu.
+        #    /scan/filtered'ı Nav2 costmap'i, cone_fusion ve kayar_engel
+        #    birlikte okuyor, yani o uydurma mesafeler üçüne birden gidiyordu.
+        #
+        #    Pencere genişliği medyanın koruyabildiği en dar engeli belirler:
+        #    3'lük pencere iki ışınlık bir engeli gerçek mesafesinde tutar,
+        #    5'lik pencere onu arka plana gömer. Bedeli tek ışınlık engellerin
+        #    de silinmesi — ama tek ışın zaten gürültüden ayırt edilemiyor.
         if self.lidar_ma_window > 1:
             temp = filtered.copy()
             temp[invalid] = np.nan
             w = self.lidar_ma_window
-            # Pad edges with nearest valid values for symmetric window
             padded = np.pad(temp, (w // 2, w // 2), mode='edge')
-            # Use convolution with uniform weights, ignoring NaNs
-            kernel = np.ones(w, dtype=np.float32) / w
-            # convolve valid values
-            conv_valid = np.convolve(np.nan_to_num(padded, nan=0.0), kernel, mode='valid')
-            # convolve mask (count of valid points in each window)
-            conv_mask = np.convolve(np.isfinite(padded).astype(np.float32), kernel, mode='valid')
-            # avoid division by zero
-            smoothed = np.where(conv_mask > 0, conv_valid / conv_mask, np.nan)
-            # Put back inf where original was invalid/out-of-range
-            filtered = np.where(np.isfinite(smoothed), smoothed, float('inf')).astype(np.float32)
+            # Pencereler kaydırılmış dilimlerden yığılıyor. sliding_window_view
+            # daha derli toplu olurdu ama numpy 1.20 istiyor ve araçtaki sürüm
+            # bilinmiyor; burada patlayan bir düğüm /scan/filtered'ı susturur,
+            # yani Nav2 ve SLAM taramayı birden kaybeder.
+            pencereler = np.stack([padded[i:i + len(temp)] for i in range(w)])
+            with np.errstate(invalid='ignore'):
+                # Tümü geçersiz olan pencerede nanmedian uyarı basar; sonucu
+                # zaten nan ve aşağıda inf'e çevriliyor.
+                smoothed = np.nanmedian(pencereler, axis=0)
+            filtered = np.where(np.isfinite(smoothed), smoothed,
+                                float('inf')).astype(np.float32)
 
         out = LaserScan()
         out.header = msg.header

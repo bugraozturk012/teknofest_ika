@@ -6,10 +6,8 @@ Kayar engel Kalman filtresi tarafından tespit edildiğinde (direction != 'bilin
 /scan noktalarını Nav2 ObstacleLayer'a PointCloud2 olarak bildirir.
 Tespit durunca yayın durur — Nav2 clearing:true ile eski noktaları temizler.
 
-koni_costmap.py'den farklar:
-  - /scan kaynaklı, görüntü ekibine bağımsız
-  - clearing: true (engel geçince Nav2 siler)
-  - Yalnızca Kalman aktifken (/moving_obs/direction != 'bilinmiyor') yayın yapar
+Kaynağı /scan olduğu için görüntü zincirinden bağımsız çalışır; koni
+köprüsünün (cone_fusion_node) aksine kameraya ihtiyaç duymaz.
 
 GİRİŞ : /scan                 (sensor_msgs/LaserScan)
          /moving_obs/direction (std_msgs/String) — Kalman aktif mi?
@@ -27,9 +25,12 @@ from std_msgs.msg import String
 
 from teknofest_ika.otonomi.topics import (
     SCAN_FILTERED_TOPIC, MOVING_OBS_DIR_TOPIC, MOVING_OBS_CLOUD_TOPIC,
+    LIDAR_MONTAJ_YAW_RAD,
 )
 
-# Kayar engel arama penceresi — kayar_engel_kalman.py ile aynı değerler
+# Kayar engel arama penceresi — kayar_engel_kalman.py ile aynı değerler.
+# Pencere ARAÇ çerçevesinde (0° = ileri); tarama açıları maskeden önce oraya
+# taşınıyor, yoksa aracın sol yanı taranır.
 ENGEL_MIN_MESAFE = 0.5
 ENGEL_MAX_MESAFE = 4.0
 ENGEL_ACI_MIN    = -math.radians(60)
@@ -96,13 +97,19 @@ class KayarEngelCostmap(Node):
         ranges = np.array(msg.ranges, dtype=np.float32)
         angles = (msg.angle_min
                   + np.arange(len(ranges), dtype=np.float32) * msg.angle_increment)
+        # Maske araç çerçevesinde; nokta bulutu ise TARAMA çerçevesinde
+        # yayınlanmaya devam ediyor (frame_id scan'in kendisi) — yerleşimi
+        # Nav2 TF ile düzeltiyor, burada yalnız hangi huzmelerin engele ait
+        # olduğu seçiliyor.
+        arac_acilari = (np.remainder(angles + LIDAR_MONTAJ_YAW_RAD + np.pi,
+                                     2.0 * np.pi) - np.pi)
 
         mask = (
             np.isfinite(ranges)
             & (ranges >= ENGEL_MIN_MESAFE)
             & (ranges <= ENGEL_MAX_MESAFE)
-            & (angles >= ENGEL_ACI_MIN)
-            & (angles <= ENGEL_ACI_MAX)
+            & (arac_acilari >= ENGEL_ACI_MIN)
+            & (arac_acilari <= ENGEL_ACI_MAX)
         )
 
         r_sel = ranges[mask]

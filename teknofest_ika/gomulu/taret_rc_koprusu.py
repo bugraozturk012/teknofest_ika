@@ -55,7 +55,7 @@ from std_msgs.msg import Bool, Float32MultiArray, UInt8
 
 from teknofest_ika.otonomi.topics import (
     RC_INPUT_TOPIC, MOD_AKTIF_TOPIC, SHOOT_CMD_TOPIC, TURRET_CMD_TOPIC,
-    SERIAL_TARET, SERIAL_BAUD,
+    SERIAL_TARET, SERIAL_BAUD_TARET,
 )
 from teknofest_ika.otonomi.mod_yoneticisi import MOD_MANUAL
 
@@ -144,7 +144,7 @@ class TaretRcKoprusu(Node):
         super().__init__('taret_rc_koprusu')
 
         self.declare_parameter('port',        SERIAL_TARET)
-        self.declare_parameter('baud',        SERIAL_BAUD)
+        self.declare_parameter('baud',        SERIAL_BAUD_TARET)
         self.declare_parameter('sim_mode',    False)
         self.declare_parameter('klavye_atis', True)
         # Otonom nişan hız tavanı — manuel MAX_HIZ (80) çok hızlı, nişanda
@@ -196,8 +196,10 @@ class TaretRcKoprusu(Node):
         self.create_subscription(Float32MultiArray, RC_INPUT_TOPIC, self._rc_cb, qos_be)
         self.create_subscription(Vector3, TURRET_CMD_TOPIC, self._turret_cmd_cb, 10)
 
-        # Lazer fiziksel olarak Turret UNO'nun 7. pininde ("L:1"/"L:0" komutu) —
-        # Mega'nın LAZER_PIN'inde donanım bağlı değil, atış bu köprüden yapılır.
+        # Lazer fiziksel olarak Turret UNO'nun 7. pininde ("L:1"/"L:0" komutu).
+        # Bu yol araçta ARTIK KULLANILMIYOR: taret sürüş kartına taşındı ve
+        # atış /shoot_command → seri_kopru → 0x03 üzerinden yapılıyor. Düğüm
+        # yalnız UNO'lu eski kurulumlar için duruyor, boot betiği başlatmıyor.
         self._lazer_yanik  = False
         self._lazer_acilis = None
         self._lazer_sure   = LAZER_FAILSAFE_S

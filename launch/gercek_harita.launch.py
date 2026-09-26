@@ -81,8 +81,8 @@ def generate_launch_description():
         name='seri_kopru',
         output='screen',
         parameters=[{'use_sim_time': False,
-                     'port': '/dev/mega',
-                     'baud': 115200}]
+                     'port': '/dev/f767',
+                     'baud': 921600}]
     )
 
     ekf = Node(

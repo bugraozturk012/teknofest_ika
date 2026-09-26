@@ -1,0 +1,56 @@
+<!--
+  LYDİA — NavigateThroughPoses davranış ağacı (Ackermann uyarlaması)
+
+  Bu ağacı KİMSE ÇAĞIRMIYOR: misyon_fsm yalnız NavigateToPose action'ını
+  kullanıyor ve nav2_params.yaml `navigators: ['navigate_to_pose']` diyor.
+  Yine de Spin'siz bir kopyası gerekiyor, çünkü SAHADA GÖRÜLDÜ Kİ bt_navigator
+  bu ağacı da yüklüyor ve stok halindeki <Spin> yüzünden düşüyor:
+
+    [bt_navigator] Exception when loading BT: Node not recognized: Spin
+    [bt_navigator] Error loading XML file:
+                   .../navigate_through_poses_w_replanning_and_recovery.xml
+    [lifecycle_manager] Failed to bring up all requested nodes. Aborting bringup.
+
+  (Jetson launch.log, 2026-07-19 19:56 — o gün Jetson'daki nav2_params.yaml
+  bugünküyle satır satır aynıydı, `navigators` kısıtlaması dahil. Yani tek
+  ağacı düzeltmek yetmiyor, ikisi de Spin'siz olmalı.)
+
+  Kurtarma dalı navigate_to_pose_ackermann.xml ile birebir aynı tutuldu;
+  gerekçeler orada yazılı.
+-->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
+      <PipelineSequence name="NavigateWithReplanning">
+        <RateController hz="1.0">
+          <RecoveryNode number_of_retries="1" name="ComputePathThroughPoses">
+            <ReactiveSequence name="CheckingGoals">
+              <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.7"/>
+              <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+            </ReactiveSequence>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Context"
+                                service_name="global_costmap/clear_entirely_global_costmap"/>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="1" name="FollowPath">
+          <FollowPath path="{path}" controller_id="FollowPath"/>
+          <ClearEntireCostmap name="ClearLocalCostmap-Context"
+                              service_name="local_costmap/clear_entirely_local_costmap"/>
+        </RecoveryNode>
+      </PipelineSequence>
+      <ReactiveFallback name="RecoveryFallback">
+        <GoalUpdated/>
+        <RoundRobin name="RecoveryActions">
+          <Sequence name="ClearingActions">
+            <ClearEntireCostmap name="ClearLocalCostmap-Subtree"
+                                service_name="local_costmap/clear_entirely_local_costmap"/>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Subtree"
+                                service_name="global_costmap/clear_entirely_global_costmap"/>
+          </Sequence>
+          <BackUp backup_dist="0.5" backup_speed="0.5" time_allowance="10"/>
+          <Wait wait_duration="3"/>
+        </RoundRobin>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

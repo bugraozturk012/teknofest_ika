@@ -31,6 +31,27 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 
 
+def _harita_olcusu(pgm_yolu: str) -> str:
+    """PGM başlığından harita boyutu (metre). Okunamazsa '?'."""
+    try:
+        with open(pgm_yolu, 'rb') as f:
+            alan = f.read(64).split()
+        cozunurluk = 0.05   # maps/*.yaml resolution ile aynı varsayım
+        return (f'{int(alan[1]) * cozunurluk:.1f} x '
+                f'{int(alan[2]) * cozunurluk:.1f} m')
+    except Exception:
+        return '?'
+
+
+def _dosya_tarihi(yol: str) -> str:
+    import datetime
+    try:
+        return datetime.datetime.fromtimestamp(
+            os.path.getmtime(yol)).strftime('%Y-%m-%d')
+    except OSError:
+        return '?'
+
+
 def generate_launch_description():
     pkg_share = get_package_share_directory('teknofest_ika')
     nav2_pkg  = get_package_share_directory('nav2_bringup')
@@ -111,16 +132,16 @@ def generate_launch_description():
     )
 
     # ── E-STOP Node ───────────────────────────────────────────────────────────
-    # gpio_pin: Jetson BOARD pin numarası (varsayılan 7 → GPIO9)
-    # gpio_mod: False yapılırsa GPIO kullanılmaz, sadece /e_stop/force çalışır
+    # Fiziksel buton Jetson'ın GPIO'suna değil sürüş kartına bağlı; durumu
+    # 0x34 ile geliyor. gpio_mod kapalı — boştaki bir pini okumak 48 V'un
+    # gürültüsü altında rastgele E-STOP üretir.
     e_stop = Node(
         package='teknofest_ika',
         executable='e_stop_node',
         name='e_stop_node',
         output='screen',
         parameters=[{
-            'gpio_pin':   7,
-            'gpio_mod':   True,
+            'gpio_mod':   False,
             'publish_hz': 20.0,
         }]
     )
@@ -132,8 +153,13 @@ def generate_launch_description():
         name='seri_kopru',
         output='screen',
         parameters=[{'use_sim_time': False,
-                     'port': '/dev/mega',
-                     'baud': 115200}]
+                     # Sürüş kartı Nucleo-F767ZI; scripts/lydia_startup.sh
+                     # aynı iki değeri kendi başına geçiyor, ikisi birlikte
+                     # güncellenmeli.
+                     'port': '/dev/f767',
+                     'baud': 921600,
+                     # odom → base_footprint TF'i aşağıdaki EKF yayınlar
+                     'publish_tf': False}]
     )
 
     # ── EKF (odom + IMU füzyon) ───────────────────────────────────────────────
@@ -154,16 +180,26 @@ def generate_launch_description():
 
     if os.path.exists(gercek_harita):
         # Harita var → localization modu (haritayı yükle, yeni alan haritalama)
+        # Hangi haritaya localize olunduğu EKRANA BASILIYOR: dosyanın varlığı
+        # tek başına doğruluğunun kanıtı değil. Burada bir kez 16,05 x 1,85 m'lik
+        # bir koridor testi haritası kalmış ve araç parkur yerine ona localize
+        # olacak duruma gelmişti; kimse fark etmezdi çünkü mod sessizce seçiliyor.
         slam_exe = 'localization_slam_toolbox_node'
         slam_extra = {
             'use_sim_time': False,
             'map_file_name': os.path.splitext(gercek_harita)[0],
             'map_start_at_dock': True,
         }
+        print(f'[SLAM] LOCALIZATION modu — harita: {gercek_harita}\n'
+              f'[SLAM]   boyut: {_harita_olcusu(gercek_harita)}, '
+              f'tarih: {_dosya_tarihi(gercek_harita)}\n'
+              f'[SLAM]   Bu harita parkurun DEĞİLSE araç yanlış yere localize olur.')
     else:
         # Harita yok → mapping modu (sahayı haritala)
         slam_exe = 'async_slam_toolbox_node'
         slam_extra = {'use_sim_time': False}
+        print('[SLAM] MAPPING modu — harita sıfırdan kuruluyor, map çerçevesinin '
+              'orijini aracın şu anki yeri.')
 
     slam = Node(
         package='slam_toolbox',
@@ -192,8 +228,10 @@ def generate_launch_description():
     ackermann = Node(
         package='teknofest_ika', executable='ackermann_converter',
         name='ackermann_converter', output='screen',
-        parameters=[{'use_sim_time': False, 'wheelbase': 0.55,
-                     'max_steering_angle': 0.5236, 'max_speed': 3.0}]
+        parameters=[{'use_sim_time': False, 'wheelbase': 1.44,
+                     # max_speed burada verilmiyor: düğümün varsayılanı
+                     # KART_HIZ_TAVAN'a bağlı ve kart zaten orada kırpıyor.
+                     'max_steering_angle': 0.5236}]
     )
     veri_paketi = Node(
         package='teknofest_ika', executable='veri_paketi',
@@ -220,7 +258,7 @@ def generate_launch_description():
         name='kayar_engel_kalman', output='screen',
         parameters=[{'use_sim_time': False}]
     )
-    # Mod Yöneticisi — MANUAL/SEMI_AUTO/FULL_AUTO geçişleri ve cmd_vel mux
+    # Mod Yöneticisi — MANUAL/FULL_AUTO geçişleri ve cmd_vel mux
     mod_yoneticisi = Node(
         package='teknofest_ika', executable='mod_yoneticisi',
         name='mod_yoneticisi', output='screen',
@@ -230,16 +268,13 @@ def generate_launch_description():
     taret_rc_koprusu = Node(
         package='teknofest_ika', executable='taret_rc_koprusu',
         name='taret_rc_koprusu', output='screen',
-        parameters=[{'use_sim_time': False,
-                     'port': '/dev/ttyCH341USB0', 'baud': 115200}]
+        # port ve baud düğümün varsayılanından gelir (topics.py SERIAL_TARET,
+        # SERIAL_BAUD_TARET); burada tekrarlanırsa iki yer ayrışır.
+        parameters=[{'use_sim_time': False}]
     )
-    # NOT: koni_costmap.py kasıtlı olarak başlatılmıyor — /cone_positions
-    # (PoseArray) üreticisi yok, koni tespiti cone_fusion_node tarafından
-    # LiDAR+YOLO füzyonuyla doğrudan /costmap/cone_cloud'a yazılıyor (aşağıda
-    # 'cone_fusion'). koni_costmap.py, ileride ayrı bir PoseArray tabanlı
-    # koni kaynağı eklenirse kullanılabilecek bağımsız/yedek bir araç olarak
-    # repo'da bırakıldı; Node nesnesi burada OLUŞTURULMUYOR (önceden
-    # oluşturulup hiç launch edilmeyen, kafa karıştırıcı bir kalıntıydı).
+    # NOT: Koni tespiti costmap'e yalnız cone_fusion_node üzerinden girer
+    # (aşağıda 'cone_fusion'), LiDAR+YOLO füzyonuyla /costmap/cone_cloud'a.
+    # Ayrı bir PoseArray tabanlı koni kaynağı yok.
 
     # Kayar Engel Costmap — Kalman aktifken /scan → Nav2 ObstacleLayer
     kayar_costmap = Node(
@@ -287,10 +322,10 @@ def generate_launch_description():
     )
 
     # ── Görüntü Ön İşleme ─────────────────────────────────────────────────────
-    # preprocessing_node artık topics.py sabitleriyle doğrudan /camera/image_raw,
-    # /camera/front/image_raw ve /camera/taret/image_raw'a abone olur — remap
-    # gerekmez (önceki remap-bağımlı tasarım, nişan kamerasının hiç remap
-    # edilmemesi nedeniyle hiç işlenmemesine yol açmıştı).
+    # preprocessing_node topics.py sabitleriyle doğrudan /camera/image_raw ve
+    # /camera/taret/image_raw'a abone olur — remap gerekmez (remap-bağımlı bir
+    # tasarım, nişan kamerasının hiç remap edilmemesi nedeniyle hiç
+    # işlenmemesine yol açmıştı).
     # /depth/points → OS30A derinlik kamerasından (/apc/points/data_raw)
     # /scan_lidar → preprocessing_node.py SCAN_LIDAR_TOPIC ile direkt abone, remap gerekmez
     preprocessing = Node(
@@ -324,7 +359,7 @@ def generate_launch_description():
             'use_sim_time':      False,
             'camera_fov_deg':    60.0,
             'image_width':       1280,
-            'cone_safety_radius_m': 0.4,
+            'cone_radius_m':     0.354,   # §6.7 azami taban 50 cm → çevrel yarıçap
             'cone_min_confidence':  0.45,
             'target_label':      '14',   # 14 = trafik_huni (alfabetik model sırası)
         }],
@@ -343,17 +378,14 @@ def generate_launch_description():
             'fire_lock_duration_sec': 0.5,
             'fire_cooldown_sec':     2.0,
             'publish_debug':         True,
-            # Nişan kamerası HSV kalibrasyonu (2026-07-19, kapalı alan):
-            # halka bu kamerada H=165-169, turuncu bant sahte tespit üretiyor
-            # ve aralık dışında; V>=70 karanlık sahteleri kesiyor. Yarışma
-            # günü gün ışığında yeniden kalibre edilmeli (yöntem:
-            # launch/taret_otonom.launch.py docstring'i).
-            'hsv_lower':             [0, 40, 70],
-            'hsv_upper':             [4, 255, 255],
-            'hsv_lower2':            [150, 40, 70],
-            'hsv_upper2':            [179, 255, 255],
-            'hough_max_radius':      250,
-            'image_timeout_sec':     1.0,
+            # HSV kalibrasyonu ve Hough yarıçapı artık düğümün varsayılanı
+            # (topics.py NISAN_HSV_*). Burada tekrarlanmıyor: değerler yalnız
+            # launch'ta durduğu sürece, açılış betiği launch'u kullanmadığı
+            # için kalibrasyon araca hiç ulaşmıyordu.
+            #
+            # image_timeout_sec de düğümün varsayılanından gelir: 0,5 s üç
+            # kameranın aynı USB2 hattını paylaştığı ölçülen ~7-9 Hz akışa
+            # göre seçildi, buradaki 1,0 gerekçesizdi.
         }]
     )
 
@@ -380,10 +412,15 @@ def generate_launch_description():
     )
 
     # ── Watchdog (Kritik topic sağlık izleme) ─────────────────────────────────
+    # Bu launch dosyasında sürücü /scan_raw'a remap edilip scan_relay
+    # /scan_lidar basıyor; Nav2 ve EKF de burada her zaman ayağa kalkıyor.
+    # (Boot betiği ikisini de farklı kuruyor, orada parametreler farklı.)
     watchdog = Node(
         package='teknofest_ika', executable='watchdog',
         name='watchdog', output='screen',
-        parameters=[{'use_sim_time': False}]
+        parameters=[{'use_sim_time': False,
+                     'nav2_aktif': True,
+                     'ham_tarama_topic': '/scan_lidar'}]
     )
 
     # ── YOLO Adapter — Detection2DArray → /ika/detections JSON köprüsü ───────
@@ -435,8 +472,8 @@ def generate_launch_description():
     # açmaya çalışması cihaz çakışmasına yol açıyordu (sahada doğrulandı,
     # 2026-07-15: ikinci usb_cam_node_exe "terminate called after throwing an
     # instance of 'char*'" ile çöktü). Ön kamera görüntüsüne ihtiyaç duyan
-    # tüketiciler (dashboard, veri_paketi) artık CAMERA_FRONT_TOPIC yerine
-    # doğrudan CAMERA_IMAGE_TOPIC'e (kamera_ana'nın çıktısı) abone.
+    # tüketiciler (dashboard, veri_paketi) doğrudan CAMERA_IMAGE_TOPIC'e
+    # (kamera_ana'nın çıktısı) abone.
 
     # Arka kamera — geri sürüş görüntüsü (§6.12 zorunlu)
     webcam_geri = Node(
@@ -456,8 +493,8 @@ def generate_launch_description():
             'autoexposure':       True,
         }],
         remappings=[
-            ('image_raw',   '/camera/rear/image_raw'),
-            ('camera_info', '/camera/rear/camera_info'),
+            ('image_raw',   '/camera/arka/image_raw'),
+            ('camera_info', '/camera/arka/camera_info'),
         ]
     )
 

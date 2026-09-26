@@ -17,7 +17,10 @@ from vision_msgs.msg import Detection2DArray
 from std_msgs.msg import Header
 from image_geometry import PinholeCameraModel
 
-from teknofest_ika.otonomi.topics import SCAN_FILTERED_TOPIC, YOLO_RAW_TOPIC, CONE_FUSION_CLOUD_TOPIC
+from teknofest_ika.otonomi.topics import (
+    SCAN_FILTERED_TOPIC, YOLO_RAW_TOPIC, CONE_FUSION_CLOUD_TOPIC,
+    LIDAR_MONTAJ_YAW_RAD,
+)
 
 
 class ConeFusionNode(Node):
@@ -26,7 +29,12 @@ class ConeFusionNode(Node):
 
         self.declare_parameter("camera_fov_deg", 60.0)
         self.declare_parameter("image_width", 640)
-        self.declare_parameter("cone_safety_radius_m", 0.4)
+        # §6.7 konisi 40±10 cm kare tabanlı; en büyük yasal taban 50 cm ve
+        # onun çevrel yarıçapı 0,354 m. Bu sayı koninin FİZİKSEL boyutu,
+        # güvenlik payı değil — pay costmap tarafında footprint +
+        # footprint_padding ile veriliyor. Buraya pay eklenirse aynı pay iki
+        # kez sayılır ve §6.7'nin dar geçişinde planlayıcı yol bulamaz.
+        self.declare_parameter("cone_radius_m", 0.354)
         self.declare_parameter("cone_min_confidence", 0.45)
         self.declare_parameter("lidar_window", 8)
         # yolo_detection_node class_id'yi integer string olarak yayınlar: str(13) = "13"
@@ -36,7 +44,7 @@ class ConeFusionNode(Node):
 
         self.fov_deg = self.get_parameter("camera_fov_deg").value
         self.image_width = self.get_parameter("image_width").value
-        self.safety_radius = self.get_parameter("cone_safety_radius_m").value
+        self.cone_radius = self.get_parameter("cone_radius_m").value
         self.min_conf = self.get_parameter("cone_min_confidence").value
         self.lidar_window = self.get_parameter("lidar_window").value
         self.target_label = self.get_parameter("target_label").value
@@ -142,7 +150,7 @@ class ConeFusionNode(Node):
     def _generate_safety_sphere(self, center, z_levels=3):
         """Generate a dome of points around the cone center for Nav2 lethal marking."""
         points = []
-        r = self.safety_radius
+        r = self.cone_radius
         cx, cy, cz = center
         # Hemisphere above ground
         for phi in np.linspace(0, math.pi / 2, z_levels):
@@ -171,7 +179,17 @@ class ConeFusionNode(Node):
             return dx * angle_per_pixel
 
     def _get_lidar_distance(self, scan: LaserScan, angle_deg: float):
-        angle_rad = math.radians(angle_deg)
+        """Kameradan gelen ARAÇ çerçevesindeki kerterizde LiDAR mesafesi.
+
+        `angle_deg` kameranın gördüğü yön, yani araç çerçevesinde. Tarama
+        dizisi ise LiDAR'ın kendi çerçevesinde; LiDAR gövdeye 93,3° dönük
+        monte olduğu için kerteriz doğrudan indekse çevrilemez. Çevrilmediği
+        sürece "tam önümdeki koni" için aracın ~93° solundaki mesafe okunuyor
+        ve koni costmap'e o mesafeyle basılıyordu.
+        """
+        # Araç çerçevesi → tarama çerçevesi (sarmalı).
+        angle_rad = math.remainder(
+            math.radians(angle_deg) - LIDAR_MONTAJ_YAW_RAD, 2.0 * math.pi)
         if angle_rad < scan.angle_min or angle_rad > scan.angle_max:
             return None
         idx = int((angle_rad - scan.angle_min) / scan.angle_increment)

@@ -13,15 +13,31 @@ slam_toolbox:
     odom_frame:                 odom
     map_frame:                  map
     base_frame:                 base_footprint
-    scan_topic:                 /scan_lidar
+    # preprocessing_node çıkışı. Ham /scan aracın arkasındaki ±45°'yi de
+    # taşıyor ve orayı gövde kapatıyor: dönüşler araç çerçevesinde SABİT açı ve
+    # SABİT mesafede duruyor, yani eşleştiriciye hiç kımıldamayan bir desen
+    # veriyor. O desen hem her kareyi "hareket yok" yönüne çekiyor hem haritaya
+    # aracı takip eden bir leke olarak işleniyor. Menzil eşiği bunu elemiyor
+    # (gövde minimum_laser_range'in çok üstünde), eleyen tek şey filtrenin açı
+    # kırpması. Nav2 costmap'i de aynı konuyu okuyor — ikisinin farklı tarama
+    # görmesi kendi başına bir arıza sınıfı.
+    #
+    # Sahada ham taramaya dönmek gerekirse yaml düzenlemeye gerek yok:
+    # lydia_startup.sh SLAM_SCAN_TOPIC ile bu satırı çalışma anında eziyor.
+    scan_topic:                 /scan/filtered
     mode:                       mapping
 
     # ── Harita çözünürlüğü ────────────────────────────────────────────────────
     resolution:                 0.05        # [m/pixel] — 5 cm
     minimum_laser_range:        0.1         # [m] — YDLidar Tmini Pro min menzil
     max_laser_range:            8.0         # [m] — YDLidar Tmini Pro gerçek max menzil
-    minimum_travel_distance:    0.0         # [m] — 0=her scan kabul (durağan haritalama)
-    minimum_travel_heading:     0.0         # [rad] — 0=her scan kabul (durağan haritalama)
+    # Sıfır "her taramayı poz grafiğine düğüm olarak ekle" demek ve duran
+    # araçta haritalama için yazılmıştı. Koşuda açık kalırsa 10 Hz tarama
+    # 15 dakikada dokuz bin düğüm eder; döngü kapama araması her seferinde o
+    # grafiği geziyor ve bu, YOLO ile aynı Jetson'da ölçülebilir bir yük.
+    # 0,3 m ≈ 0,65 m/s'de yarım saniyede bir düğüm.
+    minimum_travel_distance:    0.3         # [m]
+    minimum_travel_heading:     0.3         # [rad]
 
     # ── Tarama eşleştirme ─────────────────────────────────────────────────────
     use_scan_matching:          true

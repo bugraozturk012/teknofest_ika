@@ -25,25 +25,49 @@
   <joint name="base_joint" type="fixed">
     <parent link="base_footprint"/>
     <child link="base_link"/>
-    <origin xyz="0 0 0.28" rpy="0 0 0"/>
+    <origin xyz="0 0 0.2989" rpy="0 0 0"/>
     <!--
-      Z=0.28: tekerlek yarıçapı (0.18) + zemin boşluğu (0.10)
-      Böylece tekerlekler tam yere oturur.
+      Z=0.2989: tekerlek yarıçapı (0.1989) + teker joint'inin base_link'e
+      göre düşey ofseti (0.10). Böylece tekerlekler tam yere oturur.
+
+      🔑 Yarıçap ÖLÇÜMDEN türetildi: yuvarlanma çevresi 1250 mm (araçta
+      mezürle) → r = 1,250 / 2π = 0,1989 m. Önceki 0,18 ölçülmemişti.
+      ⚠️ Bu sayı değişirse gövde kutusunun ve lidar_joint'in düşey ofsetleri
+      de değişir: ikisi de ZEMİNDEN ölçülüyor ve base_link'e göre yazılıyor.
     -->
   </joint>
 
   <link name="base_link">
+    <!--
+      Gövde kutusu 1,90 x 1,17 x 0,415 m.
+        en        1,17 m  — araçtan ölçüldü (tekerlek dışları dahil)
+        yükseklik 0,415 m — TOPLAM yükseklik 0,78 m eksi zemin boşluğu 0,365 m
+        boy       1,83 m  — araçtan ölçüldü
+      ⚠️ Taşmanın öne/arkaya dağılımı ölçülmedi: 1,83 - 1,44 = 0,39 m ve
+      kutu base_footprint etrafında SİMETRİK varsayılıyor (her uç 0,195 m).
+      donus.py'nin bağımsız `arka_tasma=0.20` varsayımı ön ucu 0,19 m
+      veriyor, yani simetri iyi bir yaklaşım. Ölçülürse footprint'in x
+      uçları ayrı ayrı yazılır.
+
+      🔑 Kutu ZEMİNE DEĞMİYOR: şasi altı zeminden 0,365 m yukarıda (ölçüldü).
+      base_link zeminden 0,28 m'de olduğu için kutunun merkezi
+      0,365 + 0,415/2 - 0,2989 = 0,2736 m'ye oturuyor.
+      §6.6'nın 15 cm'lik dik engeli bu boşluğun çok altında kalıyor.
+
+      Nav2 costmap'i bu kutuyu değil footprint parametresini kullanıyor
+      (nav2_params.yaml); buradaki geometri TF ağacı ve görselleştirme için.
+    -->
     <visual>
-      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <origin xyz="0 0 0.2736" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://teknofest_ika/meshes/govde.stl" scale="0.001 0.001 0.001"/>
+        <box size="1.83 1.17 0.415"/>
       </geometry>
       <material name="blue"/>
     </visual>
     <collision>
-      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <origin xyz="0 0 0.2736" rpy="0 0 0"/>
       <geometry>
-        <box size="1.0 0.5 0.3"/>
+        <box size="1.83 1.17 0.415"/>
       </geometry>
     </collision>
     <inertial>
@@ -55,27 +79,29 @@
 
   <!-- ═══════════════════════════════════════════════
        SAĞ ÖN TEKERLEK
-       X: +0.275 (öne doğru) — wheelbase=0.55m, config/ekf.yaml,
-                  nav2_params.yaml ve ackermann_converter.py'deki
-                  wheelbase=0.55 parametresiyle TUTARLI tutulur
-                  (ikisi de "ölçülecek" placeholder; gerçek ölçüm
-                  yapıldığında HER İKİSİ birlikte güncellenmeli).
-       Y: -0.335 (sağa doğru, negatif)
+       X: +0.72 (öne doğru) — wheelbase=1.44m (mezürle araçtan
+                  ölçüldü, kart ekibiyle teyitli), config/ekf.yaml, nav2_params.yaml
+                  (minimum_turning_radius) ve ackermann_converter.py'deki
+                  wheelbase parametresiyle TUTARLI tutulur; biri
+                  değişirse diğerleri de değişmeli.
+       Y: -0.50 (sağa doğru, negatif) — iz genişliği 1,00 m ÖLÇÜLDÜ,
+                  yani merkezler ±0,50. Önceki ±0,335 ölçülmemiş bir
+                  varsayımdı (depoda 0,50/0,67/0,900 diye üç değer dolaşıyordu).
        Z: -0.10  (gövdenin altına iner, base_joint Z=0.28 ile birlikte net 0.18 → yere değer)
-       Görsel: rpy="0 0 1.5708"  → STL sağ taraf için 90° döndürülmüş
+       Görsel: rpy="1.5708 0 0" → silindirin ekseni Y'ye yatırılır (dönme ekseni)
   ════════════════════════════════════════════════ -->
   <link name="sag_on_teker">
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 1.5708"/>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <mesh filename="package://teknofest_ika/meshes/tekerlek.stl" scale="0.001 0.001 0.001"/>
+        <cylinder length="0.15" radius="0.1989"/>
       </geometry>
       <material name="siyah"/>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <cylinder length="0.15" radius="0.18"/>
+        <cylinder length="0.15" radius="0.1989"/>
       </geometry>
     </collision>
     <inertial>
@@ -87,29 +113,29 @@
   <joint name="sag_on_joint" type="continuous">
     <parent link="base_link"/>
     <child link="sag_on_teker"/>
-    <origin xyz="0.275 -0.335 -0.10" rpy="0 0 0"/>
+    <origin xyz="0.72 -0.50 -0.10" rpy="0 0 0"/>
     <axis xyz="0 -1 0"/>
     <dynamics damping="0.5" friction="0.5"/>
   </joint>
 
   <!-- ═══════════════════════════════════════════════
        SOL ÖN TEKERLEK
-       X: +0.275 (sağ ön ile aynı — simetrik, wheelbase=0.55m)
-       Y: +0.335 (sola doğru, pozitif)
-       Görsel: rpy="0 0 -1.5708" → sol taraf için ters döndürülmüş
+       X: +0.72 (sağ ön ile aynı — simetrik, wheelbase=1.44m)
+       Y: +0.50 (sola doğru, pozitif)
+       Görsel: sağ ön ile aynı — silindir simetrik olduğu için taraf ayrımı yok
   ════════════════════════════════════════════════ -->
   <link name="sol_on_teker">
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 -1.5708"/>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <mesh filename="package://teknofest_ika/meshes/tekerlek.stl" scale="0.001 0.001 0.001"/>
+        <cylinder length="0.15" radius="0.1989"/>
       </geometry>
       <material name="siyah"/>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <cylinder length="0.15" radius="0.18"/>
+        <cylinder length="0.15" radius="0.1989"/>
       </geometry>
     </collision>
     <inertial>
@@ -121,28 +147,28 @@
   <joint name="sol_on_joint" type="continuous">
     <parent link="base_link"/>
     <child link="sol_on_teker"/>
-    <origin xyz="0.275 0.335 -0.10" rpy="0 0 0"/>
+    <origin xyz="0.72 0.50 -0.10" rpy="0 0 0"/>
     <axis xyz="0 -1 0"/>
     <dynamics damping="0.5" friction="0.5"/>
   </joint>
 
   <!-- ═══════════════════════════════════════════════
        SOL ARKA TEKERLEK
-       X: -0.275 (arkaya doğru, wheelbase=0.55m — bkz. ön teker notu)
-       Y: +0.335 (sol taraf — ön ile aynı genişlik)
+       X: -0.72 (arkaya doğru, wheelbase=1.44m — bkz. ön teker notu)
+       Y: +0.50 (sol taraf — ön ile aynı iz genişliği)
   ════════════════════════════════════════════════ -->
   <link name="sol_arka_teker">
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 -1.5708"/>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <mesh filename="package://teknofest_ika/meshes/tekerlek.stl" scale="0.001 0.001 0.001"/>
+        <cylinder length="0.15" radius="0.1989"/>
       </geometry>
       <material name="siyah"/>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <cylinder length="0.15" radius="0.18"/>
+        <cylinder length="0.15" radius="0.1989"/>
       </geometry>
     </collision>
     <inertial>
@@ -154,28 +180,28 @@
   <joint name="sol_arka_joint" type="continuous">
     <parent link="base_link"/>
     <child link="sol_arka_teker"/>
-    <origin xyz="-0.275 0.335 -0.10" rpy="0 0 0"/>
+    <origin xyz="-0.72 0.50 -0.10" rpy="0 0 0"/>
     <axis xyz="0 -1 0"/>
     <dynamics damping="0.5" friction="0.5"/>
   </joint>
 
   <!-- ═══════════════════════════════════════════════
        SAĞ ARKA TEKERLEK
-       X: -0.275 (sol arka ile aynı — simetrik)
-       Y: -0.335 (sağ taraf)
+       X: -0.72 (sol arka ile aynı — simetrik)
+       Y: -0.50 (sağ taraf)
   ════════════════════════════════════════════════ -->
   <link name="sag_arka_teker">
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 1.5708"/>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <mesh filename="package://teknofest_ika/meshes/tekerlek.stl" scale="0.001 0.001 0.001"/>
+        <cylinder length="0.15" radius="0.1989"/>
       </geometry>
       <material name="siyah"/>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="1.5708 0 0"/>
       <geometry>
-        <cylinder length="0.15" radius="0.18"/>
+        <cylinder length="0.15" radius="0.1989"/>
       </geometry>
     </collision>
     <inertial>
@@ -187,7 +213,7 @@
   <joint name="sag_arka_joint" type="continuous">
     <parent link="base_link"/>
     <child link="sag_arka_teker"/>
-    <origin xyz="-0.275 -0.335 -0.10" rpy="0 0 0"/>
+    <origin xyz="-0.72 -0.50 -0.10" rpy="0 0 0"/>
     <axis xyz="0 -1 0"/>
     <dynamics damping="0.5" friction="0.5"/>
   </joint>
@@ -215,7 +241,10 @@
   <!-- ═══════════════════════════════════════════════
        LİDAR LİNKİ — aracın üstünde
   ════════════════════════════════════════════════ -->
-  <link name="lidar_link">
+  <!-- Link adı sürücünün yayınladığı frame_id ile birebir aynı olmalı:
+       lydia_ortam/tmini_pro.yaml → frame_id: laser_frame. Farklı isimde
+       tanımlanırsa /scan hiçbir TF'e oturmaz ve costmap boş kalır. -->
+  <link name="laser_frame">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry><cylinder length="0.05" radius="0.05"/></geometry>
@@ -226,10 +255,32 @@
       <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
     </inertial>
   </link>
+  <!-- Yaw 1.6284 rad = 93.3°: LiDAR gövdeye dönük monte edilmiş, açı sahada
+       huniyle çift yönlü kalibre edildi. huni_reaktif aynı düzeltmeyi ham
+       /scan üzerinde aci_offset_deg ile yapar; Nav2 costmap ise yalnız bu
+       dönüşümü görür. Yükseklik zeminden tarama düzlemine ölçüldü (0.55 m) —
+       ama bu eklemin ebeveyni base_link ve base_joint gövdeyi zeminden
+       0.28 m yukarı alıyor, yani buradaki 0.55 zemin yüksekliğini 0.83 m
+       gösteriyor. X de 0 yazıyor, LiDAR ise burna yakın monte (ön aks
+       merkezi x=+0.72). Jetson çalışma kopyası "0.80 0 0.265" diyor;
+       mezürle doğrulanınca burası ve lydia_startup.sh'teki statik
+       yayıncı birlikte güncellenecek.
+       NOT: bu dönüşümü şu an boot betiğindeki statik yayıncı basıyor. Bir gün
+       robot_state_publisher yığına eklenirse ikisi aynı TF'i yayınlar —
+       o zaman statik laser yayıncısı kaldırılmalı. -->
   <joint name="lidar_joint" type="fixed">
     <parent link="base_link"/>
-    <child link="lidar_link"/>
-    <origin xyz="0.0 0 0.30" rpy="0 0 0"/>
+    <child link="laser_frame"/>
+    <!--
+      Z = 0.3011: tarama düzlemi ZEMİNDEN 0,60 m (mezürle ölçüldü), base_link
+      ise zeminden 0,2989 m yukarıda → 0,60 - 0,2989 = 0,3011.
+      ⚠️ Ölçülen sayı doğrudan buraya yazılmaz; zeminden ölçülüp base_link
+      farkı düşülür. lydia_startup.sh aynı hesabı yapıyor (LIDAR_Z_M eksi
+      BASE_LINK_Z_M) ve test_birim.py ikisinin aynı zemin yüksekliğini
+      verdiğini doğruluyor.
+      Y açısı (yaw) montaj açısı — sahada lidar_aci_kalibre.py ile bulunur.
+    -->
+    <origin xyz="0.0 0 0.3011" rpy="0 0 1.6284"/>
   </joint>
 
   <!-- ═══════════════════════════════════════════════

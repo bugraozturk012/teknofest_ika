@@ -5,7 +5,7 @@ taret_otonom.launch.py — Kumanda Anahtarlı Otonom Taret Zinciri
 Tam görev yığını (Nav2 + misyon_fsm) olmadan, FlySky'ın mod anahtarına
 (SWA) bağlı otonom hedef takibi ve atış:
 
-    Mega → seri_kopru → /rc_input → mod_yoneticisi → /mod/aktif
+    Sürüş kartı → seri_kopru → /rc_input → mod_yoneticisi → /mod/aktif
                                                           │
     webcam_taret → preprocessing → targeting_node ────────┘
                        (OTONOM'da arar/kilitler/atar, MANUEL'de durur)
@@ -31,13 +31,13 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
 
-    # Mega köprüsü — /rc_input kaynağı (kumanda kanalları buradan gelir).
+    # Sürüş kartı köprüsü — /rc_input kaynağı (kumanda kanalları buradan gelir).
     seri_kopru = Node(
         package='teknofest_ika', executable='seri_kopru',
         name='seri_kopru', output='screen',
         parameters=[{'use_sim_time': False,
-                     'port': '/dev/mega',
-                     'baud': 115200}]
+                     'port': '/dev/f767',
+                     'baud': 921600}]
     )
 
     # /rc_input CH5 → /mod/aktif (MANUEL/OTONOM anahtarı).
@@ -125,7 +125,6 @@ def generate_launch_description():
             # 3 kamera USB2'yi paylaşınca işlenmiş akış ~7 Hz'e düşüyor;
             # daha sıkı eşik her kareyi STALE_IMAGE yapıyordu.
             'image_timeout_sec':      1.0,
-            'align_threshold_px':     10.0,
             'fire_lock_duration_sec': 0.5,
             'fire_cooldown_sec':      3.0,
             'publish_debug':          True,

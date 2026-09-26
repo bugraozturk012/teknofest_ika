@@ -2,15 +2,36 @@
 # robot_localization paketi — EKF node
 #
 # Füzyon kaynakları:
-#   odom0 : /odom          → diferansiyel enkoder odometrisi (AS5600 analog)
-#   imu0  : /imu/data      → MPU9250 + Madgwick AHRS (Nano üzerinden)
+#   odom0 : /odom          → sürüş kartının ileri hızı (Nucleo-F767ZI, 0x31)
+#   imu0  : /imu/data      → BNO055, karta bağlı (0x32/0x33)
+#
+# İkisini de seri_kopru yayınlıyor; araçta ayrı bir IMU ya da ayrı bir enkoder
+# okuyucusu YOK.
+#
+# Arka aks TEK PARÇA (diferansiyelsiz, zincirle tahrik): iki tekerlek mekanik
+# olarak kilitli döner, sol/sağ farkından yön çıkarılamaz. Bu yüzden tekerlekten
+# yalnız ileri hız (vx) alınır; yön ve konum IMU + EKF integrasyonundan gelir.
 #
 # Çıkış:
-#   /odometry/filtered     → EKF füzyon çıkışı
-#   TF: odom → base_link   → Nav2 ve SLAM için
+#   /odometry/filtered         → EKF füzyon çıkışı (Nav2'nin odom_topic'i)
+#   TF: odom → base_footprint  → Nav2 ve SLAM için
+#
+# Bu TF halkasını basan ÜÇ aday var ve aynı anda yalnız biri basmalı: statik
+# yayıncı, seri_kopru odometrisi, EKF. EKF çalışırken sahibi EKF'tir;
+# scripts/lydia_startup.sh seri_kopru'yu publish_tf:=false ile susturur ve
+# statik yayıncıyı hiç başlatmaz. İkisi birden basarsa TF iki konum arasında
+# titrer, SLAM haritayı bozuk kapatır.
+#
+# Düğüm adı ekf_filter_node OLMAK ZORUNDA — aşağıdaki blok o ada bağlı.
+# `ros2 run robot_localization ekf_node` çağrısı bu adı garanti etmez, boot
+# betiği `-r __node:=ekf_filter_node` ile açıkça veriyor. Ad tutmazsa parametre
+# bloğu hiç yüklenmez ve EKF sensörsüz varsayılanlarla sessizce koşar.
 #
 # Araç parametreleri:
-#   Dingil arası : 0.55 m   (PLACEHOLDER — wheelbase ölçülmedi)
+#   Dingil arası : 1.44 m   (mezürle ölçüldü, kart ekibiyle teyitli). Ackermann
+#                          kinematiğinin tek girdisi; yanlışsa her
+#                          direksiyon komutu yanlış. Elektrik tarafındaki
+#                          değer de aynı varsayımdan geliyor.
 #   İz genişliği : 0.90 m   (arka aks, EK-7 B)
 #   Kinematik    : Ackermann (yer aracı, 2D hareket)
 #
@@ -35,48 +56,80 @@ ekf_filter_node:
 
     # ── Frekans ve zamanlama ───────────────────────────────────────────────
     frequency: 50.0            # EKF güncelleme frekansı [Hz] — IMU'dan yüksek olmamalı
-    sensor_timeout: 0.1        # Sensör sessiz kalırsa [s] — zaman damgası güncellenir
+    # Sensörler sürüş kartından seri hattan geliyor; hat bir an tıkandığında
+    # filtrenin körleşmemesi için eşikler tek bir telemetri döngüsünden uzun
+    # tutulur.
+    sensor_timeout: 0.2        # Sensör sessiz kalırsa [s] — zaman damgası güncellenir
     transform_time_offset: 0.0
-    transform_timeout: 0.05
+    transform_timeout: 0.2     # TF aramaları Jetson yükünde gecikebilir; sıfır
+                               # bırakmak ölçümü ilk gecikmede düşürür
+    predict_to_current_time: true  # tahmini son sensör anına değil şimdiye taşı
 
     # ── Frame tanımları ───────────────────────────────────────────────────
     map_frame:       map
     odom_frame:      odom
     base_link_frame: base_footprint
     world_frame:     odom       # Lokal EKF: odom referans alır (map değil)
+    publish_tf:      true       # odom→base_footprint sahibi (yukarıdaki nota bak)
 
-    # ── 2D mod (yer aracı — z/roll/pitch yok) ────────────────────────────
-    two_d_mode: false   # eğimde 3D harekete izin ver
+    # ── 2D mod (yer aracı) ────────────────────────────────────────────────
+    # Araçta z'yi ölçen hiçbir sensör yok: yükseklik yalnız vx'in eğimle
+    # izdüşümünden integre edilir ve hiçbir zaman düzeltilmez. 3D modda küçük
+    # bir eğim yanlılığı bile z'yi kaçırır — 2°'lik yanlılık 0.65 m/s'de
+    # dakikada ~1.4 m eder. LiDAR o kadar kayınca tarama noktaları costmap'in
+    # min/max_obstacle_height penceresinin dışına düşer ve Nav2 engelleri hiç
+    # görmez. Nav2 ve slam_toolbox zaten düzlemsel çalıştığı için 3D'nin
+    # karşılığı yok; eğim bilgisi ham /imu/data üzerinden panoya ve arazi
+    # profiline gitmeye devam eder.
+    two_d_mode: true
 
     print_diagnostics: true
     debug: false
 
-    # ── Kaynak 0: Enkoder odometrisi ─────────────────────────────────────
-    # /odom mesajı → seri_kopru.py'dan geliyor
-    # Nano'dan gelen ODO:linear,angular,x,y,theta parse edilecek (protokol güncellenince)
+    # ── Kaynak 0: Tekerlek enkoderi ──────────────────────────────────────
+    # /odom mesajı → seri_kopru.py'dan geliyor.
+    #
+    # Yalnız vx alınır. Tek parça aksta seri_kopru'nun ürettiği theta hep 0
+    # kalır, dolayısıyla /odom'un pose'u (x, y) araç dönse bile düz bir çizgi
+    # gösterir ve vyaw sürekli 0 okur — ikisi de füzyona sokulursa EKF'i
+    # yanıltır. Konum, IMU yönüyle birlikte EKF içinde integre edilir.
     odom0: /odom
     #                    x      y      z      roll   pitch  yaw    vx     vy     vz     vroll  vpitch vyaw
-    odom0_config:     [true,  true,  false,  false, false, false, true,  false, false, false, false, true,
-    #                    ax     ay     az                          ^ yaw IMU'dan alınır, odom'dan değil
+    odom0_config:     [false, false, false,  false, false, false, true,  false, false, false, false, false,
+    #                    ax     ay     az                          ^ yalnız ileri hız
                        false, false, false]
     odom0_queue_size:    10
     odom0_nodelay:       false
-    odom0_differential:  false   # Mutlak konum veriyoruz (kümülatif ticks)
+    odom0_differential:  false
     odom0_relative:      false
 
-    # ── Kaynak 1: IMU (MPU9250 + Madgwick) ───────────────────────────────
-    # Mevcut durumda sadece orientation geliyor (angular_velocity_cov[0]=-1)
-    # Protokol güncellenince ax, ay, gx, gy, gz de eklenebilir
+    # ── Kaynak 1: IMU (BNO055, sürüş kartı üzerinden) ────────────────────
+    # Yalnız orientation geliyor. seri_kopru ham gyro ve ivmeyi göndermediği
+    # için o alanların kovaryansını -1 yazar; robot_localization bunu
+    # `fabs(cov[0] + 1) < 1e-9` ile sınayıp alanı tamamen atlar. Bu yüzden
+    # vyaw'ı burada istemek işe yaramaz, yalnız yanıltır — ham gyro geldiği
+    # gün bilinçli olarak açılır.
+    #
+    # base_link_frame'e dönüşüm ZORUNLU: EKF /imu/data'yı imu_link'ten
+    # base_footprint'e çeviremezse ölçümü düşürür ve bunu SESSİZCE yapar
+    # (lookupTransformSafe'in uyarısı kaynakta yorum satırı). Boot betiği
+    # base_link→imu_link statik dönüşümünü basar; o satır silinirse EKF yalnız
+    # vx ile koşar, yön hiç güncellenmez ve araç estimatörde hep düz gider.
     imu0: /imu/data
     #                    x      y      z      roll   pitch  yaw    vx     vy     vz     vroll  vpitch vyaw
-    imu0_config:      [false, false, false,  true,  true,  true,  false, false, false, false, false, true,
-    #                    ax     ay     az      ^ roll ^ pitch kullan (eğim algılama)
+    #
+    # roll/pitch açık ama two_d_mode: true onları her döngüde sıfırladığı için
+    # şu an durumu etkilemiyorlar. vyaw'dan farkları veri yokluğu değil mod
+    # seçimi olması: ölçüm geliyor, 3D moda dönüldüğü anda karşılığını buluyor.
+    # Yaw ise 2D modda da yaşıyor ve aracın yönünü tek başına o taşıyor.
+    imu0_config:      [false, false, false,  true,  true,  true,  false, false, false, false, false, false,
+    #                    ax     ay     az      ^ roll ^ pitch  ^ yaw = tek yön kaynağı
                        false, false, false]
     imu0_queue_size:     10
     imu0_nodelay:        false
     imu0_differential:   false
     imu0_relative:       false
-    imu0_remove_gravitational_acceleration: false  # IMU ham ivme yayınlamıyor (cov[0]=-1)
+    imu0_remove_gravitational_acceleration: false  # kart ham ivme yayınlamıyor (cov[0]=-1)
 
     # ── Süreç gürültüsü kovaryansı (Q matrisi, 15×15) ────────────────────
     # Sıra: x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az

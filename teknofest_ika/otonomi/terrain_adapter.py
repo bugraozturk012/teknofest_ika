@@ -10,29 +10,35 @@ NEDEN INTEGER?
 String tabanlı mesajlar her callback'te heap allocation + karakter karşılaştırması
 gerektirir. UInt8 ise tek byte, sıfır parse maliyeti, doğrudan dict lookup.
 
-YOLO çıkışı zaten integer class_id üretir (0-8). Görüntü ekibi bunu
-doğrudan /yolo/class_id topic'ine UInt8 olarak yayınlar.
+YOLO çıkışı zaten integer class_id üretir (0-14). yolo_adapter_node bunu
+/yolo/class_id topic'ine UInt8 olarak yayınlar.
 
 ─────────────────────────────────────────────────────────────────────────────
 TOPIC ARAYÜZÜ
 ─────────────────────────────────────────────────────────────────────────────
   Giriş  : /yolo/class_id  (std_msgs/UInt8)
-             0 = SULU_YOL       (Tabela_1)       → wet
-             1 = DIK_EGIM_CIKIS (Tabela_10)      → normal
+
+           Eşleme models/best.pt içindeki names sözlüğünden okunmuştur —
+           model 15 sınıfla eğitildi ve Tabela_12 İÇERMİYOR. Sıra alfabetik
+           olduğu için class_id ile tabela numarası örtüşmez; listeyi elle
+           kaydırmak (ör. araya Tabela_12 eklemek) index 4'ten sonrasının
+           tamamını bozar ve her tabela komşusunun profilini uygular.
+
+             0 = SULU_YOL       (Tabela_1)        → wet
+             1 = DIK_EGIM_CIKIS (Tabela_10)       → normal
              2 = HIZLANMA       (Tabela_11)       → fast   (HizlanmaState Nav2'yi bypass eder)
              3 = HIZLANMA_SON   (Tabela_11_son)   → normal
-             4 = Tabela_12      (netleştirilecek) → normal
-             5 = TASLI_YOL      (Tabela_2)        → gravel
-             6 = YAN_EGIM       (Tabela_3)        → slope
-             7 = DIK_ENGEL      (Tabela_4)        → obstacle
-             8 = KONİLİ_YOL    (Tabela_5)        → normal (Nav2 halleder)
-             9 = KAYAR_ENGEL    (Tabela_6)        → normal (Nav2 halleder)
-            10 = ENGEBELİ_ARAZİ(Tabela_7)        → rough
-            11 = DIK_EGIM       (Tabela_8)        → rough
-            12 = ATIS_BOLGESI   (Tabela_9)        → slow
-            13 = Tabela_stop                      → normal (FSM halleder)
-            14 = hedef_tahtasi                    → slow
-            15 = trafik_huni                      → normal (Nav2 costmap halleder)
+             4 = TASLI_YOL      (Tabela_2)        → gravel
+             5 = YAN_EGIM       (Tabela_3)        → slope
+             6 = DIK_ENGEL      (Tabela_4)        → obstacle
+             7 = KONİLİ_YOL     (Tabela_5)        → normal (Nav2 halleder)
+             8 = KAYAR_ENGEL    (Tabela_6)        → normal (Nav2 halleder)
+             9 = ENGEBELİ_ARAZİ (Tabela_7)        → rough
+            10 = DIK_EGIM       (Tabela_8)        → rough
+            11 = ATIS_BOLGESI   (Tabela_9)        → slow
+            12 = Tabela_stop                      → normal (FSM halleder)
+            13 = hedef_tahtasi                    → slow
+            14 = trafik_huni                      → normal (Nav2 costmap halleder)
            255 = tespit yok                       → normal (varsayılan profil)
 
   Çıkış  : Nav2 /controller_server/set_parameters RPC çağrısı
@@ -84,11 +90,10 @@ NO_DETECTION = 255
 
 # ─────────────────────────────────────────────────────────────────────────────
 # INTEGER CLASS_ID → TERRAIN PROFİLİ
-# Sıra Tabela numarasıyla birebir eşleşmeli (class_id = Tabela_N - 1):
-#   [SULU_YOL, TASLI_YOL, YAN_EGIM, DIK_ENGEL, KONİLİ_YOL,
-#    KAYAR_ENGEL, ENGEBELİ_ARAZİ, DIK_EGIM, ATIS_BOLGESI, YAN_EGIM_2]
 # ─────────────────────────────────────────────────────────────────────────────
 # Model alfabetik sırayla eğitildi — class_id Tabela numarasıyla örtüşmüyor.
+# Doğrulama: python3 -c "import torch; print(torch.load('models/best.pt',
+#   map_location='cpu', weights_only=False)['model'].names)"
 # Gerçek eşleme (best.pt names, 15 sınıf):
 #   0=Tabela_1  1=Tabela_10  2=Tabela_11  3=Tabela_11_son
 #   4=Tabela_2  5=Tabela_3   6=Tabela_4   7=Tabela_5       8=Tabela_6
@@ -117,26 +122,39 @@ CLASS_TO_TERRAIN = {
 # ─────────────────────────────────────────────────────────────────────────────
 # YOL TİPİ → NAV2 PARAMETRE PROFİLLERİ
 #
-# desired_linear_vel   [m/s]    : Hedef ileri hız
-# lookahead_dist       [m]      : RPP lookahead mesafesi L_d
-# max_accel / max_decel[m/s²]   : İvme/yavaşlama limiti
-# max_robot_pose_search_dist [m]: Rota üzerinde araç pozisyonu arama mesafesi
-# inflation_radius     [m]      : Costmap engel tamponu
+# desired_linear_vel [m/s] : hedef ileri hız — controller_server
+# inflation_radius   [m]   : costmap engel tamponu — local_costmap/local_costmap
 #
-# Formüller:
-#   Fren mesafesi  : d = v² / (2·μ·g)
-#   Min lookahead  : L_d_min = v × t_lookahead (t≈0.5s)
-#   Turning radius : R = v / ω (RPP regulated_linear_scaling_min_radius ile kısıtlı)
+# Profil başına yalnız bu ikisi yazılıyor, çünkü mevcut nav2_params.yaml
+# yapılandırmasında RPP'nin öteki ayarları çalışma anında karşılık bulmuyor:
+#
+#   lookahead_dist — `use_velocity_scaled_lookahead_dist: true` olduğu için
+#     RPP bu alanı hiç okumaz; lookahead'i `hız × lookahead_time` hesaplayıp
+#     [min_lookahead_dist, max_lookahead_dist] arasına kırpar. Profil başına
+#     lookahead istenirse yazılacak yer bu üç parametredir. Mevcut ayarla
+#     (t=1.5 s, taban 1.2 m) `fast` dışındaki bütün profillerde lookahead
+#     tabana oturur: 0.65 m/s × 1.5 = 0.98 → 1.2 m.
+#
+#   max_angular_accel — yalnız RPP'nin rotateToHeading() dalında kullanılır,
+#     o dal da `use_rotate_to_heading: false` ile kapalı (Ackermann yerinde
+#     dönemez). Bu araçta hiçbir zaman devreye girmiyor.
+#
+#   max_robot_pose_search_dist — RPP'nin dinamik parametre callback'inde YOK.
+#     set_parameters çağrısı "başarılı" döner ama controller'ın önbelleğe
+#     aldığı değer değişmez; geçerli olan nav2_params.yaml'daki statik değer.
+#
+# Fren mesafesi: d = v² / (2·μ·g)
 # ─────────────────────────────────────────────────────────────────────────────
 TERRAIN_PROFILES = {
 
     'normal': {
-        # Düz, kuru zemin — tam performans
+        # Düz, kuru zemin. Hız, otonom sürüşte sahada doğrulanmış en yüksek
+        # değere sabitlendi: 2026-07-28'de parkur turu 0.65 m/s tavanıyla
+        # tamamlandı. Aracın tam gaz karşılığı 1.94 m/s ölçüldü, ama o hız
+        # otonomda hiç denenmedi — tavanı ölçülmemiş bir değere açmak,
+        # planlayıcının frenleyemeyeceği bir hızda engele girmesi demek.
         'controller_server': {
-            'FollowPath.desired_linear_vel':            2.0,
-            'FollowPath.lookahead_dist':                1.5,
-            'FollowPath.max_angular_accel':             3.2,
-            'FollowPath.max_robot_pose_search_dist':    5.0,
+            'FollowPath.desired_linear_vel':            0.65,
         },
         'local_costmap/local_costmap': {
             'inflation_layer.inflation_radius': 0.40,
@@ -147,10 +165,7 @@ TERRAIN_PROFILES = {
         # Su geçişi: μ≈0.3 → d_fren = 0.8²/(2·0.3·9.8) ≈ 0.11m (kabul edilebilir)
         # Düşük angular accel: ıslak zeminde ani yön değişimi kayma yaratır
         'controller_server': {
-            'FollowPath.desired_linear_vel':            0.8,
-            'FollowPath.lookahead_dist':                1.0,
-            'FollowPath.max_angular_accel':             1.0,
-            'FollowPath.max_robot_pose_search_dist':    2.5,
+            'FollowPath.desired_linear_vel':            0.50,
         },
         'local_costmap/local_costmap': {
             'inflation_layer.inflation_radius': 0.55,
@@ -160,10 +175,7 @@ TERRAIN_PROFILES = {
     'gravel': {
         # Taşlı yol: lateral temas düzensiz, engebeli zemin kayma riski
         'controller_server': {
-            'FollowPath.desired_linear_vel':            0.7,
-            'FollowPath.lookahead_dist':                0.9,
-            'FollowPath.max_angular_accel':             1.5,
-            'FollowPath.max_robot_pose_search_dist':    2.5,
+            'FollowPath.desired_linear_vel':            0.50,
         },
         'local_costmap/local_costmap': {
             'inflation_layer.inflation_radius': 0.45,
@@ -174,10 +186,7 @@ TERRAIN_PROFILES = {
         # Yan eğim: F_lat = m·g·sin(θ) → devrilme momenti
         # Küçük lookahead → direksiyon açısı minimize edilir
         'controller_server': {
-            'FollowPath.desired_linear_vel':            0.5,
-            'FollowPath.lookahead_dist':                0.7,
-            'FollowPath.max_angular_accel':             1.0,
-            'FollowPath.max_robot_pose_search_dist':    2.0,
+            'FollowPath.desired_linear_vel':            0.45,
         },
         'local_costmap/local_costmap': {
             'inflation_layer.inflation_radius': 0.65,
@@ -187,10 +196,7 @@ TERRAIN_PROFILES = {
     'obstacle': {
         # Dik engel: Nav2 lokal costmap'i kaçınır, araç yavaşlar
         'controller_server': {
-            'FollowPath.desired_linear_vel':            1.2,
-            'FollowPath.lookahead_dist':                1.2,
-            'FollowPath.max_angular_accel':             2.0,
-            'FollowPath.max_robot_pose_search_dist':    4.0,
+            'FollowPath.desired_linear_vel':            0.60,
         },
         'local_costmap/local_costmap': {
             'inflation_layer.inflation_radius': 0.50,
@@ -201,10 +207,7 @@ TERRAIN_PROFILES = {
         # Dik eğim: eğim + engebeli zemin kombine → en kısıtlı profil
         # IMU gürültüsü artar, EKF kovaryansı büyür
         'controller_server': {
-            'FollowPath.desired_linear_vel':            0.4,
-            'FollowPath.lookahead_dist':                0.6,
-            'FollowPath.max_angular_accel':             1.0,
-            'FollowPath.max_robot_pose_search_dist':    1.5,
+            'FollowPath.desired_linear_vel':            0.45,
         },
         'local_costmap/local_costmap': {
             'inflation_layer.inflation_radius': 0.60,
@@ -214,10 +217,7 @@ TERRAIN_PROFILES = {
     'slow': {
         # Atış öncesi: araç durmaya hazırlanır, taret hizalanır
         'controller_server': {
-            'FollowPath.desired_linear_vel':            0.3,
-            'FollowPath.lookahead_dist':                0.5,
-            'FollowPath.max_angular_accel':             0.8,
-            'FollowPath.max_robot_pose_search_dist':    1.5,
+            'FollowPath.desired_linear_vel':            0.45,
         },
         'local_costmap/local_costmap': {
             'inflation_layer.inflation_radius': 0.40,
@@ -227,10 +227,7 @@ TERRAIN_PROFILES = {
     'fast': {
         # Hızlanma bölgesi: düz zemin, maksimum performans
         'controller_server': {
-            'FollowPath.desired_linear_vel':            3.0,
-            'FollowPath.lookahead_dist':                2.5,
-            'FollowPath.max_angular_accel':             3.2,
-            'FollowPath.max_robot_pose_search_dist':    8.0,
+            'FollowPath.desired_linear_vel':            0.90,
         },
         'local_costmap/local_costmap': {
             'inflation_layer.inflation_radius': 0.35,
