@@ -1,8 +1,7 @@
 # F767ZI ↔ Jetson — arayüz sözleşmesi
 
-> **© 2026 Ahmet Efe NEZLİ (dwifk0 · ahmetefenezli@gmail.com). Tüm hakları saklıdır.**
-> LYDIA/MAGNESIA takımının Teknofest çalışmaları kapsamında, bu depo içinde
-> kullanılmak üzere paylaşılmıştır. Koşullar: [`TELIF.md`](TELIF.md)
+> **Yazar:** Ahmet Efe NEZLİ ([@dwifk0](https://github.com/dwifk0)) — sürüş kartı
+> (Nucleo-F767ZI) ve bu arayüz sözleşmesi. Bu depoda, deponun lisansıyla yayımlanır.
 
 **Sürüm:** 1.0 · **Tarih:** 2026-09-02
 **Kapsam:** Nucleo-F767ZI sürüş + sensör kartı ile Jetson arasındaki seri

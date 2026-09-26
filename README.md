@@ -573,4 +573,32 @@ ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose \
 
 ---
 
+## Katkıda bulunanlar
+
+### Ahmet Efe NEZLİ ([@dwifk0](https://github.com/dwifk0)) — araç elektroniği ve sürüş kartı
+
+Aracın Jetson altındaki bütün katmanı: kumandadan tekerleğe giden zincir, güç, emniyet ve
+Jetson'la konuşan arayüz.
+
+- **Sürüş kartı firmware'i (Nucleo-F767ZI)** — gaz (DAC ile BLDC kontrolcü), fren (BTS7960),
+  step motorlu direksiyon ve jog kipi, iBUS kumanda ve failsafe, kip hakemi
+  (manuel / otonom / DUR), E-STOP ve emniyet mandalları, tekerlek enkoderi ile hız ölçümü,
+  BNO055 IMU, taret sürüşü. Önceki dönemde Arduino Mega üzerinde röleli direksiyon + ESC frenli
+  ilk sürüş firmware'i.
+- **Jetson ↔ kart arayüz sözleşmesi** — [`donanim/PROTOKOL_F767.md`](donanim/PROTOKOL_F767.md),
+  [`teknofest_ika/gomulu/f767_protokol.py`](teknofest_ika/gomulu/f767_protokol.py) ve
+  `seri_kopru.py`'nin F767 desteği: paket çerçevesi, fiziksel birimle komut, telemetri ve
+  sağlık bayrakları.
+- **Araç elektroniği** — bağlantı haritası ve kablolama, ana batarya (16S LiFePO4 + JK BMS) ve
+  ayrı elektronik bataryası (4S + DALY), sigorta ve güç dağıtımı, acil stop devresi,
+  motor kontrolcüsü bağlantıları, malzeme listesi ve seçimleri.
+- **Araç panosu ve saha araçları** — web tabanlı araç panosu (telemetri, BMS'lerin BLE ile
+  okunması, kamera akışları), Jetson açılış servisleri (`scripts/lydia_startup.sh`),
+  araç ağı ve ekip uzaktan erişimi, tezgâh test düzeni ve testleri.
+
+Kart firmware'i bu depoda yer almaz. Karar katmanının platformdan bağımsız, birim testli
+sürümü: [dwifk0/IKA-MAGNESIA-LYDIA](https://github.com/dwifk0/IKA-MAGNESIA-LYDIA).
+
+---
+
 *Takım: MAGNESIA | LYDİA İKA | Teknofest 2026*
