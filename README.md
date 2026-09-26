@@ -5,6 +5,7 @@
 TEKNOFEST İnsansız Kara Aracı yarışması için geliştirilmiş, Ackermann bir araçta
 koşan tam otonom sürüş yığını
 
+[![testler](https://github.com/bugraozturk012/teknofest_ika/actions/workflows/testler.yml/badge.svg)](https://github.com/bugraozturk012/teknofest_ika/actions/workflows/testler.yml)
 [![Lisans](https://img.shields.io/badge/lisans-Apache--2.0-2563EB?style=flat-square)](LICENSE)
 [![ROS 2](https://img.shields.io/badge/ROS%202-Humble-22314E?style=flat-square&logo=ros&logoColor=white)](https://docs.ros.org/en/humble/)
 [![Jetson](https://img.shields.io/badge/Jetson-Orin%20Nano-76B900?style=flat-square&logo=nvidia&logoColor=white)](#)
