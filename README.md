@@ -586,6 +586,42 @@ depo onu dağıtmaz — ayrıntı [`requirements.txt`](requirements.txt) içinde
 
 ## Katkıda bulunanlar
 
+### Buğra Öztürk ([@bugraozturk012](https://github.com/bugraozturk012)) — otonom sürüş yazılımı
+
+Jetson üzerinde koşan bütün karar katmanı: algı, füzyon, navigasyon, görev yönetimi ve
+sürüş kartıyla konuşan köprü. Bu depodaki 23 ROS 2 düğümünün tamamı ve 1.053 birim test.
+
+- **Görev durum makinesi** — [`misyon_fsm.py`](teknofest_ika/otonomi/misyon_fsm.py) (2.700 satır):
+  SMACH ile dokuz durum. Kayan hedef sürüşü (hedefler her döngüde LiDAR taramasından
+  üretilir; haritaya da waypoint koordinatına da ihtiyaç yok), §6.10 rampa ve §6.11 hızlanma
+  için Nav2 baypasları, atış yaklaşma/atış zinciri, hata kurtarma ve koşu süresi bütçesi.
+- **Saf mantık katmanı** — [`pure_logic.py`](teknofest_ika/otonomi/pure_logic.py) (1.500 satır):
+  ROS'tan bağımsız karar fonksiyonları. Ackermann kinematiği, koridor merkez çizgisi ve iç
+  duvar takibi, kayan hedef üretimi, geri kayma riski, kart ayarlarının kodlanması, sensör
+  ve ölçek kapıları. Kararlar düğümlerden buraya taşındı ki davranışla sınanabilsinler.
+- **Sürüş kartı köprüsü** — [`seri_kopru.py`](teknofest_ika/gomulu/seri_kopru.py) (1.200 satır):
+  arayüz sözleşmesinin Jetson tarafı, `0x09` ayar paketleri ve kalıcılığı, E-STOP zinciri,
+  IMU ve odometri yayını, enkoder sessizliği ile ölçek denetimleri.
+- **Navigasyon** — [`config/nav2_params.yaml`](config/nav2_params.yaml): ölçülmüş gövde ayak izi,
+  SmacPlannerHybrid + Regulated Pure Pursuit ve kendi davranış ağaçları
+  ([`config/bt/`](config/bt)) — stok ağaçtaki `Spin` düğümü Ackermann araçta `bt_navigator`'ı
+  düşürüyordu. [`config/ekf.yaml`](config/ekf.yaml) ile enkoder + IMU füzyonu.
+- **Görüntü işleme** — tabela tespiti (YOLO / TensorRT), koni ve kayar engel costmap
+  besleyicileri, Kalman takibi, şerit tespiti, yağmur damlası onarımı, taret nişan düğümü.
+- **Emniyet düğümleri** — `mod_yoneticisi`, `e_stop_node`, `watchdog`, `anti_rollback`,
+  `imu_guvenlik`: kip hakemliği, dört E-STOP kaynağının birleştirilmesi, düğüm gözcülüğü,
+  eğimde geri kayma koruması.
+- **Parkur analizi** — [`scripts/parkur_cad/`](scripts/parkur_cad): TEKNOFEST'in yayımladığı
+  STEP dosyasından tabela ve bariyer konumlarının çıkarılması, aşama mesafelerinin
+  planlayıcıyla ölçülmesi, U dönüşü ve koni slalomu geçilebilirlik analizi.
+- **Açılış ve saha araçları** — [`scripts/lydia_startup.sh`](scripts/lydia_startup.sh)
+  (1.265 satır): düğümlerin sıralı başlatılması, ortam değişkeni kapıları, ön koşul
+  doğrulamaları ve süreç gözcüsü. Web tabanlı araç panosu
+  ([`scripts/web_dashboard.py`](scripts/web_dashboard.py), 1.689 satır).
+- **Birim testleri** — [`test_birim.py`](test_birim.py): 1.053 test. Yapılandırma ile kod
+  arasındaki tutarlılık, açılış betiğinin gerçekten ne geçirdiği ve durum makinesinin
+  geçiş grafiği dahil; testler mutasyonla doğrulanıyor.
+
 ### Ahmet Efe NEZLİ ([@dwifk0](https://github.com/dwifk0)) — araç elektroniği ve sürüş kartı
 
 Aracın Jetson altındaki bütün katmanı: kumandadan tekerleğe giden zincir, güç, emniyet ve
