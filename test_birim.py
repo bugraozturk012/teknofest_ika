@@ -43,7 +43,7 @@ from teknofest_ika.otonomi.pure_logic import (  # noqa: E402
     ayar_deger,
     ayar_gonderilecek,
     AYAR_DIREKSIYON,
-    enkoder_sessiz,
+    enkoder_sessiz, olcek_uygulanmiyor,
     kip_modu,
     bms_okuma_gecerli,
     bms_dip_olu,
@@ -627,6 +627,65 @@ check("geri giderken de yakalar",
 # üstünde kalır, yani eşik taban altındaki gürültüye takılmamalı.
 check("eşik kart tabanının altında",
       enkoder_sessiz(hiz_mms=int(KART_HIZ_TABAN * 1000), sayim_sabit_s=2.0), True)
+
+# Aynadaki arıza: sayaç DÖNÜYOR ama kartın ölçtüğü hız alanı 0 kalıyor. Sessiz
+# kalması en pahalı olan bu: akış kesilmediği için bayatlık kapıları geçer ve
+# 0, "ölçüm yok" değil "0 m/s ölçtüm" olarak EKF'e düşük kovaryansla girer.
+check("sayım dönüyor, hız alanı 0 → ölçek yok",
+      olcek_uygulanmiyor(komut_mms=400, olculen_sifir_s=2.0,
+                         sayim_sabit_s=0.2), True)
+# Kalkışın ilk örneklerinde ölçülen hızın 0 olması normal: karar anlık değere
+# değil 0'da GEÇİRİLEN süreye bakmalı, yoksa her kalkışta sahte alarm çalar.
+check("hız alanı yeni sıfırlandı → alarm yok",
+      olcek_uygulanmiyor(komut_mms=400, olculen_sifir_s=0.3,
+                         sayim_sabit_s=0.2), False)
+# Araç durduruluyorsa hız alanının 0 olması doğru cevaptır.
+check("komut yok → alarm yok",
+      olcek_uygulanmiyor(komut_mms=0, olculen_sifir_s=10.0,
+                         sayim_sabit_s=0.2), False)
+check("geri giderken de yakalar",
+      olcek_uygulanmiyor(komut_mms=-400, olculen_sifir_s=2.0,
+                         sayim_sabit_s=0.2), True)
+# 🔑 İki denetim aynı anda doğru OLAMAZ: biri "sayım sabit", öteki "sayım
+# değişiyor" koşuluyla çalışıyor. Örtüşürlerse sahada iki çelişkili sebep
+# birlikte basılır ve hangisinin aranacağı belirsizleşir — teşhisin bütün
+# değeri bu ayrımda.
+for _hiz in (400, -400, 0, 150):
+    for _sabit in (0.0, 0.5, 0.99, 1.0, 3.0):
+        check(f"ayrım korunuyor (hiz={_hiz}, sabit={_sabit})",
+              enkoder_sessiz(_hiz, _sabit)
+              and olcek_uygulanmiyor(_hiz, 5.0, _sabit), False)
+# Sayım da durduysa sebep sayaçtadır, ölçekte değil: o dalı enkoder_sessiz
+# bildiriyor ve bu denetim susmalı.
+check("sayım da sabit → bu denetim susar",
+      olcek_uygulanmiyor(komut_mms=400, olculen_sifir_s=5.0,
+                         sayim_sabit_s=3.0), False)
+# Eşik kart tabanının altında kalmalı — enkoder_sessiz ile aynı gerekçe.
+check("komut eşiği kart tabanının altında",
+      olcek_uygulanmiyor(komut_mms=int(KART_HIZ_TABAN * 1000),
+                         olculen_sifir_s=2.0, sayim_sabit_s=0.2), True)
+
+# Denetim köprüde KULLANILMALI; saf fonksiyonun var olması çağrıldığını
+# göstermez. Kararı ölçülen hızın 0'da geçirdiği süreyle besliyor mu.
+with open(os.path.join(_KOK, 'teknofest_ika/gomulu/seri_kopru.py'),
+          encoding='utf-8') as f:
+    _KOPRU_OLCEK = f.read()
+check("köprü ölçek denetimini çağırıyor",
+      'olcek_uygulanmiyor(' in _KOPRU_OLCEK, True)
+check("ölçülen hız 0x31'den saklanıyor",
+      '_olculen_mms' in _KOPRU_OLCEK, True)
+# Kart resetlendiğinde ayarlar RAM'den siliniyor ve hız alanı yeniden 0 basıyor;
+# ölçüm sayacı yenilenmezse alarm eski zaman damgasıyla anında çalar.
+_RESET = _KOPRU_OLCEK[_KOPRU_OLCEK.index('KART YENİDEN BAŞLADI'):]
+_RESET = _RESET[:_RESET.index('_ayarlari_gonder')]
+check("resette ölçüm sayacı da yenileniyor",
+      '_olculen_mms = None' in _RESET, True)
+
+# FSM'in ilerleme uyarısı iki sebebi ayırt edemez; ayırt eden bilgi köprüde.
+# Uyarı bu yüzden nereye bakılacağını söylemeli, yoksa sahada aranan şey
+# "engel mi enkoder mi" sorusunda kalır.
+check("ilerleme uyarısı köprüdeki ayrıma yönlendiriyor",
+      '/enkoder/ham' in _FSM2 and 'ÖLÇEK' in _FSM2, True)
 
 # Kart IMU paketlerini yalnız BNO takılıyken basıyor; çip yokken susması
 # arıza değil. Sabit listede tutmak kalıcı sahte alarm demek.

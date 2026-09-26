@@ -124,7 +124,8 @@ from teknofest_ika.otonomi.topics import (
 from teknofest_ika.otonomi.pure_logic import (
     paket_olustur, paket_dogrula,
     paket_v0_i, paket_v1_i, paket_v0_u, paket_v1_u, paket_int32,
-    rc_dizisi, surum_uyumlu, enkoder_sessiz, yaw_kovaryansi,
+    rc_dizisi, surum_uyumlu, enkoder_sessiz, olcek_uygulanmiyor,
+    yaw_kovaryansi,
     ayar_ham, ayar_deger, ayar_gonderilecek,
     lazer_sonmeli,
     calib_stat_coz,
@@ -269,6 +270,11 @@ class SeriKopru(Node):
         self._kart_hiz     = 0         # 0x38'in bildirdiği hız [mm/s]
         self._sayim        = None
         self._sayim_zamani = 0.0       # sayımın son değiştiği an
+        # 0x31'in ölçtüğü hız ve o alanın 0'dan son çıktığı an. Ölçeğin
+        # uygulanıp uygulanmadığı kararı anlık değere değil bu süreye bakıyor:
+        # kalkışın ilk örneklerinde 0 okumak normaldir.
+        self._olculen_mms   = None
+        self._olculen_sifir = 0.0
         self._calisma_s    = None      # 0x35 v1 — kart reseti bu alandan görülür
         self._lazer_bildirim = False
         self._son_surus_yayin = 0.0
@@ -529,7 +535,11 @@ class SeriKopru(Node):
                 self._ham_pub.publish(Int32(data=sayim))
 
         elif komut == PKT_F7_HIZ:
-            self._odometri(now, paket_v0_i(ham) / 1000.0)
+            olculen = paket_v0_i(ham)
+            if olculen != 0 or self._olculen_mms is None:
+                self._olculen_sifir = now.nanoseconds * 1e-9
+            self._olculen_mms = olculen
+            self._odometri(now, olculen / 1000.0)
 
         elif komut == PKT_F7_IMU_ACI:
             with self._lock:
@@ -697,7 +707,8 @@ class SeriKopru(Node):
             with self._lock:
                 self._hiz_zamani = None
                 self._yaw_onceki = None
-            self._sayim = None
+            self._sayim       = None
+            self._olculen_mms = None
             # Ayarlar RAM'deydi, resette gittiler. Yeniden yazılmazsa hız
             # alanı sessizce 0 basar ve otonomi ortasından kesilir.
             self._ayar_gonderilen.clear()
@@ -712,11 +723,25 @@ class SeriKopru(Node):
         """
         if self._sayim is None:
             return
-        sabit_s = now.nanoseconds * 1e-9 - self._sayim_zamani
+        simdi_s = now.nanoseconds * 1e-9
+        sabit_s = simdi_s - self._sayim_zamani
         if enkoder_sessiz(self._kart_hiz, sabit_s):
             self.get_logger().error(
                 f'ENKODER SESSİZ — kart {self._kart_hiz} mm/s sürüyor ama sayım '
                 f'{sabit_s:.1f} s\'dir sabit. Kaplin, kablo ya da sayaç.',
+                throttle_duration_sec=5.0)
+        elif self._olculen_mms is not None and olcek_uygulanmiyor(
+                self._kart_hiz, simdi_s - self._olculen_sifir, sabit_s):
+            self.get_logger().error(
+                f'ÖLÇEK UYGULANMIYOR — sayım DÖNÜYOR ama 0x31 hız alanı '
+                f'{simdi_s - self._olculen_sifir:.1f} s\'dir 0 '
+                f'(kart {self._kart_hiz} mm/s sürüyor). Sayacın dönüşünü '
+                'metreye çeviren ölçek kartta yok: /odom sıfır hız yayınlar, '
+                'damgası taze olduğu için bayatlık kapıları geçer ve EKF '
+                '"duruyorum" ölçümünü tam ağırlıkla alır — planlayıcı aracı '
+                'başlangıç noktasında sanar. Kaynağına göre eksik ayar: mil '
+                'enkoderi canlıysa tekerlek_cevre_mm + enkoder_disli_orani, '
+                'gösterge ucu canlıysa tekerlek_cevre_mm + gosterge_darbe_tur.',
                 throttle_duration_sec=5.0)
 
     # ── 0x39 kip ve link ───────────────────────────────────────────────────

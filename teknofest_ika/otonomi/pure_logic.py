@@ -286,6 +286,38 @@ def enkoder_sessiz(hiz_mms: int, sayim_sabit_s: float,
     return abs(hiz_mms) >= hiz_esigi_mms and sayim_sabit_s >= sure_esigi_s
 
 
+def olcek_uygulanmiyor(komut_mms: int, olculen_sifir_s: float,
+                       sayim_sabit_s: float,
+                       komut_esigi_mms: int = 100,
+                       sure_esigi_s: float = 1.0) -> bool:
+    """
+    Sayaç dönüyor ama kartın ölçtüğü hız alanı 0 kalıyorsa True.
+
+    `enkoder_sessiz`in aynası ve onunla aynı anda doğru OLAMAZ: o "sayım
+    sabit", bu "sayım değişiyor" koşuluyla çalışıyor. Ayrımın bütün değeri
+    teşhiste: sayım durmuşsa sorun sayaçta, kaplinde ya da kablodadır; sayım
+    dönerken hız alanı 0 kalıyorsa sayacın dönüşünü metreye çeviren ölçek
+    kartta yoktur (kart o alanı ölçüm yokken bilerek 0 basıyor).
+
+    NEDEN SESSİZ KALMASI EN PAHALI ARIZA
+    ─────────────────────────────────────────────────────────────────────────
+    Akış kesilmiyor: `/odom` 0 hızla yayınlanmaya devam eder, damgası tazedir
+    ve bütün bayatlık kapılarını geçer. O 0 da "ölçüm yok" olarak değil
+    "0 m/s ölçtüm" olarak, düşük kovaryansla EKF'e girer. Filtre aracı emin
+    biçimde başlangıç noktasında tutar: araç fiziksel olarak sürerken
+    planlayıcı onu hareketsiz sanar, yerel costmap penceresi kaymaz ve plan
+    üzerinde hiç ilerlenmez.
+
+    Komut eşiği kartın kalkış tabanının altında tutulur: taban altındaki
+    komutlar tabana yükseltildiği için gerçek bir sürüş komutu her zaman
+    bunun üstündedir. Süre eşiği ise ölçülen hızın 0'da GEÇİRDİĞİ süreye
+    bakar, anlık değerine değil — kalkışın ilk örneklerinde 0 okumak normal.
+    """
+    return (abs(komut_mms) >= komut_esigi_mms
+            and olculen_sifir_s >= sure_esigi_s
+            and sayim_sabit_s < sure_esigi_s)
+
+
 def surum_uyumlu(protokol: int, beklenen: int) -> bool:
     """
     Yalnız protokol sürümü karşılaştırılır. Firmware yapı numarası davranış

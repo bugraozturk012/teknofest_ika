@@ -910,7 +910,13 @@ class KayanHedefSurucusu:
                 elif simdi - son_ilerleme_t > self.ODOM_ILERLEME_UYARI_S:
                     self.node.get_logger().warn(
                         f'[KAYAN] {label}: {self.ODOM_ILERLEME_UYARI_S:.0f}s '
-                        f'ilerleme yok ({yol:.1f} m) — enkoder ya da engel?'
+                        f'ilerleme yok ({yol:.1f} m). İki sebep birbirinden '
+                        'buradan ayırt EDİLEMEZ — araç meşru olarak bekliyor '
+                        '(§6.8 kayar engel, engel) ya da yol hiç ÖLÇÜLMÜYOR. '
+                        'Ayıran bilgi köprüde: /enkoder/ham sayımı artarken '
+                        '0x31 hız alanı 0 kalıyorsa seri_kopru "ÖLÇEK '
+                        'UYGULANMIYOR" basar ve o hâlde aşama bütçesi dolana '
+                        'kadar sürmenin anlamı yoktur.'
                     )
                     son_ilerleme_t = simdi
 
