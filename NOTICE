@@ -1,0 +1,30 @@
+LYDİA — TEKNOFEST İnsansız Kara Aracı otonom sürüş yazılımı
+Copyright 2026 Buğra Öztürk
+
+Bu ürün Apache License 2.0 ile lisanslanmıştır; tam metin LICENSE
+dosyasındadır.
+
+--------------------------------------------------------------------------
+KATKILAR
+
+Sürüş kartı (Nucleo-F767ZI) ve Jetson ↔ kart arayüz sözleşmesi:
+
+    Ahmet Efe Nezli (@dwifk0)
+      donanim/PROTOKOL_F767.md
+      teknofest_ika/gomulu/f767_protokol.py
+
+Yazar, bu katkısının deponun lisansıyla yayımlanmasına onay vermiştir.
+Sürüş kartının firmware kaynağı bu depoda yer almaz; adı geçen dosyalar
+yalnızca kartın dış arayüzünü tanımlar.
+
+--------------------------------------------------------------------------
+ÜÇÜNCÜ TARAF KAYNAK KODU
+
+Bu depo üçüncü taraf kaynak kodu içermez. Çalışma zamanı bağımlılıkları
+(ROS 2, Nav2, slam_toolbox, robot_localization, OpenCV, SMACH ve
+diğerleri) ayrıca kurulur ve her biri kendi lisansıyla dağıtılır.
+
+Eğitilmiş model ağırlıkları (models/) bu depoda dağıtılmaz.
+
+Ayrıntı ve isteğe bağlı bileşenlerin lisans notları için README.md
+içindeki "Üçüncü taraf bileşenler" bölümüne bakın.
