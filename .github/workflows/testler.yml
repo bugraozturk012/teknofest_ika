@@ -1,0 +1,34 @@
+name: testler
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  birim-test:
+    runs-on: ubuntu-latest
+    # test_birim.py yükleyiciyi ve durum makinesini GERÇEKTEN import ediyor
+    # (yapılandırmayı koda karşı doğrulamak için), o yüzden ROS 2 ve smach
+    # kurulu olmalı — düz bir Python runner'da `ModuleNotFoundError: rclpy`
+    # ile toplama aşamasında düşer.
+    container: ros:humble-ros-base
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ROS bağımlılıkları
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ros-humble-nav2-msgs \
+            ros-humble-executive-smach \
+            python3-yaml \
+            python3-pytest
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Birim testleri
+        shell: bash
+        run: |
+          source /opt/ros/humble/setup.bash
+          python3 -m pytest test_birim.py -q -p no:cacheprovider
