@@ -690,6 +690,11 @@ Jetson'la konuşan arayüz.
 Kart firmware'i bu depoda yer almaz. Karar katmanının platformdan bağımsız, birim testli
 sürümü: [dwifk0/IKA-MAGNESIA-LYDIA](https://github.com/dwifk0/IKA-MAGNESIA-LYDIA).
 
+### Emeği geçenler
+
+Taret çalışmalarında **Ümit Akpınar** ([@umitakpinarr](https://github.com/umitakpinarr))
+emeği geçti; o tarafın kodu kendi dalında tutuluyor ve bu depoda yer almıyor.
+
 ---
 
 *Takım: MAGNESIA | LYDİA İKA | Teknofest 2026*
