@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>teknofest_ika</name>
+  <version>0.1.0</version>
+  <description>
+    LYDİA — TEKNOFEST İnsansız Kara Aracı yarışması için otonom sürüş yazılımı.
+    Sürüş kartı köprüsü, Nav2 tabanlı navigasyon, kayan hedef üretimi, SMACH
+    görev durum makinesi ve görüntü işleme düğümlerini içerir.
+  </description>
+  <maintainer email="ozturkbugra684@gmail.com">Bugra Ozturk</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>nav2_msgs</depend>
+  <depend>ackermann_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>rcl_interfaces</depend>
+  <depend>robot_localization</depend>
+  <depend>slam_toolbox</depend>
+  <depend>cv_bridge</depend>
+  <depend>robot_state_publisher</depend>
+  <depend>vision_msgs</depend>
+  <depend>image_geometry</depend>
+  <depend>sensor_msgs_py</depend>
+  <depend>message_filters</depend>
+  <depend>nav2_bringup</depend>
+  <depend>nav2_smac_planner</depend>
+  <depend>usb_cam</depend>
+  <depend>v4l2_camera</depend>
+  <depend>ydlidar_ros2_driver</depend>
+  <exec_depend>smach</exec_depend>
+  <exec_depend>smach_ros</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

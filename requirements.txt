@@ -1,0 +1,25 @@
+# Python bağımlılıkları. ROS 2 paketleri bu listede DEĞİL — onlar
+# package.xml'de tanımlı ve rosdep ile kurulur.
+
+# ── Zorunlu ───────────────────────────────────────────────────────────────
+setuptools>=45.0
+numpy>=1.21.0
+pyserial>=3.5          # seri_kopru, taret_rc_koprusu — sürüş kartı hattı
+PyYAML>=5.4.0          # waypoints.yaml ve çalışma anı yapılandırmaları
+opencv-python>=4.5.0   # görüntü zinciri
+scipy>=1.7.0           # preprocessing_node — yağmur onarımı maskesi
+
+# ── İsteğe bağlı ──────────────────────────────────────────────────────────
+# Aşağıdakiler kurulu değilse ilgili düğüm ya alternatif yola düşer ya da
+# o özellik kapalı kalır; hiçbiri yığının açılmasını engellemez.
+#
+#   smbus2               servo_controller_node — PCA9685 I2C yolu
+#   Jetson.GPIO          e_stop_node — donanım butonu okuma (yalnız Jetson)
+#   tensorrt, pycuda     tensorrt_inferer — Jetson'da .engine ile çıkarım
+#   matplotlib           scripts/parkur_cad/donus.py — geçilebilirlik çizimi
+#
+#   ultralytics          yolo_detection_node ve targeting_node için İSTEĞE
+#                        BAĞLI çıkarım yolu. ⚠️ AGPL-3.0 lisanslıdır ve bu
+#                        deponun lisansından (Apache-2.0) farklıdır; depo
+#                        onu dağıtmaz. Kuran kişi AGPL koşullarını kendi
+#                        üstlenir. Bu yol olmadan çıkarım TensorRT ile yapılır.
