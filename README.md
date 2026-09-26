@@ -13,6 +13,10 @@ koşan tam otonom sürüş yığını
 
 </div>
 
+TEKNOFEST 2026 İnsansız Kara Aracı yarışmasında **30 takım arasında 12. sırada**
+tamamlandı (207,62 puan). Manuel koşuyu bitiren ilk 14 takım otonom koşuya geçme
+hakkı kazandı; LYDİA o 14 aracın biri.
+
 Jetson Orin Nano üzerinde koşan **23 ROS 2 düğümü**: LiDAR ve kamera algısı,
 sensör füzyonu, Nav2 tabanlı navigasyon, görev durum makinesi ve aracın sürüş
 kartıyla konuşan seri köprü. Parkurun 11 aşaması, her biri kendi arazi profili
